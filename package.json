@@ -1,0 +1,46 @@
+{
+  "name": "@dolphin278/vjuga",
+  "version": "0.0.1",
+  "packageManager": "yarn@3.2.1",
+  "license": "MIT",
+  "main": "./dist/tsc/index.js",
+  "exports": {
+    ".": "./dist/tsc/index.js",
+    "./*.js": "./dist/tsc/*.js"
+  },
+  "types": "./dist/tsc/index.d.ts",
+  "scripts": {
+    "test": "node --test dist/tsc/tests/",
+    "build": "tsc",
+    "lint": "eslint --ext .ts ./src",
+    "coverage": "c8 --src=src --all --report --reporter html --reporter text --per-file --skip-full -- node --test dist/tsc/tests/",
+    "ci": "yarn lint && prettier --check src && yarn build && yarn coverage",
+    "prepublish": "yarn ci",
+    "format": "yarn lint --fix && prettier --write src"
+  },
+  "devDependencies": {
+    "@types/eslint": "^8",
+    "@types/node": "^18.7.13",
+    "@types/prettier": "^2",
+    "@typescript-eslint/eslint-plugin": "^5.36.2",
+    "@typescript-eslint/parser": "^5.36.2",
+    "c8": "^7.12.0",
+    "eslint": "^8.23.0",
+    "prettier": "^2.7.1",
+    "typescript": "^4.8.3"
+  },
+  "eslintConfig": {
+    "root": true,
+    "parser": "@typescript-eslint/parser",
+    "plugins": [
+      "@typescript-eslint"
+    ],
+    "rules": {
+      "curly": "error"
+    },
+    "env": {
+      "es2022": true,
+      "node": true
+    }
+  }
+}

@@ -3,13 +3,12 @@ import { Predicate } from "./FunctionUtils.js";
 /**
  * Generator function that walks throgh the error cause fields and yields each
  * individual error.
- * @param {Error} error
  */
 export function* chain(error: Error) {
   let current: unknown = error;
-  yield current;
   while (current instanceof Error) {
-    yield (current = current.cause);
+    yield current;
+    current = current.cause;
   }
 }
 

@@ -1,2 +1,3 @@
-# stdlib
-My stdlib for typescript / javascript
+# vjuga
+
+❄️ My personal toolkit for typescript / javascript projects.

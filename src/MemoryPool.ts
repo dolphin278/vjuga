@@ -9,6 +9,14 @@ import { Queue } from "./Queue.js";
  * implementation tracks objects it lent out and does not allow to dispose
  * objects that does not belong to it.
  *
+ * This implementation has no guardrails to prevent you from releasing same
+ * object multiple times or releasing object that does not belong to this pool.
+ *
+ * Such measures are not taken because this pool is intended to be used in
+ * performance critical code and we want to avoid any overhead.
+ *
+ * Safer implementation may be added in the future.
+ *
  * Usage example:
  * ```ts
  * const pool = new MemoryPool({
@@ -35,20 +43,14 @@ export class MemoryPool<T extends object> {
   #maxSize = 0;
 
   #factory: Fn0<T>;
-
   #dispose;
-
-  /**
-   * Pool-specific symbol used to brand instances originated from the pool.
-   */
-  #mark = Symbol();
 
   #freeInstances = new Queue<T>();
 
   #acquiredInstancesCount = 0;
 
   constructor(options: MemoryPoolConfig<T>) {
-    this.#maxSize = options.maxSize ?? Infinity;
+    this.#maxSize = options.maxSize ?? 1024;
     this.#minSize = options.minSize ?? 0;
     this.#factory = options.factory;
     this.#dispose = options.dispose;
@@ -69,10 +71,7 @@ export class MemoryPool<T extends object> {
    */
   acquire() {
     if (this.#freeInstances.size > 0) {
-      const instance = this.#freeInstances.pop();
-      if (instance === void 0) {
-        throw new Error("Unreachable");
-      }
+      const instance = this.#freeInstances.pop()!;
       this.#acquiredInstancesCount++;
       return instance;
     }
@@ -82,22 +81,14 @@ export class MemoryPool<T extends object> {
     }
 
     const instance = Reflect.apply(this.#factory, null, []) as T;
-    Reflect.set(instance, this.#mark, true);
     this.#acquiredInstancesCount++;
     return instance;
   }
 
-  private assertInstanceBelongsToPool(instance: T) {
-    if (!Reflect.get(instance, this.#mark)) {
-      throw new Error("Instance does not belong to this pool");
-    }
-  }
-
   /**
-   * Release an instance back to the pool
+   * Release instance back to the pool
    */
   release(instance: T) {
-    this.assertInstanceBelongsToPool(instance);
     this.#dispose?.(instance);
     this.#acquiredInstancesCount--;
     this.#freeInstances.push(instance);
@@ -118,9 +109,24 @@ export class MemoryPool<T extends object> {
   }
 }
 
-type MemoryPoolConfig<T> = {
+interface MemoryPoolConfig<T> {
   factory: Fn0<T>;
   dispose?: Fn1<T>;
   maxSize?: number;
   minSize?: number;
-};
+}
+
+export const ArrayPool = new MemoryPool<any[]>({
+  factory: () => [],
+  dispose: (arr) => (arr.length = 0),
+});
+
+export const MapPool = new MemoryPool<Map<any, any>>({
+  factory: () => new Map(),
+  dispose: (map) => map.clear(),
+});
+
+export const SetPool = new MemoryPool<Set<any>>({
+  factory: () => new Set(),
+  dispose: (set) => set.clear(),
+});

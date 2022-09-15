@@ -6,6 +6,14 @@ import { MemoryPool } from "./MemoryPool.js";
 /**
  * BatchExecutor is an implementation of dataloader pattern.
  * Caching and key transformations are done by user.
+ *
+ * Slight difference is that we do not deduplicate requests,
+ * with same arguments that happened during same batch. Contrary
+ * to dataloader, our batch executor may have intended side effects.
+ *
+ * Compared to BufferizedFunction, BatchExecutor allows returning values
+ * to original caller using deferred objects and allows wrapped function to
+ * return rejections for some of the arguments.
  */
 export function make<T, R>(fn: Fn1<T[], Promise<PromiseSettledResult<R>[]>>) {
   const RequestPool = new MemoryPool<{
@@ -60,17 +68,6 @@ export function make<T, R>(fn: Fn1<T[], Promise<PromiseSettledResult<R>[]>>) {
     const request = RequestPool.acquire();
     request.arg = arg;
     request.deferred = deferred;
-
-    // Both of these conditions should never happen
-    // nullability of arg and deferred is comes from MemoryPool and
-    // requirement to be able to nullify fields upon release
-    if (request.arg === null) {
-      throw new Error("BatchExecutor: arg is null");
-    }
-    if (request.deferred === null) {
-      throw new Error("BatchExecutor: arg is null");
-    }
-
     worker(request as NonNullableProperties<typeof request>);
     return deferred.promise;
   };

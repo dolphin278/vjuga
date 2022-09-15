@@ -1,6 +1,6 @@
 {
   "name": "@dolphin278/vjuga",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "packageManager": "yarn@3.2.1",
   "license": "MIT",
   "main": "./dist/tsc/index.js",

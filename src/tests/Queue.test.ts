@@ -3,7 +3,7 @@ import * as assert from "node:assert/strict";
 import { Queue } from "../Queue.js";
 
 test("push/pop acts as LIFO", () => {
-  const queue = /** @type {Queue<number>} */ new Queue();
+  const queue = new Queue<number>();
   queue.push(1);
   queue.push(2);
   queue.push(3);
@@ -16,7 +16,7 @@ test("push/pop acts as LIFO", () => {
 });
 
 test("push/shift acts as FIFO", () => {
-  const queue = /** @type {Queue<number>} */ new Queue();
+  const queue = new Queue<number>();
   queue.push(1);
   queue.push(2);
   queue.push(3);
@@ -29,7 +29,7 @@ test("push/shift acts as FIFO", () => {
 });
 
 test("unshift/pop acts as FIFO", () => {
-  const queue = /** @type {Queue<number>} */ new Queue();
+  const queue = new Queue<number>();
   queue.unshift(1);
   queue.unshift(2);
   queue.unshift(3);
@@ -42,7 +42,7 @@ test("unshift/pop acts as FIFO", () => {
 });
 
 test("unshift/shift acts as LIFO", () => {
-  const queue = /** @type {Queue<number>} */ new Queue();
+  const queue = new Queue<number>();
   queue.unshift(1);
   queue.unshift(2);
   queue.unshift(3);
@@ -55,7 +55,7 @@ test("unshift/shift acts as LIFO", () => {
 });
 
 test("queue can handle more than 4 items", () => {
-  const queue = /** @type {Queue<number>} */ new Queue();
+  const queue = new Queue<number>();
   for (let i = 0; i < 10; i++) {
     queue.push(i);
   }
@@ -69,7 +69,7 @@ test("queue can handle more than 4 items", () => {
 });
 
 test("queue can be exported to array", () => {
-  const queue = /** @type {Queue<number>} */ new Queue();
+  const queue = new Queue<number>();
   for (let i = 0; i < 10; i++) {
     queue.push(i);
   }
@@ -83,7 +83,7 @@ test("queue can be exported to array", () => {
 });
 
 test("queue can be exported to array with emptying the queue", (t) => {
-  const queue = /** @type {Queue<number>} */ new Queue();
+  const queue = new Queue<number>();
   for (let i = 0; i < 10; i++) {
     queue.push(i);
   }
@@ -93,8 +93,18 @@ test("queue can be exported to array with emptying the queue", (t) => {
 });
 
 test("queue can be created from array", () => {
-  const queue = /** @type {Queue<number>} */ new Queue([
-    0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
-  ]);
+  const queue = new Queue<number>([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  assert.deepEqual(queue.toArray(), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+});
+
+test("queue can be created from iterable", () => {
+  const iterable = new Set([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  const queue = Queue.from(iterable);
+  assert.deepEqual(queue.toArray(), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+});
+
+test("creation of array from iterable source recognized array as special case", () => {
+  const array = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+  const queue = Queue.from(array);
   assert.deepEqual(queue.toArray(), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
 });

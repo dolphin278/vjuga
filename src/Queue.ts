@@ -1,3 +1,6 @@
+/**
+ * Fast queue based on a circular buffer.
+ */
 export class Queue<T> {
   /**
    * `#head` is the index of the first element in the list.
@@ -12,7 +15,7 @@ export class Queue<T> {
 
   readonly #list = Array<T | void>(4);
 
-  constructor(values: T[] = []) {
+  constructor(values: readonly T[] = []) {
     for (const value of values) {
       this.push(value);
     }
@@ -165,5 +168,19 @@ export class Queue<T> {
     this.#head = 0;
     this.#tail = 0;
     return result;
+  }
+
+  // Static method 'from' creates new Queue instance from elements of any
+  // iterable value passed to it.
+  static from<T>(values: Iterable<T>) {
+    if (Array.isArray(values)) {
+      // If the iterable is an array, we can use a faster path avoiding iterator protocol.
+      return new Queue(values);
+    }
+    const queue = new Queue<T>();
+    for (const value of values) {
+      queue.push(value);
+    }
+    return queue;
   }
 }

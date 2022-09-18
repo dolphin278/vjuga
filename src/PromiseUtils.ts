@@ -12,18 +12,11 @@
  * ```
  */
 export async function props<T extends object>(
-  obj: T
+  obj: T,
+  result: { [K in keyof T]: Awaited<T[K]> } = Object.create(null) as any
 ): Promise<{ [K in keyof T]: Awaited<T[K]> }> {
-  const keys = [];
-  const promises = [];
-  for (let key in obj) {
-    if (Reflect.has(obj, key)) {
-      keys.push(key);
-      promises.push(obj[key]);
-    }
-  }
-  const values = await Promise.all(promises);
-  const result = {} as { [K in keyof T]: Awaited<T[K]> };
+  const keys = Object.keys(obj) as (keyof T)[];
+  const values = await Promise.all(Object.values(obj));
 
   for (let i = 0; i < keys.length; i++) {
     result[keys[i]] = values[i];
@@ -51,11 +44,11 @@ export async function props<T extends object>(
  * ```
  */
 export async function propsMap<K, V>(
-  map: Map<K, V>
+  map: Map<K, V>,
+  result: Map<K, Awaited<V>> = new Map()
 ): Promise<Map<K, Awaited<V>>> {
   const keys = Array.from(map.keys());
   const values = await Promise.all(Array.from(map.values()));
-  const result = new Map<K, Awaited<V>>();
   for (let i = 0; i < keys.length; i++) {
     result.set(keys[i], values[i]);
   }

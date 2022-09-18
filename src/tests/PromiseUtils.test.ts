@@ -9,7 +9,7 @@ test("PromiseUtils.props", async () => {
     c: "asdf",
   });
 
-  assert.deepStrictEqual(result, {
+  assert.deepEqual(result, {
     a: 1,
     b: 2,
     c: "asdf",

@@ -11,7 +11,7 @@ import * as Ref from "./Ref.js";
  * exception.
  */
 export function make<T>(fn: Fn1<T[]>): Fn<T[]> {
-  const scheduled = Ref.make<NodeJS.Timeout | null>(null);
+  const scheduled = Ref.make<Timer | null>(null);
   const queue = new Queue<T>();
 
   return function bufferizedFn(...args: T[]) {
@@ -27,8 +27,10 @@ export function make<T>(fn: Fn1<T[]>): Fn<T[]> {
 function worker<T>(
   queue: Queue<T>,
   fn: Fn1<T[]>,
-  scheduled: Ref.RefCell<NodeJS.Timeout | null>
+  scheduled: Ref.RefCell<Timer | null>
 ) {
   scheduled.contents = null;
   Reflect.apply(fn, null, [queue.dumpToArray()]);
 }
+
+type Timer = ReturnType<typeof setTimeout>;

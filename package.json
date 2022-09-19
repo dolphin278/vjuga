@@ -42,5 +42,8 @@
       "es2022": true,
       "node": true
     }
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

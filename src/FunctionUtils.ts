@@ -13,6 +13,13 @@ export type Fn2<T1, T2, R = void> = Fn<[T1, T2], R>;
 
 export type Lazy<T> = Fn0<T>;
 
+export type TaggedUnion<T> = {
+  [P in keyof T]: {
+    readonly tag: P;
+    readonly value: T[P];
+  };
+}[keyof T];
+
 export function partial<T1 extends unknown[], T2 extends unknown[], R>(
   fn: Fn<[...T1, ...T2], R>,
   ...args: T1

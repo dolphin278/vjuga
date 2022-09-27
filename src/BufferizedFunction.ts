@@ -11,15 +11,16 @@ import * as Ref from "./Ref.js";
  * exception.
  */
 export function make<T>(fn: Fn1<T[]>): Fn<T[]> {
-  const scheduled = Ref.make<Timer | null>(null);
+  const scheduled = Ref.make<boolean>(false);
   const queue = new Queue<T>();
 
   return function bufferizedFn(...args: T[]) {
     for (let i = 0; i < args.length; i++) {
       queue.push(args[i]);
     }
-    if (scheduled.contents === null) {
-      scheduled.contents = setTimeout(worker, 0, queue, fn, scheduled);
+    if (!scheduled.contents) {
+      scheduled.contents = true;
+      setTimeout(worker, 0, queue, fn, scheduled);
     }
   };
 }
@@ -27,10 +28,8 @@ export function make<T>(fn: Fn1<T[]>): Fn<T[]> {
 function worker<T>(
   queue: Queue<T>,
   fn: Fn1<T[]>,
-  scheduled: Ref.RefCell<Timer | null>
+  scheduled: Ref.RefCell<boolean>
 ) {
-  scheduled.contents = null;
+  scheduled.contents = false;
   Reflect.apply(fn, null, [queue.dumpToArray()]);
 }
-
-type Timer = ReturnType<typeof setTimeout>;

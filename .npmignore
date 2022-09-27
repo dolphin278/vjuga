@@ -114,3 +114,5 @@ tsconfig.tsbuildinfo
 dist/**/tests
 src
 tsconfig.json
+
+tsconfig.tsbuildinfo 

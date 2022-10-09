@@ -2,14 +2,14 @@ import { Fn0, Fn1 } from "./FunctionUtils.js";
 
 /**
  * Function takes resource definition and function that takes instance of
- * the resource. `withAsyncResource` will create resource and dispose it when
+ * the resource. `withResource` will create resource and dispose it when
  * function finishes.
  *
- * `withAsyncResource` makes best effor attempt to catch all exceptions and
+ * `withResource` makes best effor attempt to catch all exceptions and
  * expose them via custom `Error` subclasses, so you can easily distinguish
  * between errors caused by resource and errors caused by user code.
  */
-export async function withAsyncResource<T>(
+export async function withResource<T>(
   {
     factory,
     dispose,
@@ -19,20 +19,8 @@ export async function withAsyncResource<T>(
   },
   fn: Fn1<T, void | Promise<void>>
 ) {
-  let resource: T;
-
+  const resource = await factory();
   try {
-    resource = await factory();
-  } catch (err) {
-    if (err instanceof Error) {
-      throw new UnableToCreateResourceError(err);
-    }
-  }
-
-  try {
-    if (resource! === void 0) {
-      throw new Error("Unreachable");
-    }
     await fn(resource);
   } catch (err) {
     if (err instanceof Error) {
@@ -40,14 +28,7 @@ export async function withAsyncResource<T>(
     }
     throw err;
   } finally {
-    try {
-      await dispose(resource!);
-    } catch (err) {
-      if (err instanceof Error) {
-        throw new UnableToDisposeResourceError(err);
-      }
-      throw err;
-    }
+    await dispose(resource);
   }
 }
 
@@ -60,45 +41,20 @@ export async function withAsyncResource<T>(
  * expose them via custom `Error` subclasses, so you can easily distinguish
  * between errors caused by resource and errors caused by user code.
  */
-export function withSyncResource<T>(
+export function withSyncResource<T, R>(
   { factory, dispose }: { factory: Fn0<T>; dispose: Fn1<T> },
-  fn: Fn1<T>
-) {
-  let resource: T | undefined;
-
+  fn: Fn1<T, R>
+): ReturnType<typeof fn> {
+  const resource = factory();
   try {
-    resource = factory();
-  } catch (err) {
-    if (err instanceof Error) {
-      throw new UnableToCreateResourceError(err);
-    }
-  }
-
-  try {
-    if (resource === void 0) {
-      throw new Error("Unreachable");
-    }
-    fn(resource);
+    return fn(resource);
   } catch (err) {
     if (err instanceof Error) {
       throw new UnableToRunResourceConsumingFunctionError(err);
     }
     throw err;
   } finally {
-    try {
-      dispose(resource!);
-    } catch (err) {
-      if (err instanceof Error) {
-        throw new UnableToDisposeResourceError(err);
-      }
-      throw err;
-    }
-  }
-}
-
-export class UnableToCreateResourceError extends Error {
-  constructor(error: Error) {
-    super(`Unable to create resource: ${error.message}`, { cause: error });
+    dispose(resource);
   }
 }
 
@@ -107,11 +63,5 @@ export class UnableToRunResourceConsumingFunctionError extends Error {
     super(`Unable to run resource consuming function: ${error.message}`, {
       cause: error,
     });
-  }
-}
-
-export class UnableToDisposeResourceError extends Error {
-  constructor(error: Error) {
-    super(`Unable to dispose resource: ${error.message}`, { cause: error });
   }
 }

@@ -2,21 +2,17 @@ import { test } from "node:test";
 import * as ManagedResource from "../ManagedResource.js";
 import * as assert from "node:assert/strict";
 
-test("withAsyncResource allows us to manage resource", async () => {
-  /** @type {any} */
+test("withResource allows us to manage resource", async () => {
   let resourceAllocated = null;
-  /** @type {any} */
   let disposedResource = null;
-  /** @type {any} */
   let providedResource = null;
 
-  await ManagedResource.withAsyncResource(
+  await ManagedResource.withResource(
     {
       factory: () => {
         resourceAllocated = {};
         return Promise.resolve(resourceAllocated);
       },
-      /** @param {any} resource */
       dispose: (resource) => {
         disposedResource = resource;
         return Promise.resolve(undefined);
@@ -32,11 +28,8 @@ test("withAsyncResource allows us to manage resource", async () => {
 });
 
 test("withSyncResource allows us to manage resource", async () => {
-  /** @type {any} */
   let resourceAllocated = null;
-  /** @type {any} */
   let disposedResource = null;
-  /** @type {any} */
   let providedResource = null;
 
   ManagedResource.withSyncResource(
@@ -45,7 +38,6 @@ test("withSyncResource allows us to manage resource", async () => {
         resourceAllocated = {};
         return resourceAllocated;
       },
-      /** @param {any} resource */
       dispose: (resource) => {
         disposedResource = resource;
       },

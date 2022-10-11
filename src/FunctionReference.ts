@@ -12,7 +12,6 @@ import * as path from "path";
 
 /**
  *
- *
  * Function takes path to module file and name of the exported function
  * from the module and returns the function. This allows to share functions
  * between execution contexts without passing the source code of the function
@@ -33,7 +32,7 @@ export async function resolve(reference: string | URL) {
     module = await import(url.href);
   } catch (error) {
     if (error instanceof Error) {
-      throw new Error(`Failed to import module ${url.href}`, { cause: error });
+      throw new ModuleCanNotBeResolved(url.href, error);
     } else {
       throw error;
     }
@@ -43,11 +42,23 @@ export async function resolve(reference: string | URL) {
   if (typeof moduleExport === "function") {
     return moduleExport;
   } else {
-    throw Object.assign(
-      new Error(
-        `Resolving ${url.toString()} failed - module loaded but exported symbol is not a function`
-      ),
-      { url, reference }
+    throw new ExportedSymbolIsNotAFunction(url, reference);
+  }
+}
+
+export class ModuleCanNotBeResolved extends Error {
+  constructor(module: string, cause: Error) {
+    super(`Failed to import module ${module}`, { cause });
+  }
+}
+
+export class ExportedSymbolIsNotAFunction extends Error {
+  constructor(
+    public readonly url: URL,
+    public readonly reference: string | URL
+  ) {
+    super(
+      `Resolving ${url.toString()} failed - module loaded but exported symbol is not a function`
     );
   }
 }

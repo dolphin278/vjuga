@@ -42,23 +42,24 @@ export async function resolve(reference: string | URL) {
   if (typeof moduleExport === "function") {
     return moduleExport;
   } else {
-    throw new ExportedSymbolIsNotAFunction(url, reference);
+    throw new ExportedSymbolIsNotAFunction(url, reference, typeof moduleExport);
   }
 }
 
 export class ModuleCanNotBeResolved extends Error {
-  constructor(module: string, cause: Error) {
-    super(`Failed to import module ${module}`, { cause });
+  constructor(reference: string, cause: Error) {
+    super(`Failed to import module ${reference}`, { cause });
   }
 }
 
 export class ExportedSymbolIsNotAFunction extends Error {
   constructor(
     public readonly url: URL,
-    public readonly reference: string | URL
+    public readonly reference: string | URL,
+    public readonly typeFound: string
   ) {
     super(
-      `Resolving ${url.toString()} failed - module loaded but exported symbol is not a function`
+      `Resolving reference ${url} failed - module loaded but exported symbol is not a function, but ${typeFound} (from ${reference})`
     );
   }
 }

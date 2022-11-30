@@ -23,7 +23,7 @@ export type TaggedUnion<T> = {
 export function partial<T1 extends unknown[], T2 extends unknown[], R>(
   fn: Fn<[...T1, ...T2], R>,
   ...args: T1
-) {
+): Fn<T2, R> {
   return (fn as any).bind(void 0, ...args);
 }
 

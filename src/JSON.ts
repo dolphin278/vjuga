@@ -13,8 +13,8 @@ export type JSONObject = { [key: string | number]: JSONValue };
 export const stringify: Fn1<JSONValue, string> = JSON.stringify;
 
 /**
- * While being just an alias for JSON.parse, this function is here
- * returns JSONValue instead of any, which forces consumer to actually
+ * While being just an alias for JSON.parse, this function
+ * returns `JSONValue` instead of `any`, that forces consumer to actually
  * check the type of the result during runtime.
  */
 export const parseExn: Fn1<string, JSONValue> = JSON.parse;

@@ -1,6 +1,6 @@
 {
   "name": "@dolphin278/vjuga",
-  "version": "3.3.0",
+  "version": "4.0.0",
   "packageManager": "yarn@3.2.1",
   "license": "MIT",
   "exports": {

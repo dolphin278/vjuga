@@ -3,12 +3,21 @@
   "version": "3.3.0",
   "packageManager": "yarn@3.2.1",
   "license": "MIT",
-  "main": "./dist/tsc/index.js",
   "exports": {
     ".": "./dist/tsc/index.js",
-    "./*.js": "./dist/tsc/*.js"
+    "./*": "./dist/tsc/*"
   },
-  "types": "./dist/tsc/index.d.ts",
+  "typesVersions": {
+    "*": {
+      ".": [
+        "./dist/tsc/index.d.ts"
+      ],
+      "*": [
+        "./dist/tsc/*"
+      ]
+    }
+  },
+  "type": "module",
   "scripts": {
     "test": "node --test dist/tsc/tests/",
     "build": "tsc",

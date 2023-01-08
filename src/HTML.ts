@@ -6,6 +6,12 @@ const [
   APOS_CHAR_CODE,
 ] = [">", "<", "&", '"', "'"].map((x) => x.charCodeAt(0));
 
+const GT_STR = "&gt;";
+const LT_STR = "&lt;";
+const AMP_STR = "&amp;";
+const QUOTE_STR = "&quot;";
+const APOS_STR = "&#039;";
+
 // Escape HTML string
 export function escape(str: string) {
   var char;
@@ -19,19 +25,19 @@ export function escape(str: string) {
   for (right = left; right < str.length; right++) {
     switch (str.charCodeAt(right)) {
       case GT_CHAR_CODE:
-        char = "&gt;";
+        char = GT_STR;
         break;
       case LT_CHAR_CODE:
-        char = "&lt;";
+        char = LT_STR;
         break;
       case AMP_CHAR_CODE:
-        char = "&amp;";
+        char = AMP_STR;
         break;
       case QUOTE_CHAR_CODE:
-        char = "&quot;";
+        char = QUOTE_STR;
         break;
       case APOS_CHAR_CODE:
-        char = "&#039;";
+        char = APOS_STR;
         break;
       default:
         continue;

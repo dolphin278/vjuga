@@ -14,15 +14,14 @@ const APOS_STR = "&#039;";
 
 // Escape HTML string
 export function escape(str: string) {
-  var char;
-  var right;
-  var left = 0;
-  var result = "";
-  var escapedAtLeastOnce = false;
+  let char: string;
+  let left = 0;
+  let result = "";
+  let escapedAtLeastOnce = false;
   if (str.length === 0) {
     return str;
   }
-  for (right = left; right < str.length; right++) {
+  for (let right = 0; right < str.length; right++) {
     switch (str.charCodeAt(right)) {
       case GT_CHAR_CODE:
         char = GT_STR;

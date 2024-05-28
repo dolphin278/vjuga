@@ -111,8 +111,5 @@ typings/
 tsconfig.tsbuildinfo
 .vscode
 
-dist/**/tests
 src
-tsconfig.json
 
-tsconfig.tsbuildinfo 

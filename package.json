@@ -1,56 +1,26 @@
 {
   "name": "@dolphin278/vjuga",
-  "version": "4.0.0",
-  "packageManager": "yarn@3.2.1",
+  "version": "5.0.0",
+  "packageManager": "npm@10.5.0",
   "license": "MIT",
   "exports": {
-    ".": "./dist/tsc/index.js",
-    "./*": "./dist/tsc/*"
-  },
-  "typesVersions": {
-    "*": {
-      ".": [
-        "./dist/tsc/index.d.ts"
-      ],
-      "*": [
-        "./dist/tsc/*"
-      ]
-    }
+    "./*": "./src/*"
   },
   "type": "module",
   "scripts": {
-    "test": "node --test dist/tsc/tests/",
-    "build": "tsc",
-    "lint": "eslint --ext .ts ./src",
-    "coverage": "c8 --src=src --all --report --reporter html --reporter text --per-file --skip-full -- node --test dist/tsc/tests/",
-    "ci": "yarn lint && prettier --check src && yarn build && yarn coverage",
-    "prepublish": "rm -rf dist && yarn ci",
-    "format": "yarn lint --fix && prettier --write src"
+    "test": "node --test",
+    "typecheck": "tsc",
+    "lint": "oxlint ./src",
+    "coverage": "c8 --src=src --all --report --reporter html --reporter text --per-file --skip-full -- node --test ",
+    "ci": "npm run lint && prettier --check src && npm run typecheck && npm run coverage",
+    "format": "npm run lint --fix && prettier --write src"
   },
   "devDependencies": {
-    "@types/eslint": "^8.4.10",
-    "@types/node": "^18.11.18",
-    "@types/prettier": "^2.7.2",
-    "@typescript-eslint/eslint-plugin": "^5.50.0",
-    "@typescript-eslint/parser": "^5.50.0",
+    "@types/node": "^20.11.15",
     "c8": "^7.12.0",
-    "eslint": "^8.33.0",
+    "oxlint": "^0.4.0",
     "prettier": "^2.8.3",
-    "typescript": "^4.9.5"
-  },
-  "eslintConfig": {
-    "root": true,
-    "parser": "@typescript-eslint/parser",
-    "plugins": [
-      "@typescript-eslint"
-    ],
-    "rules": {
-      "curly": "error"
-    },
-    "env": {
-      "es2022": true,
-      "node": true
-    }
+    "typescript": "^5.3.3"
   },
   "publishConfig": {
     "access": "public"

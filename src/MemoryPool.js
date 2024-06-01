@@ -7,7 +7,8 @@ import { Queue } from "./Queue.js";
 
 /**
  * @template T
- * @typedef {import("./FunctionUtils.js").Fn1<T>} Fn1
+ * @template [R=void]
+ * @typedef {import("./FunctionUtils.js").Fn1<T, R>} Fn1
  */
 
 /**
@@ -37,136 +38,119 @@ import { Queue } from "./Queue.js";
  *
  * Usage example:
  * ```ts
- * const pool = new MemoryPool({
+ * const pool = make({
  *  factory: () => ({ x: 0, y: 0 }),
  *  dispose: (obj) => { obj.x = obj.y = 0; })
  * });
  *
  * // Get an object from the pool.
- * const obj1 = pool.acquire();
+ * const obj1 = acquire(pool);
  *
  * // Use the object.
  * obj1.x = 1;
  *
- * // Return the object to the pool (it will be passed to `dispose` function if it was provided).
- * pool.release(obj1);
+ * // Return the object to the pool (it will be passed to `dispose`
+ * // function if it was provided).
+ * release(pool, obj1);
  *
  * // Get another object from the pool.
- * const obj2 = pool.acquire(); // obj2 === obj1, obj2 === {x: 0, y: 0}
+ * const obj2 = acquire(pool); // obj2 === obj1, obj2 === {x: 0, y: 0}
  * ```
  *
  * @template {{}} T
+ * @typedef MemoryPool
+ * @property {Fn0<T>} factory
+ * @property {Fn1<T, void>} [dispose]
+ * @property {number} maxSize
+ * @property {Queue<T>} freeList
+ * @property {Set<T>} acquiredSet
  */
-export class MemoryPool {
-  #minSize = 0;
-  #maxSize = 0;
 
-  /** @type {Fn0<T>} */
-  #factory;
-  #dispose;
+/**
+ *
+ * @template {{}} T
+ * @param {MemoryPoolConfig<T>} options
+ * @returns {MemoryPool<T>}
+ */
+export function make({ factory, dispose, maxSize: _maxSize, minSize }) {
+  const freeList = new Queue();
+  const acquiredSet = new Set();
 
-  /** @type {Queue<T>} */
-  #freeInstances = new Queue();
+  const maxSize = _maxSize ?? 1024;
+  if (minSize !== undefined && minSize > maxSize) {
+    throw new Error("minSize cannot be greater than maxSize");
+  }
 
-  #acquiredInstancesCount = 0;
-
-  /**
-   * @param {MemoryPoolConfig<T>} options
-   */
-  constructor(options) {
-    this.#maxSize = options.maxSize ?? 1024;
-    this.#minSize = options.minSize ?? 0;
-    this.#factory = options.factory;
-    this.#dispose = options.dispose;
-
-    if (this.#minSize > this.#maxSize) {
-      throw new Error("minSize must be less than or equal to maxSize");
-    }
-
-    if (this.#minSize > 0) {
-      for (let i = 0; i < this.#minSize; i++) {
-        this.#freeInstances.push(
-          /** @type {T} */ Reflect.apply(this.#factory, null, [])
-        );
-      }
+  if (minSize !== undefined) {
+    for (let i = 0; i < minSize; i++) {
+      freeList.push(Reflect.apply(factory, null, []));
     }
   }
 
-  /**
-   * Get a new instance from the pool
-   * @returns {T}
-   */
-  acquire() {
-    if (this.#freeInstances.size > 0) {
-      const instance = this.#freeInstances.pop();
-      this.#acquiredInstancesCount++;
-      if (instance !== undefined) return instance;
-    }
-
-    if (this.#acquiredInstancesCount >= this.#maxSize) {
-      throw new Error("MemoryPool is full");
-    }
-
-    /** @type {T} */
-    const instance = Reflect.apply(this.#factory, null, []);
-    this.#acquiredInstancesCount++;
-    return instance;
-  }
-
-  /**
-   * Release instance back to the pool
-   * @param {T} instance
-   */
-  release(instance) {
-    this.#dispose?.(instance);
-    this.#acquiredInstancesCount--;
-    this.#freeInstances.push(instance);
-  }
-
-  /**
-   * Get number of instances that are currently lent
-   */
-  get acquiredInstancesCount() {
-    return this.#acquiredInstancesCount;
-  }
-
-  /**
-   * Get number of instances that are currently free
-   */
-  get freeInstancesCount() {
-    return this.#freeInstances.size;
-  }
+  return {
+    factory,
+    dispose,
+    maxSize,
+    freeList,
+    acquiredSet,
+  };
 }
 
 /**
- * @type {MemoryPool<any[]>}
+ * Get a new instance from the pool
+ *
+ * @template {{}} T
+ * @param {MemoryPool<T>} pool
  */
-export const ArrayPool = new MemoryPool({
-  /**
-   * @type {Fn0<any[]>}
-   *
-   */
-  factory: () => [],
-  /**
-   *
-   * @param {any[]} arr
-   * @returns {void}
-   */
-  dispose: (arr) => ((arr.length = 0), void 0),
-});
+export function acquire({ freeList, acquiredSet, maxSize, factory }) {
+  if (freeList.size > 0) {
+    const instance = freeList.pop();
+
+    if (instance !== undefined) {
+      acquiredSet.add(instance);
+      return instance;
+    }
+  }
+
+  if (acquiredSet.size >= maxSize) {
+    throw new Error("MemoryPool is full");
+  }
+
+  /** @type {T} */
+  const instance = Reflect.apply(factory, void 0, []);
+  acquiredSet.add(instance);
+  return instance;
+}
 
 /**
- * @type {MemoryPool<Map<any, any>>}
+ * @template {{}} T
+ * @param {MemoryPool<T>} pool
+ * @param {T} instance
  */
-export const MapPool = new MemoryPool({
+export function release({ acquiredSet, dispose, freeList }, instance) {
+  if (!acquiredSet.has(instance)) {
+    throw new Error("Instance does not belong to this pool");
+  }
+
+  if (dispose !== undefined) {
+    Reflect.apply(dispose, void 0, [instance]);
+  }
+
+  acquiredSet.delete(instance);
+  freeList.push(instance);
+}
+
+export const ArrayPool = make({
+  factory: () => /** @type {any[]} */ ([]),
+  dispose: (arr) => (arr.length = 0),
+});
+
+export const MapPool = make({
   factory: () => new Map(),
-  dispose: (/** @type {Map<unknown, unknown>} */ map) => map.clear(),
+  dispose: (map) => map.clear(),
 });
 
-/**
- * @type {MemoryPool<Set<any>>}
- */
-export const SetPool = new MemoryPool({
+export const SetPool = make({
   factory: () => new Set(),
-  dispose: (/** @type {Set<unknown>} */ set) => set.clear(),
+  dispose: (set) => set.clear(),
 });

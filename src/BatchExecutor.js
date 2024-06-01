@@ -1,6 +1,6 @@
 import { make as makeBufferizedFn } from "./BufferizedFunction.js";
 import * as Deferred from "./Deferred.js";
-import { MemoryPool } from "./MemoryPool.js";
+import * as MemoryPool from "./MemoryPool.js";
 
 /**
  * @template T, U
@@ -30,9 +30,9 @@ export function make(fn) {
   /**
    * Pool of requests. We use MemoryPool to avoid creating new objects
    *
-   * @type {MemoryPool<Request>}
+   * @type {MemoryPool.MemoryPool<Request>}
    */
-  const RequestPool = new MemoryPool({
+  const RequestPool = MemoryPool.make({
     /**
      * @returns {Request}
      */
@@ -79,7 +79,7 @@ export function make(fn) {
         }
       } finally {
         for (i = 0; i < args.length; i++) {
-          RequestPool.release(args[i]);
+          MemoryPool.release(RequestPool, args[i]);
         }
       }
     }
@@ -93,7 +93,7 @@ export function make(fn) {
      * @type {Deferred.Deferred<R>}
      */
     const deferred = Deferred.make();
-    const request = RequestPool.acquire();
+    const request = MemoryPool.acquire(RequestPool);
     request.arg = arg;
     request.deferred = deferred;
     worker(/** @type {NonNullableProperties<typeof request>} */ (request));

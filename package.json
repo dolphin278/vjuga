@@ -8,13 +8,14 @@
   },
   "type": "module",
   "scripts": {
+    "clean": "git clean -fdx src tsconfig.tsbuildinfo",
     "test": "node --test",
-    "typecheck": "tsc",
+    "typecheck": "tsc --noEmit --project tsconfig.json",
     "lint": "oxlint ./src",
-    "coverage": "c8 --src=src --all --report --reporter html --reporter text --per-file --skip-full -- node --test ",
-    "ci": "npm run lint && prettier --check src && npm run typecheck && npm run coverage",
+    "coverage": "c8 --src=src --all --report --reporter html --reporter text --per-file --skip-full -- node --test",
+    "prepare": "npm run clean && tsc --declaration --emitDeclarationOnly --project tsconfig.json && npm run lint && prettier --check src && npm run coverage",
     "format": "npm run lint --fix && prettier --write src",
-    "prepublishOnly": "npm run ci"
+    "postpack": "npm run clean"
   },
   "devDependencies": {
     "@types/node": "^20.11.15",

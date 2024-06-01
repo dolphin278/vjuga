@@ -111,3 +111,4 @@ typings/
 tsconfig.tsbuildinfo
 .vscode
 
+src/tests

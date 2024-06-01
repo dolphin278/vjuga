@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { setTimeout as setTimeoutPromise } from "node:timers/promises";
 import { make } from "../BatchExecutor.js";
 
-test("BatchExecutor batches function invocation and delivers corresponding results", async (t) => {
+test("BatchExecutor batches function invocation and delivers corresponding results", async () => {
   /**
    * @type {number[][]}
    */

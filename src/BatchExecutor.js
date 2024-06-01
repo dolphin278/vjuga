@@ -56,7 +56,12 @@ export function make(fn) {
     async (args) => {
       let i = 0;
       try {
-        const result = await fn(args.map((x) => x.arg));
+        const invocationArgs = Array(args.length);
+        for (let i = 0; i < args.length; i++) {
+          invocationArgs[i] = args[i].arg;
+        }
+
+        const result = await Reflect.apply(fn, void 0, [invocationArgs]);
 
         if (result.length !== args.length) {
           throw new Error(
@@ -78,7 +83,7 @@ export function make(fn) {
           args[k].deferred.reject(err);
         }
       } finally {
-        for (i = 0; i < args.length; i++) {
+        for (let i = 0; i < args.length; i++) {
           MemoryPool.release(RequestPool, args[i]);
         }
       }

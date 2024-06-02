@@ -21,7 +21,7 @@ test("withResource", async () => {
       },
       async (resourceGiven) => {
         providedResource = resourceGiven;
-      }
+      },
     );
 
     assert.equal(resourceAllocated, providedResource);
@@ -49,12 +49,12 @@ test("withResource", async () => {
           async (resourceGiven) => {
             providedResource = resourceGiven;
             throw new Error("Some error");
-          }
+          },
         );
       },
       {
         message: "Unable to run resource consuming function: Some error",
-      }
+      },
     );
   });
 
@@ -72,10 +72,10 @@ test("withResource", async () => {
           },
           async (resourceGiven) => {
             throw "Some error";
-          }
+          },
         );
       },
-      (thrown) => typeof thrown === "string" && thrown === "Some error"
+      (thrown) => typeof thrown === "string" && thrown === "Some error",
     );
   });
 });

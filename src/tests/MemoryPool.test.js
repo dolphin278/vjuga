@@ -29,7 +29,7 @@ test("Memory Pool should allow us reuse our instances", () => {
   assert.equal(
     instanceSentForDisposal,
     instance,
-    "Instance should be sent for disposal"
+    "Instance should be sent for disposal",
   );
 });
 
@@ -68,7 +68,7 @@ test("Memory pool throws when min size is greater than max size", () => {
         maxSize: 1,
         factory: () => ({}),
       }),
-    "Min size should be less than or equal to max size"
+    "Min size should be less than or equal to max size",
   );
 });
 

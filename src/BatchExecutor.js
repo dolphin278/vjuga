@@ -65,7 +65,7 @@ export function make(fn) {
 
         if (result.length !== args.length) {
           throw new Error(
-            `BatchExecutor: fn returned ${result.length} results, but expected ${args.length}`
+            `BatchExecutor: fn returned ${result.length} results, but expected ${args.length}`,
           );
         }
 
@@ -87,7 +87,7 @@ export function make(fn) {
           MemoryPool.release(RequestPool, args[i]);
         }
       }
-    }
+    },
   );
 
   /**

@@ -24,7 +24,7 @@ test("ErrorChain.find", async (t) => {
     const error = new Error("error", { cause });
     const result = ErrorChain.find(
       (err) => err instanceof Error && err.message === "cause",
-      error
+      error,
     );
     assert.strictEqual(result, cause);
   });
@@ -34,7 +34,7 @@ test("ErrorChain.find", async (t) => {
     const error = new Error("error", { cause });
     const result = ErrorChain.find(
       (err) => err instanceof Error && err.message === "not found",
-      error
+      error,
     );
     assert.strictEqual(result, undefined);
   });

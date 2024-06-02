@@ -25,7 +25,7 @@ test("PromiseUtils.propsMap", async () => {
       ["a", Promise.resolve(1)],
       ["b", Promise.resolve(2)],
       ["c", "asdf"],
-    ])
+    ]),
   );
 
   const result = await propsMap(map);
@@ -37,7 +37,7 @@ test("PromiseUtils.propsMap", async () => {
         ["a", 1],
         ["b", 2],
         ["c", "asdf"],
-      ])
-    )
+      ]),
+    ),
   );
 });

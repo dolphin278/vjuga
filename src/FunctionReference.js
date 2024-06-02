@@ -46,7 +46,7 @@ export async function resolve(reference) {
     throw new ReferencedSymbolIsNotAFunction(
       reference,
       reference,
-      typeof symbol
+      typeof symbol,
     );
   }
 }
@@ -89,7 +89,7 @@ export class ReferencedSymbolIsNotAFunction extends Error {
    */
   constructor(url, reference, typeFound) {
     super(
-      `Resolving reference ${url} failed - module loaded but exported symbol is not a function, but ${typeFound} (from ${reference})`
+      `Resolving reference ${url} failed - module loaded but exported symbol is not a function, but ${typeFound} (from ${reference})`,
     );
     this.url = url;
     this.reference = reference;

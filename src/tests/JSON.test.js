@@ -27,7 +27,7 @@ describe("JSON", () => {
     it("should stringify objects", () => {
       assert.equal(
         stringify({ a: 1, b: "asdf", c: true, d: null }),
-        '{"a":1,"b":"asdf","c":true,"d":null}'
+        '{"a":1,"b":"asdf","c":true,"d":null}',
       );
     });
   });

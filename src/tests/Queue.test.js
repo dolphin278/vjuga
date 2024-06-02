@@ -83,7 +83,7 @@ test("queue can be exported to array", () => {
   assert.deepEqual(
     queue.toArray(),
     [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
-    "toArray() should not change the queue"
+    "toArray() should not change the queue",
   );
   assert.equal(queue.size, 10);
 });

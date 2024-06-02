@@ -12,6 +12,6 @@ test("escape", () => {
   assert.equal(escape("foo'bar"), "foo&#039;bar");
   assert.equal(
     escape("foo<bar>baz&qux\"quux'corge"),
-    "foo&lt;bar&gt;baz&amp;qux&quot;quux&#039;corge"
+    "foo&lt;bar&gt;baz&amp;qux&quot;quux&#039;corge",
   );
 });

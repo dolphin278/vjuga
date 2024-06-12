@@ -63,11 +63,11 @@ function defaultCacheKeyFn(...args) {
  * @param {Fn<T, R>} fn
  * @returns {Fn<T, R>}
  */
-export function memoizeOnce(fn) {
+export function once(fn) {
   /** @type {R} */
   let result;
   let called = false;
-  return function memoizedOnce(...args) {
+  return function memoized(...args) {
     if (!called) {
       called = true;
       result = Reflect.apply(fn, null, args);

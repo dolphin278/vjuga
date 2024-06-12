@@ -1,118 +1,132 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import { Queue } from "../Queue.js";
+import {
+  make,
+  push,
+  pop,
+  size,
+  shift,
+  toArray,
+  dumpToArray,
+  unshift,
+} from "../Queue.js";
+
+/**
+ * @template T
+ * @typedef {import('../Queue.js').Queue<T>} Queue
+ */
 
 test("push/pop acts as LIFO", () => {
   /** @type {Queue<number>} */
-  const queue = new Queue();
-  queue.push(1);
-  queue.push(2);
-  queue.push(3);
+  const queue = make();
+  push(queue, 1);
+  push(queue, 2);
+  push(queue, 3);
 
-  assert.equal(queue.pop(), 3);
-  assert.equal(queue.pop(), 2);
-  assert.equal(queue.pop(), 1);
-  assert.equal(queue.size, 0, "There should be no items in the queue");
-  assert.equal(queue.pop(), void 0);
+  assert.equal(pop(queue), 3);
+  assert.equal(pop(queue), 2);
+  assert.equal(pop(queue), 1);
+  assert.equal(size(queue), 0, "There should be no items in the queue");
+  assert.equal(pop(queue), void 0);
 });
 
 test("push/shift acts as FIFO", () => {
   /** @type {Queue<number>} */
-  const queue = new Queue();
-  queue.push(1);
-  queue.push(2);
-  queue.push(3);
+  const queue = make();
+  push(queue, 1);
+  push(queue, 2);
+  push(queue, 3);
 
-  assert.equal(queue.shift(), 1);
-  assert.equal(queue.shift(), 2);
-  assert.equal(queue.shift(), 3);
-  assert.equal(queue.size, 0, "There should be no items in the queue");
-  assert.equal(queue.shift(), void 0);
+  assert.equal(shift(queue), 1);
+  assert.equal(shift(queue), 2);
+  assert.equal(shift(queue), 3);
+  assert.equal(size(queue), 0, "There should be no items in the queue");
+  assert.equal(shift(queue), void 0);
 });
 
 test("unshift/pop acts as FIFO", () => {
   /** @type {Queue<number>} */
-  const queue = new Queue();
-  queue.unshift(1);
-  queue.unshift(2);
-  queue.unshift(3);
+  const queue = make();
+  unshift(queue, 1);
+  unshift(queue, 2);
+  unshift(queue, 3);
 
-  assert.equal(queue.pop(), 1);
-  assert.equal(queue.pop(), 2);
-  assert.equal(queue.pop(), 3);
-  assert.equal(queue.size, 0, "There should be no items in the queue");
-  assert.equal(queue.pop(), void 0);
+  assert.equal(pop(queue), 1);
+  assert.equal(pop(queue), 2);
+  assert.equal(pop(queue), 3);
+  assert.equal(size(queue), 0, "There should be no items in the queue");
+  assert.equal(pop(queue), void 0);
 });
 
 test("unshift/shift acts as LIFO", () => {
   /** @type {Queue<number>} */
-  const queue = new Queue();
-  queue.unshift(1);
-  queue.unshift(2);
-  queue.unshift(3);
+  const queue = make();
+  unshift(queue, 1);
+  unshift(queue, 2);
+  unshift(queue, 3);
 
-  assert.equal(queue.shift(), 3);
-  assert.equal(queue.shift(), 2);
-  assert.equal(queue.shift(), 1);
-  assert.equal(queue.size, 0, "There should be no items in the queue");
-  assert.equal(queue.shift(), void 0);
+  assert.equal(shift(queue), 3);
+  assert.equal(shift(queue), 2);
+  assert.equal(shift(queue), 1);
+  assert.equal(size(queue), 0, "There should be no items in the queue");
+  assert.equal(shift(queue), void 0);
 });
 
 test("queue can handle more than 4 items", () => {
   /** @type {Queue<number>} */
-  const queue = new Queue();
+  const queue = make();
   for (let i = 0; i < 10; i++) {
-    queue.push(i);
+    push(queue, i);
   }
 
   for (let i = 9; i >= 0; i--) {
-    assert.equal(queue.pop(), i);
+    assert.equal(pop(queue), i);
   }
 
-  assert.equal(queue.size, 0, "There should be no items in the queue");
-  assert.equal(queue.pop(), void 0);
+  assert.equal(size(queue), 0, "There should be no items in the queue");
+  assert.equal(pop(queue), void 0);
 });
 
 test("queue can be exported to array", () => {
   /** @type {Queue<number>} */
-  const queue = new Queue();
+  const queue = make();
   for (let i = 0; i < 10; i++) {
-    queue.push(i);
+    push(queue, i);
   }
-  assert.deepEqual(queue.toArray(), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  assert.deepEqual(toArray(queue), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
   assert.deepEqual(
-    queue.toArray(),
+    toArray(queue),
     [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
-    "toArray() should not change the queue",
+    "toArray() should not change the queue"
   );
-  assert.equal(queue.size, 10);
+  assert.equal(size(queue), 10);
 });
 
 test("queue can be exported to array with emptying the queue", () => {
   /** @type {Queue<number>} */
-  const queue = new Queue();
+  const queue = make();
   for (let i = 0; i < 10; i++) {
-    queue.push(i);
+    push(queue, i);
   }
-  assert.deepEqual(queue.dumpToArray(), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
-  assert.equal(queue.size, 0, "There should be no items in the queue");
-  assert.deepEqual(queue.toArray(), [], "dumpToArray() should empty the queue");
+  assert.deepEqual(dumpToArray(queue), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  assert.equal(size(queue), 0, "There should be no items in the queue");
+  assert.deepEqual(toArray(queue), [], "dumpToArray() should empty the queue");
 });
 
 test("queue can be created from array", () => {
   /** @type {Queue<number>} */
-  const queue = new Queue([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
-  assert.deepEqual(queue.toArray(), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  const queue = make([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  assert.deepEqual(toArray(queue), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
 });
 
 test("queue can be created from iterable", () => {
   const iterable = new Set([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
-  const queue = Queue.from(iterable);
-  assert.deepEqual(queue.toArray(), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  const queue = make(iterable);
+  assert.deepEqual(toArray(queue), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
 });
 
 test("creation of array from iterable source recognized array as special case", () => {
   const array = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
-  const queue = Queue.from(array);
-  assert.deepEqual(queue.toArray(), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  const queue = make(array);
+  assert.deepEqual(toArray(queue), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
 });

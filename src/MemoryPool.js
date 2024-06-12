@@ -1,4 +1,4 @@
-import { Queue } from "./Queue.js";
+import * as Queue from "./Queue.js";
 
 /**
  * @template T
@@ -62,7 +62,7 @@ import { Queue } from "./Queue.js";
  * @property {Fn0<T>} factory
  * @property {Fn1<T, void>} [dispose]
  * @property {number} maxSize
- * @property {Queue<T>} freeList
+ * @property {Queue.Queue<T>} freeList
  * @property {Set<T>} acquiredSet
  */
 
@@ -73,7 +73,7 @@ import { Queue } from "./Queue.js";
  * @returns {MemoryPool<T>}
  */
 export function make({ factory, dispose, maxSize: _maxSize, minSize }) {
-  const freeList = new Queue();
+  const freeList = Queue.make();
   const acquiredSet = new Set();
 
   const maxSize = _maxSize ?? 1024;
@@ -83,7 +83,7 @@ export function make({ factory, dispose, maxSize: _maxSize, minSize }) {
 
   if (minSize !== undefined) {
     for (let i = 0; i < minSize; i++) {
-      freeList.push(Reflect.apply(factory, null, []));
+      Queue.push(freeList, Reflect.apply(factory, null, []));
     }
   }
 
@@ -103,8 +103,8 @@ export function make({ factory, dispose, maxSize: _maxSize, minSize }) {
  * @param {MemoryPool<T>} pool
  */
 export function acquire({ freeList, acquiredSet, maxSize, factory }) {
-  if (freeList.size > 0) {
-    const instance = freeList.pop();
+  if (Queue.size(freeList) > 0) {
+    const instance = Queue.pop(freeList);
 
     if (instance !== undefined) {
       acquiredSet.add(instance);
@@ -137,7 +137,7 @@ export function release({ acquiredSet, dispose, freeList }, instance) {
   }
 
   acquiredSet.delete(instance);
-  freeList.push(instance);
+  Queue.push(freeList, instance);
 }
 
 export const ArrayPool = make({

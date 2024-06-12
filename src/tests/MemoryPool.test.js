@@ -2,6 +2,7 @@ import { test } from "node:test";
 import * as assert from "node:assert";
 import * as MemoryPool from "../MemoryPool.js";
 import { acquire, release, make } from "../MemoryPool.js";
+import * as Queue from "../Queue.js";
 
 test("Memory Pool should allow us reuse our instances", () => {
   let allocated = 0;
@@ -29,7 +30,7 @@ test("Memory Pool should allow us reuse our instances", () => {
   assert.equal(
     instanceSentForDisposal,
     instance,
-    "Instance should be sent for disposal",
+    "Instance should be sent for disposal"
   );
 });
 
@@ -39,7 +40,11 @@ test("Memory pool preallocates minimum number of instances", () => {
     factory: () => ({}),
   });
 
-  assert.equal(pool.freeList.size, 2, "Pool should preallocate 2 instances");
+  assert.equal(
+    Queue.size(pool.freeList),
+    2,
+    "Pool should preallocate 2 instances"
+  );
 });
 
 test("Memory pool throws when someone tries to release object not retrieved from this pool", () => {
@@ -68,7 +73,7 @@ test("Memory pool throws when min size is greater than max size", () => {
         maxSize: 1,
         factory: () => ({}),
       }),
-    "Min size should be less than or equal to max size",
+    "Min size should be less than or equal to max size"
   );
 });
 
@@ -92,10 +97,10 @@ test("freeInstancesCount should return number of instances that are currently fr
   });
 
   const instance = acquire(pool);
-  assert.equal(pool.freeList.size, 0, "No instances should be free");
+  assert.equal(Queue.size(pool.freeList), 0, "No instances should be free");
 
   release(pool, instance);
-  assert.equal(pool.freeList.size, 1, "One instance should be free");
+  assert.equal(Queue.size(pool.freeList), 1, "One instance should be free");
 });
 
 test("Memory pool SHOULD NOT ALLOW to release instance twice", () => {

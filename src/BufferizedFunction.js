@@ -1,4 +1,4 @@
-import { Queue } from "./Queue.js";
+import * as Queue from "./Queue.js";
 import * as Ref from "./Ref.js";
 import * as FU from "./FunctionUtils.js";
 
@@ -20,15 +20,15 @@ export function make(fn) {
    * function is scheduled to be executed.
    */
   const scheduled = Ref.make(false);
-  /** @type {Queue<T>} */
-  const queue = new Queue();
+  /** @type {Queue.Queue<T>} */
+  const queue = Queue.make();
 
   /**
    * @param {T[]} args
    */
   return function bufferizedFn(...args) {
     for (let i = 0; i < args.length; i++) {
-      queue.push(args[i]);
+      Queue.push(queue, args[i]);
     }
     if (!scheduled.contents) {
       scheduled.contents = true;
@@ -39,11 +39,11 @@ export function make(fn) {
 
 /**
  * @template T
- * @param {Queue<T>} queue
+ * @param {Queue.Queue<T>} queue
  * @param {FU.Fn1<T[]>} fn
  * @param {Ref.RefCell<boolean>} scheduled
  */
 function worker(queue, fn, scheduled) {
   scheduled.contents = false;
-  Reflect.apply(fn, null, [queue.dumpToArray()]);
+  Reflect.apply(fn, null, [Queue.dumpToArray(queue)]);
 }

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import { memoize, memoizeOnce } from "../Memoization.js";
+import { memoize, once } from "../Memoization.js";
 
 test("function memoization caches results of given function", () => {
   /** @type {number[]} */
@@ -35,10 +35,10 @@ test("default cache key function is JSON.stringify", () => {
   assert.deepEqual(calls, [{ a: 1 }]);
 });
 
-test("memoizeOnce returns function that calls original function only once", () => {
+test("once returns function that calls original function only once", () => {
   let counter = 0;
   const fn = () => (counter++, counter);
-  const memoized = memoizeOnce(fn);
+  const memoized = once(fn);
   assert.equal(memoized(), 1);
   assert.equal(memoized(), 1);
   assert.equal(counter, 1);

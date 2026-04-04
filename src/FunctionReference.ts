@@ -17,9 +17,7 @@ import { resolve as pathResolve } from "node:path";
  * between execution contexts without passing the source code of the function
  * which is error prone.
  */
-export async function resolve(
-  reference: URL | string,
-): Promise<(...args: unknown[]) => unknown> {
+export async function resolve(reference: URL | string): Promise<(...args: unknown[]) => unknown> {
   if (typeof reference === "string") {
     reference = new URL(`file://${pathResolve(reference)}`);
   }
@@ -40,11 +38,7 @@ export async function resolve(
   if (typeof symbol === "function") {
     return symbol as (...args: unknown[]) => unknown;
   } else {
-    throw new ReferencedSymbolIsNotAFunction(
-      reference,
-      reference,
-      typeof symbol,
-    );
+    throw new ReferencedSymbolIsNotAFunction(reference, reference, typeof symbol);
   }
 }
 

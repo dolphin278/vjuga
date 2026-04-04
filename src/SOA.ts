@@ -18,10 +18,7 @@ const idxSymbol: unique symbol = Symbol("index");
  *
  * Note: Object.defineProperty + this = dynamic dispatch — perf trade-off; mark as profiling candidate.
  */
-export function createView<T extends object>(
-  soa: SOA<T>,
-  index = 0,
-): T & { index: number } {
+export function createView<T extends object>(soa: SOA<T>, index = 0): T & { index: number } {
   const view = {
     [idxSymbol]: index,
   } as T & { [idxSymbol]: number; index: number };
@@ -62,9 +59,7 @@ export function createView<T extends object>(
 export function push<T>(soa: SOA<T>, item: T): void {
   for (const key in soa) {
     const k = key as keyof T & string;
-    (soa as Record<string, unknown[]>)[k].push(
-      (item as Record<string, unknown>)[k],
-    );
+    (soa as Record<string, unknown[]>)[k].push((item as Record<string, unknown>)[k]);
   }
 }
 
@@ -72,9 +67,7 @@ export function pop<T>(soa: SOA<T>): T {
   const item = Object.create(null) as T;
   for (const key in soa) {
     const k = key as keyof T & string;
-    (item as Record<string, unknown>)[k] = (
-      soa as Record<string, unknown[]>
-    )[k].pop();
+    (item as Record<string, unknown>)[k] = (soa as Record<string, unknown[]>)[k].pop();
   }
   return item;
 }
@@ -83,9 +76,7 @@ export function get<T>(soa: SOA<T>, index: number): T {
   const item = Object.create(null) as T;
   for (const key in soa) {
     const k = key as keyof T & string;
-    (item as Record<string, unknown>)[k] = (
-      soa as Record<string, unknown[]>
-    )[k][index];
+    (item as Record<string, unknown>)[k] = (soa as Record<string, unknown[]>)[k][index];
   }
   return item;
 }
@@ -93,15 +84,10 @@ export function get<T>(soa: SOA<T>, index: number): T {
 export function set<T>(soa: SOA<T>, index: number, item: T): void {
   for (const key in item) {
     const k = key as keyof T & string;
-    (soa as Record<string, unknown[]>)[k][index] = (
-      item as Record<string, unknown>
-    )[k];
+    (soa as Record<string, unknown[]>)[k][index] = (item as Record<string, unknown>)[k];
   }
 }
 
-export function getSlice<T, K extends keyof T>(
-  soa: SOA<T>,
-  sliceName: K,
-): T[K][] {
+export function getSlice<T, K extends keyof T>(soa: SOA<T>, sliceName: K): T[K][] {
   return soa[sliceName];
 }

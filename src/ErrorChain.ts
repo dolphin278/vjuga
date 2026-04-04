@@ -31,10 +31,7 @@ export function toArray(error: Error): Error[] {
  * Function takes predicate, walks through the error chain and returns
  * the error if the predicate matches any error in the chain.
  */
-export function find(
-  predicate: Predicate<unknown>,
-  error: Error,
-): Error | undefined {
+export function find(predicate: Predicate<unknown>, error: Error): Error | undefined {
   let current: unknown = error;
 
   while (current instanceof Error) {

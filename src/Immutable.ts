@@ -10,15 +10,16 @@
  * Note: We don't include Array -> ReadonlyArray, because it's covered by the
  * object case and it turns tuples into arrays, losing the type information.
  */
-export type Immutable<T> = T extends Map<infer K, infer V>
-  ? ReadonlyMap<Immutable<K>, Immutable<V>>
-  : T extends Set<infer U>
-    ? ReadonlySet<Immutable<U>>
-    : T extends Promise<infer U>
-      ? Promise<Immutable<U>>
-      : T extends object
-        ? { readonly [K in keyof T]: Immutable<T[K]> }
-        : T;
+export type Immutable<T> =
+  T extends Map<infer K, infer V>
+    ? ReadonlyMap<Immutable<K>, Immutable<V>>
+    : T extends Set<infer U>
+      ? ReadonlySet<Immutable<U>>
+      : T extends Promise<infer U>
+        ? Promise<Immutable<U>>
+        : T extends object
+          ? { readonly [K in keyof T]: Immutable<T[K]> }
+          : T;
 
 /**
  * Mark a value as immutable. Note - this function does not actually make the

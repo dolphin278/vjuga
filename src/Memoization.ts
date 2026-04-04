@@ -18,8 +18,7 @@ export function memoize<T extends readonly unknown[], R, K = string>(
   fn: Fn<T, R>,
   options?: MemoizationOptions<T, R, K>,
 ): Fn<T, R> {
-  const cacheKeyFn = (options?.cacheKeyFn ??
-    defaultCacheKeyFn) as unknown as (args: T) => K;
+  const cacheKeyFn = (options?.cacheKeyFn ?? defaultCacheKeyFn) as unknown as (args: T) => K;
   const cache: Map<K, R> = options?.cache ?? new Map();
 
   return function memoized(...args: T): R {

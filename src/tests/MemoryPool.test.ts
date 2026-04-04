@@ -27,11 +27,7 @@ test("Memory Pool should allow us reuse our instances", () => {
   assert.equal(instance, instance2, "Instances should be reused");
   assert.equal(allocated, 1, "Factory should only be called once");
   assert.equal(disposed, 1, "Dispose should be called on instance");
-  assert.equal(
-    instanceSentForDisposal,
-    instance,
-    "Instance should be sent for disposal",
-  );
+  assert.equal(instanceSentForDisposal, instance, "Instance should be sent for disposal");
 });
 
 test("Memory pool preallocates minimum number of instances", () => {
@@ -40,11 +36,7 @@ test("Memory pool preallocates minimum number of instances", () => {
     factory: () => ({}),
   });
 
-  assert.equal(
-    Queue.size(pool.freeList),
-    2,
-    "Pool should preallocate 2 instances",
-  );
+  assert.equal(Queue.size(pool.freeList), 2, "Pool should preallocate 2 instances");
 });
 
 test("Memory pool throws when someone tries to release object not retrieved from this pool", () => {

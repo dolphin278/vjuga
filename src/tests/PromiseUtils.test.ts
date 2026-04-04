@@ -17,10 +17,7 @@ test("PromiseUtils.props", async () => {
 });
 
 test("PromiseUtils.propsMap", async () => {
-  const map: Map<string, string | Promise<number>> = new Map<
-    string,
-    string | Promise<number>
-  >([
+  const map: Map<string, string | Promise<number>> = new Map<string, string | Promise<number>>([
     ["a", Promise.resolve(1)],
     ["b", Promise.resolve(2)],
     ["c", "asdf"],

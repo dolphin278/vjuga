@@ -1,15 +1,6 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import {
-  make,
-  push,
-  pop,
-  size,
-  shift,
-  toArray,
-  dumpToArray,
-  unshift,
-} from "../Queue.js";
+import { make, push, pop, size, shift, toArray, dumpToArray, unshift } from "../Queue.js";
 
 test("push/pop acts as LIFO", () => {
   const queue = make<number>();

@@ -11,10 +11,7 @@ test("FunctionReference", async function () {
 });
 
 test("attempt to resolve invalid module triggers error", async () => {
-  await assert.rejects(
-    resolve("NON_EXISTENT_MODULE#default"),
-    /Failed to import module/,
-  );
+  await assert.rejects(resolve("NON_EXISTENT_MODULE#default"), /Failed to import module/);
 });
 
 test("referencing non-function export throws an error", async () => {

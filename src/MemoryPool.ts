@@ -30,9 +30,7 @@ export interface MemoryPool<T> {
   acquiredSet: Set<T>;
 }
 
-export function make<T extends object>(
-  options: MemoryPoolConfig<T>,
-): MemoryPool<T> {
+export function make<T extends object>(options: MemoryPoolConfig<T>): MemoryPool<T> {
   const { factory, dispose, maxSize: _maxSize, minSize } = options;
   const freeList = Queue.make<T>();
   const acquiredSet = new Set<T>();
@@ -98,7 +96,7 @@ export function release<T extends object>(
 }
 
 export const ArrayPool: MemoryPool<unknown[]> = make({
-  factory: () => [],
+  factory: (): unknown[] => [],
   dispose: (arr) => {
     arr.length = 0;
   },

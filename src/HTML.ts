@@ -1,11 +1,11 @@
 // one-time module init, not a hot path
-const [
-  GT_CHAR_CODE,
-  LT_CHAR_CODE,
-  AMP_CHAR_CODE,
-  QUOTE_CHAR_CODE,
-  APOS_CHAR_CODE,
-] = [">", "<", "&", '"', "'"].map((x) => x.charCodeAt(0));
+const [GT_CHAR_CODE, LT_CHAR_CODE, AMP_CHAR_CODE, QUOTE_CHAR_CODE, APOS_CHAR_CODE] = [
+  ">",
+  "<",
+  "&",
+  '"',
+  "'",
+].map((x) => x.charCodeAt(0));
 
 const GT_STR = "&gt;";
 const LT_STR = "&lt;";
@@ -58,9 +58,7 @@ const _escapeImpl = (str: string): string => {
   return result;
 };
 
-declare const Bun:
-  | { escapeHTML: (str: string) => string | Uint8Array }
-  | undefined;
+declare const Bun: { escapeHTML: (str: string) => string | Uint8Array } | undefined;
 
 export const escape: (str: string) => string =
   typeof Bun !== "undefined" && typeof Bun.escapeHTML === "function"

@@ -112,5 +112,10 @@ tsconfig.tsbuildinfo
 .vscode
 
 src/**/*.ts
+!src/**/*.d.ts
 src/tests/
 src/benchmarks/
+.claude/
+references/
+CLAUDE.md
+tsconfig.json

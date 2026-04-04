@@ -1,10 +1,4 @@
-export type JSONValue =
-  | string
-  | number
-  | boolean
-  | null
-  | JSONObject
-  | JSONArray;
+export type JSONValue = string | number | boolean | null | JSONObject | JSONArray;
 export type JSONArray = Array<JSONValue>;
 export type JSONObject = { [key: string]: JSONValue };
 
@@ -21,8 +15,7 @@ export const stringify = JSON.stringify;
  * At the same time, JSONValue is more concrete than `unknown`, because
  * JSON.parse can only return a subset of all possible JavaScript values.
  */
-export const parseExn = (str: string): JSONValue =>
-  JSON.parse(str) as JSONValue;
+export const parseExn = (str: string): JSONValue => JSON.parse(str) as JSONValue;
 
 /**
  * Safe version of JSON.parse that returns `undefined` in case parsing fails.

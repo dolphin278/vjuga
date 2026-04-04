@@ -30,8 +30,8 @@ test("withResource", async () => {
 
   await test("withResource catches exceptions and rethrows them", async () => {
     let resourceAllocated: object | null = null;
-    let disposedResource: object | null = null;
-    let providedResource: object | null = null;
+    let _disposedResource: object | null = null;
+    let _providedResource: object | null = null;
 
     await assert.rejects(
       async () => {
@@ -42,12 +42,12 @@ test("withResource", async () => {
               return Promise.resolve(resourceAllocated);
             },
             dispose: (resource) => {
-              disposedResource = resource;
+              _disposedResource = resource;
               return Promise.resolve(undefined);
             },
           },
           async (resourceGiven) => {
-            providedResource = resourceGiven;
+            _providedResource = resourceGiven;
             throw new Error("Some error");
           },
         );

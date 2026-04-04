@@ -18,21 +18,13 @@ test("BatchExecutor batches function invocation and delivers corresponding resul
 
   const batchExecutor = make(fn);
 
-  const result1 = Promise.all([
-    batchExecutor(1),
-    batchExecutor(2),
-    batchExecutor(3),
-  ]);
+  const result1 = Promise.all([batchExecutor(1), batchExecutor(2), batchExecutor(3)]);
 
   await setTimeoutPromise();
   const result2 = Promise.all([batchExecutor(4), batchExecutor(5)]);
   const result = [...(await result1), ...(await result2)];
 
-  assert.deepEqual(
-    result,
-    [2, 4, 6, 8, 10],
-    "Batched function returns correct results",
-  );
+  assert.deepEqual(result, [2, 4, 6, 8, 10], "Batched function returns correct results");
 
   assert.deepEqual(
     invocationArgs,

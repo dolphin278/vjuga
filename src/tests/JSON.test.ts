@@ -50,12 +50,7 @@ describe("JSON", () => {
     });
 
     it("should parse arrays", () => {
-      assert.deepEqual(parseExn('[1,"asdf",true,null]'), [
-        1,
-        "asdf",
-        true,
-        null,
-      ]);
+      assert.deepEqual(parseExn('[1,"asdf",true,null]'), [1, "asdf", true, null]);
     });
 
     it("should parse objects", () => {

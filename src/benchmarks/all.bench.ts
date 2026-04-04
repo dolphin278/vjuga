@@ -16,35 +16,35 @@
  */
 
 const modules = [
-  './Ref.bench.js',
-  './Queue.bench.js',
-  './MemoryPool.bench.js',
-  './BatchExecutor.bench.js',
-  './Memoization.bench.js',
-  './FunctionUtils.bench.js',
-  './HTML.bench.js',
-  './Immutable.bench.js',
-  './JSON.bench.js',
-  './ErrorChain.bench.js',
-  './Deferred.bench.js',
-  './SOA.bench.js',
-  './BufferizedFunction.bench.js',
-  './ManagedResource.bench.js',
-  './PromiseUtils.bench.js',
-  './FunctionReference.bench.js',
-] as const
+  "./Ref.bench.js",
+  "./Queue.bench.js",
+  "./MemoryPool.bench.js",
+  "./BatchExecutor.bench.js",
+  "./Memoization.bench.js",
+  "./FunctionUtils.bench.js",
+  "./HTML.bench.js",
+  "./Immutable.bench.js",
+  "./JSON.bench.js",
+  "./ErrorChain.bench.js",
+  "./Deferred.bench.js",
+  "./SOA.bench.js",
+  "./BufferizedFunction.bench.js",
+  "./ManagedResource.bench.js",
+  "./PromiseUtils.bench.js",
+  "./FunctionReference.bench.js",
+] as const;
 
-console.log('=== vjuga benchmark suite ===\n')
+console.log("=== vjuga benchmark suite ===\n");
 
 for (const mod of modules) {
-  const name = mod.replace('./', '').replace('.bench.js', '')
-  console.log(`\n${'─'.repeat(60)}`)
-  console.log(`  ${name}`)
-  console.log('─'.repeat(60))
+  const name = mod.replace("./", "").replace(".bench.js", "");
+  console.log(`\n${"─".repeat(60)}`);
+  console.log(`  ${name}`);
+  console.log("─".repeat(60));
   // Dynamic import runs each file's top-level await (including run()) in sequence
-  await import(mod)
+  await import(mod);
 }
 
-console.log('\n=== all benchmarks complete ===')
+console.log("\n=== all benchmarks complete ===");
 
-export {}
+export {};

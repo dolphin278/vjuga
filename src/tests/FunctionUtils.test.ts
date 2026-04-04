@@ -1,13 +1,6 @@
 import * as assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import {
-  partial,
-  partialNamed,
-  pipe,
-  spread,
-  tuple,
-  tupled,
-} from "../FunctionUtils.js";
+import { partial, partialNamed, pipe, spread, tuple, tupled } from "../FunctionUtils.js";
 
 describe("FunctionUtils", () => {
   it("partial", () => {
@@ -38,7 +31,7 @@ describe("FunctionUtils", () => {
     assert.deepEqual(spreadFn(1, 2), 3);
   });
 
-  describe("pipe composition", (t) => {
+  describe("pipe composition", (_t) => {
     it("should throw if no functions are passed", () => {
       assert.throws(() => pipe(), Error);
     });

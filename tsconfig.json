@@ -28,7 +28,9 @@
     "strict": true /* Enable all strict type-checking options. */,
 
     /* Completeness */
-    "skipLibCheck": true /* Skip type checking all .d.ts files. */
+    "skipLibCheck": true /* Skip type checking all .d.ts files. */,
+    "types": ["node"] /* Pull in @types/node globals (process, console, setTimeout, URL, etc.) */
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/tests/**", "src/benchmarks/**"]
 }

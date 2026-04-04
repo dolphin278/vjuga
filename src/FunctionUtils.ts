@@ -2,10 +2,7 @@
  * Root function type that is independent of the context in which it is called.
  * Hence, it is a function that does not have `this` parameter.
  */
-export type Fn<T extends readonly unknown[], R = void> = (
-  this: void,
-  ...args: T
-) => R;
+export type Fn<T extends readonly unknown[], R = void> = (this: void, ...args: T) => R;
 
 /** Function of arity 0. */
 export type Fn0<R> = Fn<[], R>;
@@ -83,8 +80,8 @@ export function unreachable(_: never): never {
  * Pipe describes type of left-to-right function composition.
  */
 export type Pipe<T> = T extends [
-  Fn<infer A, infer B>,
-  Fn1<infer B, infer C>,
+  Fn<infer A, infer _B>, // _B is unified across both infer positions to constrain fn chaining
+  Fn1<infer _B, infer C>,
   ...infer Rest,
 ]
   ? Pipe<[Fn<A, C>, ...Rest]>
@@ -106,7 +103,8 @@ export function pipe<A extends unknown[], B, C, D, E>(fn0: Fn<A, B>, fn1: Fn1<B,
 // prettier-ignore
 export function pipe<A extends unknown[], B, C, D, E, F>(fn0: Fn<A, B>, fn1: Fn1<B, C>, fn2: Fn1<C, D>, fn3: Fn1<D, E>, fn4: Fn1<E, F>): Fn<A, F>;
 // prettier-ignore
-export function pipe(...fns: Fn<unknown[], unknown>[]): Fn<unknown[], unknown>;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function pipe(...fns: ((...args: any) => any)[]): Fn<unknown[], unknown>;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function pipe(...fns: ((...args: any[]) => any)[]): (...args: unknown[]) => unknown {
   switch (fns.length) {

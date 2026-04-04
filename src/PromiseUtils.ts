@@ -12,9 +12,7 @@
  *
  * ```
  */
-export async function props<T extends object>(
-  obj: T,
-): Promise<{ [K in keyof T]: Awaited<T[K]> }> {
+export async function props<T extends object>(obj: T): Promise<{ [K in keyof T]: Awaited<T[K]> }> {
   const keys: string[] = [];
   const promises: unknown[] = [];
 
@@ -51,9 +49,7 @@ export async function props<T extends object>(
  * await propsMap(arg); // Map { "a" => 1, "b" => 2 }
  * ```
  */
-export async function propsMap<K, V>(
-  map: Map<K, V>,
-): Promise<Map<K, Awaited<V>>> {
+export async function propsMap<K, V>(map: Map<K, V>): Promise<Map<K, Awaited<V>>> {
   const keys: K[] = [];
   const promises: V[] = [];
 

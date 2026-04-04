@@ -35,44 +35,42 @@ export function make<T, R>(
     },
   });
 
-  const worker = makeBufferizedFn(
-    async (args: Request<T, R>[]): Promise<void> => {
-      let i = 0;
-      try {
-        const invocationArgs = Array<T>(args.length);
-        for (let i = 0; i < args.length; i++) {
-          invocationArgs[i] = args[i].arg as T;
-        }
+  const worker = makeBufferizedFn(async (args: Request<T, R>[]): Promise<void> => {
+    let i = 0;
+    try {
+      const invocationArgs = Array<T>(args.length);
+      for (let i = 0; i < args.length; i++) {
+        invocationArgs[i] = args[i].arg as T;
+      }
 
-        const result = await Reflect.apply(fn, void 0, [invocationArgs]);
+      const result = await Reflect.apply(fn, void 0, [invocationArgs]);
 
-        if (result.length !== args.length) {
-          throw new Error(
-            `BatchExecutor: fn returned ${result.length} results, but expected ${args.length}`,
-          );
-        }
+      if (result.length !== args.length) {
+        throw new Error(
+          `BatchExecutor: fn returned ${result.length} results, but expected ${args.length}`,
+        );
+      }
 
-        for (i = 0; i < result.length; i++) {
-          const res = result[i];
-          // external API boundary: PromiseSettledResult discriminant
-          if (res.status === "fulfilled") {
-            args[i].deferred!.resolve(res.value);
-          } else {
-            args[i].deferred!.reject(res.reason);
-          }
-        }
-      } catch (err) {
-        // Reject rest of the requests
-        for (let k = i; k < args.length; k++) {
-          args[k].deferred!.reject(err);
-        }
-      } finally {
-        for (let i = 0; i < args.length; i++) {
-          MemoryPool.release(RequestPool, args[i]);
+      for (i = 0; i < result.length; i++) {
+        const res = result[i];
+        // external API boundary: PromiseSettledResult discriminant
+        if (res.status === "fulfilled") {
+          args[i].deferred!.resolve(res.value);
+        } else {
+          args[i].deferred!.reject(res.reason);
         }
       }
-    },
-  );
+    } catch (err) {
+      // Reject rest of the requests
+      for (let k = i; k < args.length; k++) {
+        args[k].deferred!.reject(err);
+      }
+    } finally {
+      for (let i = 0; i < args.length; i++) {
+        MemoryPool.release(RequestPool, args[i]);
+      }
+    }
+  });
 
   return function (arg: T): Promise<R> {
     const deferred = Deferred.make<R>();

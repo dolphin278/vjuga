@@ -120,3 +120,4 @@ src/**/*.d.ts.map
 src/**/*.js
 src/**/*.d.ts
 *.tsbuildinfo
+.claude/worktrees/

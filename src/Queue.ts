@@ -28,15 +28,11 @@ export function make<T>(items?: Iterable<T>): Queue<T> {
 }
 
 export function size<T>(queue: Queue<T>): number {
-  const head = queue[kHead];
-  const tail = queue[kTail];
-  if (tail === head) {
-    return 0;
-  }
-  if (tail > head) {
-    return tail - head;
-  }
-  return queue[kList].length - head + tail;
+  // Branchless circular-buffer size:
+  //   tail=head  → (0 + len) & (len-1) = 0       (len is always a power of 2)
+  //   tail>head  → (t-h + len) & (len-1) = t-h
+  //   tail<head  → (t-h + len) & (len-1) = len-h+t
+  return (queue[kTail] - queue[kHead] + queue[kList].length) & queue[kCapacityMask];
 }
 
 export function push<T>(queue: Queue<T>, value: T): void {
@@ -144,25 +140,16 @@ export function dumpToArray<T>(queue: Queue<T>): Array<T> {
 
   if (tail >= head) {
     for (let i = head; i < tail; i++) {
-      const v = list[i];
-      if (v !== undefined) {
-        result[i - head] = v;
-      }
+      result[i - head] = list[i] as T;
       list[i] = void 0;
     }
   } else {
     for (let i = head; i < list.length; i++) {
-      const v = list[i];
-      if (v !== undefined) {
-        result[i - head] = v;
-      }
+      result[i - head] = list[i] as T;
       list[i] = void 0;
     }
     for (let i = 0; i < tail; i++) {
-      const v = list[i];
-      if (v !== undefined) {
-        result[i + list.length - head] = v;
-      }
+      result[i + list.length - head] = list[i] as T;
       list[i] = void 0;
     }
   }

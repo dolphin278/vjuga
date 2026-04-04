@@ -93,6 +93,16 @@ bench("Queue.toArray (10 elements)", () => {
   return Queue.toArray(q);
 });
 
+bench("Queue.dumpToArray (10 elements)", () => {
+  const q = Queue.make<number>([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  return Queue.dumpToArray(q);
+});
+
+bench("Queue.size (branchless)", () => {
+  const q = Queue.make<number>([1, 2, 3, 4, 5]);
+  return Queue.size(q);
+});
+
 await run();
 
 // --- Memory benchmark ---

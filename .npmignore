@@ -111,4 +111,6 @@ typings/
 tsconfig.tsbuildinfo
 .vscode
 
-src/tests
+src/**/*.ts
+src/tests/
+src/benchmarks/

@@ -1,11 +1,13 @@
 import { make as makeBufferizedFn } from "./BufferizedFunction.js";
 import * as Deferred from "./Deferred.js";
 import * as MemoryPool from "./MemoryPool.js";
+import type { Fn1 } from "./FunctionUtils.js";
 
-/**
- * @template T, U
- * @typedef {import('./FunctionUtils.js').Fn1<T, U>} Fn1
- */
+/** Lifted to module scope — no inner interfaces in TS. */
+interface Request<T, R> {
+  arg: T | null;
+  deferred: Deferred.Deferred<R> | null;
+}
 
 /**
  * BatchExecutor is an implementation of dataloader pattern.
@@ -18,31 +20,15 @@ import * as MemoryPool from "./MemoryPool.js";
  * Compared to BufferizedFunction, BatchExecutor allows returning values
  * to original caller using deferred objects and allows wrapped function to
  * return rejections for some of the arguments.
- *
- * @template T, R
- * @param {Fn1<T[], Promise<PromiseSettledResult<R>[]>>} fn
  */
-export function make(fn) {
-  /**
-   * @typedef {{ arg: T | null, deferred: Deferred.Deferred<R> | null }} Request
-   */
-
-  /**
-   * Pool of requests. We use MemoryPool to avoid creating new objects
-   *
-   * @type {MemoryPool.MemoryPool<Request>}
-   */
-  const RequestPool = MemoryPool.make({
-    /**
-     * @returns {Request}
-     */
+export function make<T, R>(
+  fn: Fn1<T[], Promise<PromiseSettledResult<R>[]>>,
+): (arg: T) => Promise<R> {
+  const RequestPool = MemoryPool.make<Request<T, R>>({
     factory: () => ({
       arg: null,
       deferred: null,
     }),
-    /**
-     * @param {Request} request
-     */
     dispose: (request) => {
       request.arg = null;
       request.deferred = null;
@@ -50,15 +36,12 @@ export function make(fn) {
   });
 
   const worker = makeBufferizedFn(
-    /**
-     * @param {{ arg: T; deferred: Deferred.Deferred<R> }[]} args
-     */
-    async (args) => {
+    async (args: Request<T, R>[]): Promise<void> => {
       let i = 0;
       try {
-        const invocationArgs = Array(args.length);
+        const invocationArgs = Array<T>(args.length);
         for (let i = 0; i < args.length; i++) {
-          invocationArgs[i] = args[i].arg;
+          invocationArgs[i] = args[i].arg as T;
         }
 
         const result = await Reflect.apply(fn, void 0, [invocationArgs]);
@@ -71,16 +54,17 @@ export function make(fn) {
 
         for (i = 0; i < result.length; i++) {
           const res = result[i];
+          // external API boundary: PromiseSettledResult discriminant
           if (res.status === "fulfilled") {
-            args[i].deferred.resolve(res.value);
+            args[i].deferred!.resolve(res.value);
           } else {
-            args[i].deferred.reject(res.reason);
+            args[i].deferred!.reject(res.reason);
           }
         }
       } catch (err) {
         // Reject rest of the requests
         for (let k = i; k < args.length; k++) {
-          args[k].deferred.reject(err);
+          args[k].deferred!.reject(err);
         }
       } finally {
         for (let i = 0; i < args.length; i++) {
@@ -90,23 +74,12 @@ export function make(fn) {
     },
   );
 
-  /**
-   * @param {T} arg
-   */
-  return function (arg) {
-    /**
-     * @type {Deferred.Deferred<R>}
-     */
-    const deferred = Deferred.make();
+  return function (arg: T): Promise<R> {
+    const deferred = Deferred.make<R>();
     const request = MemoryPool.acquire(RequestPool);
     request.arg = arg;
     request.deferred = deferred;
-    worker(/** @type {NonNullableProperties<typeof request>} */ (request));
+    (worker as (req: Request<T, R>) => void)(request);
     return deferred.promise;
   };
 }
-
-/**
- * @template T
- * @typedef {{[K in keyof T]: NonNullable<T[K]>;}} NonNullableProperties
- */

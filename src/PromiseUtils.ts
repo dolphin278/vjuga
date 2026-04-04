@@ -11,25 +11,23 @@
  *  await props(arg); // { a: 1, b: "asdf" }
  *
  * ```
- *
- * @template {object} T
- * @param {T} obj
- * @returns {Promise<{ [K in keyof T]: Awaited<T[K]>; }>}
  */
-export async function props(obj) {
-  const keys = [];
-  const promises = [];
+export async function props<T extends object>(
+  obj: T,
+): Promise<{ [K in keyof T]: Awaited<T[K]> }> {
+  const keys: string[] = [];
+  const promises: unknown[] = [];
 
-  for (var key in obj) {
+  for (const key in obj) {
     keys.push(key);
     promises.push(obj[key]);
   }
 
   const values = await Promise.all(promises);
-  const result = Object.create(null);
+  const result = Object.create(null) as { [K in keyof T]: Awaited<T[K]> };
 
-  for (var i = 0; i < keys.length; i++) {
-    result[keys[i]] = values[i];
+  for (let i = 0; i < keys.length; i++) {
+    (result as Record<string, unknown>)[keys[i]] = values[i];
   }
 
   return result;
@@ -52,26 +50,23 @@ export async function props(obj) {
  *
  * await propsMap(arg); // Map { "a" => 1, "b" => 2 }
  * ```
- *
- * @template K
- * @template V
- * @param {Map<K, V>} map
- * @returns {Promise<Map<K, Awaited<V>>>}
  */
-export async function propsMap(map) {
-  const keys = [];
-  const promises = [];
+export async function propsMap<K, V>(
+  map: Map<K, V>,
+): Promise<Map<K, Awaited<V>>> {
+  const keys: K[] = [];
+  const promises: V[] = [];
 
-  for (var [key, value] of map) {
+  for (const [key, value] of map) {
     keys.push(key);
     promises.push(value);
   }
 
   const values = await Promise.all(promises);
-  const result = new Map();
+  const result = new Map<K, Awaited<V>>();
 
-  for (var i = 0; i < keys.length; i++) {
-    result.set(keys[i], values[i]);
+  for (let i = 0; i < keys.length; i++) {
+    result.set(keys[i], values[i] as Awaited<V>);
   }
 
   return result;

@@ -1,32 +1,24 @@
 import * as Queue from "./Queue.js";
 import * as Ref from "./Ref.js";
-import * as FU from "./FunctionUtils.js";
+import type { Fn, Fn1 } from "./FunctionUtils.js";
 
 /**
  * Higher order function that returns a function that accumulates arguments from
  * individual calls and invokes `fn` with all accumulated arguments.
  *
- * Note: this functions does not do any error handling so if an exception is thrown
- * during exection of `fn` over batch of arguments, it will turn into unhandled
+ * Note: this function does not do any error handling so if an exception is thrown
+ * during execution of `fn` over batch of arguments, it will turn into unhandled
  * exception. Error handling should be done inside `fn` itself.
- *
- * @template T
- * @param {FU.Fn1<T[]>} fn
- * @returns {FU.Fn<T[]>}
  */
-export function make(fn) {
+export function make<T>(fn: Fn1<T[]>): Fn<T[]> {
   /**
    * Mutable reference to a boolean flag that indicates whether the `worker`
    * function is scheduled to be executed.
    */
   const scheduled = Ref.make(false);
-  /** @type {Queue.Queue<T>} */
-  const queue = Queue.make();
+  const queue: Queue.Queue<T> = Queue.make();
 
-  /**
-   * @param {T[]} args
-   */
-  return function bufferizedFn(...args) {
+  return function bufferizedFn(...args: T[]): void {
     for (let i = 0; i < args.length; i++) {
       Queue.push(queue, args[i]);
     }
@@ -37,13 +29,11 @@ export function make(fn) {
   };
 }
 
-/**
- * @template T
- * @param {Queue.Queue<T>} queue
- * @param {FU.Fn1<T[]>} fn
- * @param {Ref.RefCell<boolean>} scheduled
- */
-function worker(queue, fn, scheduled) {
+function worker<T>(
+  queue: Queue.Queue<T>,
+  fn: Fn1<T[]>,
+  scheduled: Ref.RefCell<boolean>,
+): void {
   scheduled.contents = false;
   Reflect.apply(fn, null, [Queue.dumpToArray(queue)]);
 }

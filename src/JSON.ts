@@ -1,17 +1,15 @@
-/**
- * @template {readonly unknown[]} T
- * @typedef {import("./FunctionUtils.js").Fn1<T>} Fn1<T>
- */
+export type JSONValue =
+  | string
+  | number
+  | boolean
+  | null
+  | JSONObject
+  | JSONArray;
+export type JSONArray = Array<JSONValue>;
+export type JSONObject = { [key: string]: JSONValue };
 
 /**
- * @typedef {string | number | boolean | null | JSONObject | JSONArray} JSONValue
- * @typedef {Array<JSONValue>} JSONArray
- * @typedef {{[key: string | number]: JSONValue}} JSONObject
- */
-
-/**
- * @param {JSONValue} value
- * @returns {string}
+ * Alias for JSON.stringify.
  */
 export const stringify = JSON.stringify;
 
@@ -22,19 +20,14 @@ export const stringify = JSON.stringify;
  *
  * At the same time, JSONValue is more concrete than `unknown`, because
  * JSON.parse can only return a subset of all possible JavaScript values.
- *
- * @param {string} json
- * @returns {JSONValue}
  */
-export const parseExn = JSON.parse;
+export const parseExn = (str: string): JSONValue =>
+  JSON.parse(str) as JSONValue;
 
 /**
  * Safe version of JSON.parse that returns `undefined` in case parsing fails.
- *
- * @param {string} json
- * @returns {JSONValue | undefined}
  */
-export const parse = (json) => {
+export const parse = (json: string): JSONValue | undefined => {
   try {
     return parseExn(json);
   } catch {

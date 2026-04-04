@@ -116,3 +116,7 @@ dist
 # Generated type definitions
 src/**/*.d.ts
 src/**/*.d.ts.map
+
+src/**/*.js
+src/**/*.d.ts
+*.tsbuildinfo

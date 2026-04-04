@@ -17,10 +17,6 @@
     "verbatimModuleSyntax": true /* Ensure that import statements are generated using the original module syntax. */,
     "moduleResolution": "Bundler" /* Specify how TypeScript looks up a file from a given module specifier. */,
 
-    /* JavaScript Support */
-    "allowJs": true /* Allow JavaScript files to be a part of your program. */,
-    "checkJs": true /* Enable error reporting in type-checked JavaScript files. */,
-
     /* Emit */
     "declaration": true /* Generate .d.ts files from TypeScript and JavaScript files in your project. */,
 
@@ -34,5 +30,5 @@
     /* Completeness */
     "skipLibCheck": true /* Skip type checking all .d.ts files. */
   },
-  "include": ["src/**/*.js", "src/**/*.ts"]
+  "include": ["src/**/*.ts"]
 }

@@ -3,12 +3,8 @@ import * as assert from "node:assert/strict";
 import { memoize, once } from "../Memoization.js";
 
 test("function memoization caches results of given function", () => {
-  /** @type {number[]} */
-  let calls = [];
-  /**
-   * @param {number} a
-   */
-  const fn = (a) => (calls.push(a), a + 1);
+  let calls: number[] = [];
+  const fn = (a: number) => (calls.push(a), a + 1);
   const memoized = memoize(fn);
 
   assert.equal(memoized(1), 2);
@@ -20,14 +16,8 @@ test("function memoization caches results of given function", () => {
 });
 
 test("default cache key function is JSON.stringify", () => {
-  /** @type {{a: number}[]} */
-  let calls = [];
-  /**
-   *
-   * @param {{a: number}} a
-   * @returns
-   */
-  const fn = (a) => (calls.push(a), a.a + 1);
+  let calls: { a: number }[] = [];
+  const fn = (a: { a: number }) => (calls.push(a), a.a + 1);
   const memoized = memoize(fn);
   assert.equal(memoized({ a: 1 }), 2);
   assert.equal(memoized({ a: 1 }), 2);

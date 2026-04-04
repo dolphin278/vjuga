@@ -17,27 +17,23 @@ test("PromiseUtils.props", async () => {
 });
 
 test("PromiseUtils.propsMap", async () => {
-  /**
-   * @type {Map<string,  string | Promise<number>>}
-   */
-  const map = new Map(
-    /** @type {[string, string | Promise<number>][]} */ ([
-      ["a", Promise.resolve(1)],
-      ["b", Promise.resolve(2)],
-      ["c", "asdf"],
-    ]),
-  );
+  const map: Map<string, string | Promise<number>> = new Map<
+    string,
+    string | Promise<number>
+  >([
+    ["a", Promise.resolve(1)],
+    ["b", Promise.resolve(2)],
+    ["c", "asdf"],
+  ]);
 
   const result = await propsMap(map);
 
   assert.deepStrictEqual(
     result,
-    new Map(
-      /** @type {[string, (string | number)][]} */ ([
-        ["a", 1],
-        ["b", 2],
-        ["c", "asdf"],
-      ]),
-    ),
+    new Map<string, string | number>([
+      ["a", 1],
+      ["b", 2],
+      ["c", "asdf"],
+    ]),
   );
 });

@@ -1,6 +1,6 @@
 {
   "name": "@dolphin278/vjuga",
-  "version": "6.0.0",
+  "version": "7.0.0",
   "packageManager": "npm@10.5.0",
   "license": "MIT",
   "exports": {
@@ -9,20 +9,32 @@
   "type": "module",
   "scripts": {
     "clean": "tsc --build --clean",
-    "test": "node --test",
+    "test": "node --experimental-strip-types --test",
+    "test:bun": "bun test src/tests",
+    "test:emit": "tsc --project tsconfig.json && node --test",
     "typecheck": "tsc --noEmit --project tsconfig.json",
     "lint": "oxlint ./src",
-    "coverage": "c8 --src=src --all --report --reporter html --reporter text --per-file --skip-full -- node --test",
-    "prepare": "npm run clean && tsc --declaration --emitDeclarationOnly --project tsconfig.json && npm run lint && prettier --check src && npm run coverage",
-    "format": "npm run lint --fix && prettier --write src",
+    "lint:fix": "oxlint --fix ./src",
+    "coverage": "c8 --src=src --all --report --reporter html --reporter text --per-file --skip-full -- node --experimental-strip-types --test",
+    "prepare": "npm run clean && tsc --project tsconfig.json && npm run lint && oxfmt --check src && npm run coverage",
+    "format": "oxfmt src",
+    "bench:bun": "bun src/benchmarks/all.bench.ts",
+    "bench:node": "node --experimental-strip-types src/benchmarks/all.bench.ts",
+    "verify:v8": "node --allow-natives-syntax --expose-gc --experimental-strip-types src/benchmarks/all.bench.ts",
+    "profile:cpu:node": "node --prof --expose-gc --experimental-strip-types",
+    "profile:heap:node": "node --heap-prof --expose-gc --experimental-strip-types",
+    "profile:cpu:bun": "bun --cpu-prof --cpu-prof-md",
+    "profile:heap:bun": "bun --heap-prof --heap-prof-md",
+    "profile:mem:bun": "MIMALLOC_SHOW_STATS=1 bun",
     "postpack": "npm run clean"
   },
   "devDependencies": {
-    "@types/node": "^20.11.15",
+    "@types/node": "^24.0.0",
     "c8": "^9.1.0",
-    "oxlint": "^0.4.0",
-    "prettier": "^3.3.0",
-    "typescript": "^5.3.3"
+    "mitata": "^0.1.0",
+    "oxfmt": "^0.43.0",
+    "oxlint": "^1.58.0",
+    "typescript": "^6.0.0"
   },
   "publishConfig": {
     "access": "public"

@@ -7,14 +7,14 @@ import * as Queue from "../Queue.js";
 test("Memory Pool should allow us reuse our instances", () => {
   let allocated = 0;
   let disposed = 0;
-  let instanceSentForDisposal;
+  let instanceSentForDisposal: object | undefined;
 
   const pool = make({
     factory: () => {
       allocated++;
       return {};
     },
-    dispose: (/** @type {{}} */ instanceToDispose) => {
+    dispose: (instanceToDispose: object) => {
       disposed++;
       instanceSentForDisposal = instanceToDispose;
     },
@@ -30,7 +30,7 @@ test("Memory Pool should allow us reuse our instances", () => {
   assert.equal(
     instanceSentForDisposal,
     instance,
-    "Instance should be sent for disposal"
+    "Instance should be sent for disposal",
   );
 });
 
@@ -43,7 +43,7 @@ test("Memory pool preallocates minimum number of instances", () => {
   assert.equal(
     Queue.size(pool.freeList),
     2,
-    "Pool should preallocate 2 instances"
+    "Pool should preallocate 2 instances",
   );
 });
 
@@ -73,7 +73,7 @@ test("Memory pool throws when min size is greater than max size", () => {
         maxSize: 1,
         factory: () => ({}),
       }),
-    "Min size should be less than or equal to max size"
+    "Min size should be less than or equal to max size",
   );
 });
 

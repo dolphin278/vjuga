@@ -4,19 +4,13 @@ import { setTimeout as setTimeoutPromise } from "node:timers/promises";
 import { make } from "../BatchExecutor.js";
 
 test("BatchExecutor batches function invocation and delivers corresponding results", async () => {
-  /**
-   * @type {number[][]}
-   */
-  let invocationArgs = [];
+  let invocationArgs: number[][] = [];
 
-  /**
-   * @param {number[]} args
-   */
-  const fn = (args) => {
+  const fn = (args: number[]) => {
     invocationArgs.push(args);
     return Promise.resolve(
       args.map((arg) => ({
-        status: /** @type {const} */ ("fulfilled"),
+        status: "fulfilled" as const,
         value: arg * 2,
       })),
     );
@@ -51,12 +45,7 @@ test("BatchExecutor batches function invocation and delivers corresponding resul
 });
 
 test("When nested functions returns array of different length, we throw an error", async () => {
-  /**
-   *
-   * @param {number[]} args
-   * @returns {Promise<PromiseSettledResult<number>[]>}
-   */
-  const fn = async (args) =>
+  const fn = async (args: number[]): Promise<PromiseSettledResult<number>[]> =>
     [...args, 1].map((x) => ({
       status: "fulfilled",
       value: x,
@@ -80,11 +69,11 @@ test("When nested functions returns array of different length, we throw an error
 });
 
 test("batch function may trigger rejections on individual results", async () => {
-  const fn = make(async (args) =>
+  const fn = make(async (args: number[]) =>
     args.map((arg) =>
       arg === 1
-        ? { status: "rejected", reason: new Error("test") }
-        : { status: "fulfilled", value: arg },
+        ? { status: "rejected" as const, reason: new Error("test") }
+        : { status: "fulfilled" as const, value: arg },
     ),
   );
 

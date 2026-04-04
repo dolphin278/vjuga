@@ -11,14 +11,8 @@ import {
   unshift,
 } from "../Queue.js";
 
-/**
- * @template T
- * @typedef {import('../Queue.js').Queue<T>} Queue
- */
-
 test("push/pop acts as LIFO", () => {
-  /** @type {Queue<number>} */
-  const queue = make();
+  const queue = make<number>();
   push(queue, 1);
   push(queue, 2);
   push(queue, 3);
@@ -31,8 +25,7 @@ test("push/pop acts as LIFO", () => {
 });
 
 test("push/shift acts as FIFO", () => {
-  /** @type {Queue<number>} */
-  const queue = make();
+  const queue = make<number>();
   push(queue, 1);
   push(queue, 2);
   push(queue, 3);
@@ -45,8 +38,7 @@ test("push/shift acts as FIFO", () => {
 });
 
 test("unshift/pop acts as FIFO", () => {
-  /** @type {Queue<number>} */
-  const queue = make();
+  const queue = make<number>();
   unshift(queue, 1);
   unshift(queue, 2);
   unshift(queue, 3);
@@ -59,8 +51,7 @@ test("unshift/pop acts as FIFO", () => {
 });
 
 test("unshift/shift acts as LIFO", () => {
-  /** @type {Queue<number>} */
-  const queue = make();
+  const queue = make<number>();
   unshift(queue, 1);
   unshift(queue, 2);
   unshift(queue, 3);
@@ -73,8 +64,7 @@ test("unshift/shift acts as LIFO", () => {
 });
 
 test("queue can handle more than 4 items", () => {
-  /** @type {Queue<number>} */
-  const queue = make();
+  const queue = make<number>();
   for (let i = 0; i < 10; i++) {
     push(queue, i);
   }
@@ -88,8 +78,7 @@ test("queue can handle more than 4 items", () => {
 });
 
 test("queue can be exported to array", () => {
-  /** @type {Queue<number>} */
-  const queue = make();
+  const queue = make<number>();
   for (let i = 0; i < 10; i++) {
     push(queue, i);
   }
@@ -97,14 +86,13 @@ test("queue can be exported to array", () => {
   assert.deepEqual(
     toArray(queue),
     [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
-    "toArray() should not change the queue"
+    "toArray() should not change the queue",
   );
   assert.equal(size(queue), 10);
 });
 
 test("queue can be exported to array with emptying the queue", () => {
-  /** @type {Queue<number>} */
-  const queue = make();
+  const queue = make<number>();
   for (let i = 0; i < 10; i++) {
     push(queue, i);
   }
@@ -114,7 +102,6 @@ test("queue can be exported to array with emptying the queue", () => {
 });
 
 test("queue can be created from array", () => {
-  /** @type {Queue<number>} */
   const queue = make([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
   assert.deepEqual(toArray(queue), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
 });

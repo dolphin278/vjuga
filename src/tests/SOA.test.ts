@@ -3,10 +3,7 @@ import * as SOA from "../SOA.js";
 import * as assert from "node:assert/strict";
 
 test("SOA-push", () => {
-  /**
-   * @type {SOA.SOA<{x: number, y: number}>}
-   */
-  const soa = {
+  const soa: { x: number[]; y: number[] } = {
     x: [],
     y: [],
   };

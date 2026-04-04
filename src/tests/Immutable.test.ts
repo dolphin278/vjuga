@@ -1,9 +1,6 @@
 import * as Immutable from "../Immutable.js";
 
-/**
- * @type {Immutable.Immutable<{ o: 1; arr: [] }>}
- */
-const x = { o: 1, arr: [] };
+const x: Immutable.Immutable<{ o: 1; arr: [] }> = { o: 1, arr: [] };
 
 // @ts-expect-error
 x.o = 3;

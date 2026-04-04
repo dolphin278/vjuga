@@ -5,8 +5,7 @@ import { test } from "node:test";
 
 test("oncePerTick lets us buffer several calls to same function", async () => {
   let callCount = 0;
-  /** @param {number[]} args */
-  const batchedFunction = (args) => {
+  const batchedFunction = (args: number[]) => {
     callCount++;
     assert.deepEqual(args, [1, 2, 3]);
   };

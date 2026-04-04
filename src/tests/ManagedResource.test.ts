@@ -4,9 +4,9 @@ import * as assert from "node:assert/strict";
 
 test("withResource", async () => {
   await test("withResource allows us to manage resource", async () => {
-    let resourceAllocated = null;
-    let disposedResource = null;
-    let providedResource = null;
+    let resourceAllocated: object | null = null;
+    let disposedResource: object | null = null;
+    let providedResource: object | null = null;
 
     await ManagedResource.withResource(
       {
@@ -29,9 +29,9 @@ test("withResource", async () => {
   });
 
   await test("withResource catches exceptions and rethrows them", async () => {
-    let resourceAllocated = null;
-    let disposedResource = null;
-    let providedResource = null;
+    let resourceAllocated: object | null = null;
+    let disposedResource: object | null = null;
+    let providedResource: object | null = null;
 
     await assert.rejects(
       async () => {
@@ -66,16 +66,16 @@ test("withResource", async () => {
             factory: () => {
               return Promise.resolve({});
             },
-            dispose: (resource) => {
+            dispose: (_resource) => {
               return Promise.resolve(undefined);
             },
           },
-          async (resourceGiven) => {
+          async (_resourceGiven) => {
             throw "Some error";
           },
         );
       },
-      (thrown) => typeof thrown === "string" && thrown === "Some error",
+      (thrown: unknown) => typeof thrown === "string" && thrown === "Some error",
     );
   });
 });

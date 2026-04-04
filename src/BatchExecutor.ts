@@ -1,12 +1,11 @@
 import { make as makeBufferizedFn } from "./BufferizedFunction.js";
-import * as Deferred from "./Deferred.js";
 import * as MemoryPool from "./MemoryPool.js";
 import type { Fn1 } from "./FunctionUtils.js";
 
 /** Lifted to module scope — no inner interfaces in TS. */
 interface Request<T, R> {
   arg: T | null;
-  deferred: Deferred.Deferred<R> | null;
+  deferred: PromiseWithResolvers<R> | null;
 }
 
 /**
@@ -73,7 +72,7 @@ export function make<T, R>(
   });
 
   return function (arg: T): Promise<R> {
-    const deferred = Deferred.make<R>();
+    const deferred = Promise.withResolvers<R>();
     const request = MemoryPool.acquire(RequestPool);
     request.arg = arg;
     request.deferred = deferred;

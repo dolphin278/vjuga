@@ -26,7 +26,6 @@ const modules = [
   "./Immutable.bench.js",
   "./JSON.bench.js",
   "./ErrorChain.bench.js",
-  "./Deferred.bench.js",
   "./SOA.bench.js",
   "./BufferizedFunction.bench.js",
   "./ManagedResource.bench.js",

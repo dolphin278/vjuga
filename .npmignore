@@ -119,3 +119,4 @@ src/benchmarks/
 references/
 CLAUDE.md
 tsconfig.json
+tsconfig.test.json

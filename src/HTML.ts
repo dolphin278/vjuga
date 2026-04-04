@@ -1,3 +1,4 @@
+// one-time module init, not a hot path
 const [
   GT_CHAR_CODE,
   LT_CHAR_CODE,
@@ -12,13 +13,8 @@ const AMP_STR = "&amp;";
 const QUOTE_STR = "&quot;";
 const APOS_STR = "&#039;";
 
-/**
- * Escapes a string for use in HTML.
- * @param {string} str
- * @returns
- */
-export function escape(str) {
-  let char;
+const _escapeImpl = (str: string): string => {
+  let char: string | undefined;
   let left = 0;
   let result = "";
   let escapedAtLeastOnce = false;
@@ -60,4 +56,13 @@ export function escape(str) {
     result += str.slice(left);
   }
   return result;
-}
+};
+
+declare const Bun:
+  | { escapeHTML: (str: string) => string | Uint8Array }
+  | undefined;
+
+export const escape: (str: string) => string =
+  typeof Bun !== "undefined" && typeof Bun.escapeHTML === "function"
+    ? (str) => Bun.escapeHTML(str) as string
+    : _escapeImpl;

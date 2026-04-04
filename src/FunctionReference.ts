@@ -1,4 +1,5 @@
 import { resolve as pathResolve } from "node:path";
+
 /**
  * Function references represent pointer to functions that can be imported by
  * various execution contexts. It may become handy when you want to share
@@ -11,26 +12,22 @@ import { resolve as pathResolve } from "node:path";
  */
 
 /**
- *
  * Function takes path to module file and name of the exported function
  * from the module and returns the function. This allows to share functions
  * between execution contexts without passing the source code of the function
  * which is error prone.
- *
- * @param {URL|string} reference
- * @returns {Promise<(...args: unknown[]) => unknown>}
  */
-export async function resolve(reference) {
+export async function resolve(
+  reference: URL | string,
+): Promise<(...args: unknown[]) => unknown> {
   if (typeof reference === "string") {
     reference = new URL(`file://${pathResolve(reference)}`);
   }
   const exportName = reference.hash?.slice(1) ?? "default";
 
-  /** @type {Record<string, unknown>} */
-  let module;
+  let module: Record<string, unknown>;
   try {
-    // @ts-expect-error - dynamic import actually works with URLs
-    module = await import(reference);
+    module = await (import(reference.href) as Promise<Record<string, unknown>>);
   } catch (error) {
     if (error instanceof Error) {
       throw new ModuleResolutionError(reference.href, error);
@@ -39,9 +36,9 @@ export async function resolve(reference) {
     }
   }
 
-  const symbol = /** @type {unknown} */ (Reflect.get(module, exportName));
+  const symbol: unknown = Reflect.get(module, exportName);
   if (typeof symbol === "function") {
-    return /** @type {(...args: unknown[]) => unknown} */ (symbol);
+    return symbol as (...args: unknown[]) => unknown;
   } else {
     throw new ReferencedSymbolIsNotAFunction(
       reference,
@@ -52,42 +49,17 @@ export async function resolve(reference) {
 }
 
 export class ModuleResolutionError extends Error {
-  /**
-   *
-   * @param {string} reference
-   * @param {Error} cause
-   */
-  constructor(reference, cause) {
+  constructor(reference: string, cause: Error) {
     super(`Failed to import module ${reference}`, { cause });
   }
 }
 
 export class ReferencedSymbolIsNotAFunction extends Error {
-  /**
-   * @readonly
-   * @type {URL}
-   */
-  url;
+  readonly url: URL;
+  readonly reference: string | URL;
+  readonly typeFound: string;
 
-  /**
-   * @readonly
-   * @type {string | URL}
-   */
-  reference;
-
-  /**
-   * @readonly
-   * @type {string}
-   */
-  typeFound;
-
-  /**
-   *
-   * @param {URL} url
-   * @param {string | URL} reference
-   * @param {string} typeFound
-   */
-  constructor(url, reference, typeFound) {
+  constructor(url: URL, reference: string | URL, typeFound: string) {
     super(
       `Resolving reference ${url} failed - module loaded but exported symbol is not a function, but ${typeFound} (from ${reference})`,
     );
@@ -96,5 +68,3 @@ export class ReferencedSymbolIsNotAFunction extends Error {
     this.typeFound = typeFound;
   }
 }
-
-export const test = 1;

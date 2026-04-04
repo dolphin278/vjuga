@@ -1,32 +1,22 @@
-const kCapacityMask = Symbol("capacityMask");
+const kCapacityMask: unique symbol = Symbol("capacityMask");
+const kHead: unique symbol = Symbol("head");
+const kTail: unique symbol = Symbol("tail");
+const kList: unique symbol = Symbol("list");
 
-const kHead = Symbol("head");
+export interface Queue<T> {
+  [kCapacityMask]: number;
+  [kHead]: number;
+  [kTail]: number;
+  [kList]: Array<T | undefined>;
+}
 
-const kTail = Symbol("tail");
-
-const kList = Symbol("list");
-
-/**
- * @template T
- * @typedef {{
- *  [kCapacityMask]: number,
- *  [kHead]: number,
- *  [kTail]: number,
- *  [kList]: Array<T | undefined>,
- * }} Queue
- */
-
-/**
- * @template T
- * @param {Iterable<T>} [items]
- */
-export function make(items) {
-  const queue = /** @type {Queue<T>} */ ({
+export function make<T>(items?: Iterable<T>): Queue<T> {
+  const queue: Queue<T> = {
     [kCapacityMask]: 0x3,
     [kHead]: 0,
     [kTail]: 0,
     [kList]: Array(4),
-  });
+  };
 
   if (items !== undefined) {
     for (const value of items) {
@@ -37,11 +27,7 @@ export function make(items) {
   return queue;
 }
 
-/**
- * @template T
- * @param {Queue<T>} queue
- */
-export function size(queue) {
+export function size<T>(queue: Queue<T>): number {
   const head = queue[kHead];
   const tail = queue[kTail];
   if (tail === head) {
@@ -53,12 +39,7 @@ export function size(queue) {
   return queue[kList].length - head + tail;
 }
 
-/**
- * @template T
- * @param {Queue<T>} queue
- * @param {T} value
- */
-export function push(queue, value) {
+export function push<T>(queue: Queue<T>, value: T): void {
   const list = queue[kList];
   list[queue[kTail]] = value;
   queue[kTail] = (queue[kTail] + 1) & queue[kCapacityMask];
@@ -68,12 +49,7 @@ export function push(queue, value) {
   }
 }
 
-/**
- * @template T
- * @param {Queue<T>} queue
- * @returns {T | undefined}
- */
-export function pop(queue) {
+export function pop<T>(queue: Queue<T>): T | undefined {
   if (queue[kTail] === queue[kHead]) {
     return void 0;
   }
@@ -85,11 +61,7 @@ export function pop(queue) {
   return value;
 }
 
-/**
- * @template T
- * @param {Queue<T>} queue
- */
-export function tryToShrinkList(queue) {
+export function tryToShrinkList<T>(queue: Queue<T>): void {
   const list = queue[kList];
   if (
     list.length > 10000 &&
@@ -105,11 +77,7 @@ export function tryToShrinkList(queue) {
   }
 }
 
-/**
- * @template T
- * @param {Queue<T>} queue
- */
-export function growList(queue) {
+export function growList<T>(queue: Queue<T>): void {
   const list = queue[kList];
   const len = list.length;
   list.length = list.length << 1;
@@ -121,12 +89,7 @@ export function growList(queue) {
   queue[kTail] = (queue[kHead] + len) & queue[kCapacityMask];
 }
 
-/**
- * @template T
- * @param {Queue<T>} queue
- * @returns {T | undefined}
- */
-export function shift(queue) {
+export function shift<T>(queue: Queue<T>): T | undefined {
   if (queue[kTail] === queue[kHead]) {
     return undefined;
   }
@@ -139,13 +102,7 @@ export function shift(queue) {
   return value;
 }
 
-/**
- *
- * @template T
- * @param {Queue<T>} queue
- * @param {T} value
- */
-export function unshift(queue, value) {
+export function unshift<T>(queue: Queue<T>, value: T): void {
   const list = queue[kList];
   queue[kHead] = (queue[kHead] - 1 + list.length) & queue[kCapacityMask];
   list[queue[kHead]] = value;
@@ -155,20 +112,12 @@ export function unshift(queue, value) {
   }
 }
 
-/**
- * @template T
- * @param {Queue<T>} queue
- * @returns {Array<T>}
- */
-export function toArray(queue) {
+export function toArray<T>(queue: Queue<T>): Array<T> {
   const list = queue[kList];
   const head = queue[kHead];
   const tail = queue[kTail];
 
-  /**
-   * @type {Array<T | undefined>}
-   */
-  const result = Array(size(queue));
+  const result: Array<T | undefined> = Array(size(queue));
 
   if (tail >= head) {
     for (let i = head; i < tail; i++) {
@@ -183,23 +132,15 @@ export function toArray(queue) {
     }
   }
 
-  return /** @type {Array<T>} */ (result);
+  return result as Array<T>;
 }
 
-/**
- *
- * @template T
- * @param {Queue<T>} queue
- */
-export function dumpToArray(queue) {
+export function dumpToArray<T>(queue: Queue<T>): Array<T> {
   const list = queue[kList];
   const head = queue[kHead];
   const tail = queue[kTail];
 
-  /**
-   * @type {Array<T>}
-   */
-  const result = Array(size(queue));
+  const result: Array<T> = Array(size(queue));
 
   if (tail >= head) {
     for (let i = head; i < tail; i++) {

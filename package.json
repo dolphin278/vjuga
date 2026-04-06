@@ -35,6 +35,13 @@
     "oxlint": "^1.58.0",
     "typescript": "^6.0.0"
   },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "files": [
+    "src/*.js",
+    "src/*.d.ts"
+  ],
   "publishConfig": {
     "access": "public"
   }

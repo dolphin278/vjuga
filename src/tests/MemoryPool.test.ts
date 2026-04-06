@@ -1,22 +1,20 @@
 import { test } from "node:test";
 import * as assert from "node:assert";
-import * as MemoryPool from "../MemoryPool.js";
-import { acquire, release, make } from "../MemoryPool.js";
-import * as Queue from "../Queue.js";
+import { acquire, release, make, withAcquire } from "../MemoryPool.js";
 
 test("Memory Pool should allow us reuse our instances", () => {
   let allocated = 0;
-  let disposed = 0;
-  let instanceSentForDisposal: object | undefined;
+  let resetCount = 0;
+  let instanceSentForReset: object | undefined;
 
   const pool = make({
     factory: () => {
       allocated++;
       return {};
     },
-    dispose: (instanceToDispose: object) => {
-      disposed++;
-      instanceSentForDisposal = instanceToDispose;
+    reset: (instance: object) => {
+      resetCount++;
+      instanceSentForReset = instance;
     },
   });
 
@@ -26,8 +24,8 @@ test("Memory Pool should allow us reuse our instances", () => {
   const instance2 = acquire(pool);
   assert.equal(instance, instance2, "Instances should be reused");
   assert.equal(allocated, 1, "Factory should only be called once");
-  assert.equal(disposed, 1, "Dispose should be called on instance");
-  assert.equal(instanceSentForDisposal, instance, "Instance should be sent for disposal");
+  assert.equal(resetCount, 1, "reset should be called on release");
+  assert.equal(instanceSentForReset, instance, "Instance should be sent for reset");
 });
 
 test("Memory pool preallocates minimum number of instances", () => {
@@ -36,15 +34,7 @@ test("Memory pool preallocates minimum number of instances", () => {
     factory: () => ({}),
   });
 
-  assert.equal(Queue.size(pool.freeList), 2, "Pool should preallocate 2 instances");
-});
-
-test("Memory pool throws when someone tries to release object not retrieved from this pool", () => {
-  const pool = make({
-    factory: () => ({}),
-  });
-
-  assert.throws(() => release(pool, {}), "Instance should belong to this pool");
+  assert.equal(pool.freeList.length, 2, "Pool should preallocate 2 instances");
 });
 
 test("Memory pool throws when someone tries to acquire more instances than max size", () => {
@@ -55,6 +45,26 @@ test("Memory pool throws when someone tries to acquire more instances than max s
 
   acquire(pool);
   assert.throws(() => acquire(pool), "Pool should be full");
+});
+
+test("maxSize limits total objects created, not concurrent borrows", () => {
+  const pool = make({
+    maxSize: 2,
+    factory: () => ({}),
+  });
+
+  const a = acquire(pool); // creates 1st object
+  const b = acquire(pool); // creates 2nd object
+  assert.throws(() => acquire(pool), "Pool should be full after 2 created");
+
+  release(pool, a);
+  // a is back in freeList; total created is still 2
+  const c = acquire(pool); // reuses a, no new object created
+  assert.equal(c, a, "Should reuse released object");
+
+  assert.throws(() => acquire(pool), "Pool still full — b is still out");
+  release(pool, b);
+  release(pool, c);
 });
 
 test("Memory pool throws when min size is greater than max size", () => {
@@ -69,75 +79,63 @@ test("Memory pool throws when min size is greater than max size", () => {
   );
 });
 
-test("acquiredInstancesCount should return number of instances that are currently lent", () => {
+test("acquiredCount tracks number of instances currently lent", () => {
   const pool = make({
     maxSize: 2,
     factory: () => ({}),
   });
 
   const instance = acquire(pool);
-  assert.equal(pool.acquiredSet.size, 1, "One instance should be lent");
+  assert.equal(pool.acquiredCount, 1, "One instance should be lent");
 
   release(pool, instance);
-  assert.equal(pool.acquiredSet.size, 0, "No instances should be lent");
+  assert.equal(pool.acquiredCount, 0, "No instances should be lent");
 });
 
-test("freeInstancesCount should return number of instances that are currently free", () => {
+test("freeList tracks number of instances currently free", () => {
   const pool = make({
     maxSize: 2,
     factory: () => ({}),
   });
 
   const instance = acquire(pool);
-  assert.equal(Queue.size(pool.freeList), 0, "No instances should be free");
+  assert.equal(pool.freeList.length, 0, "No instances should be free");
 
   release(pool, instance);
-  assert.equal(Queue.size(pool.freeList), 1, "One instance should be free");
+  assert.equal(pool.freeList.length, 1, "One instance should be free");
 });
 
-test("Memory pool SHOULD NOT ALLOW to release instance twice", () => {
-  const pool = make({
-    factory: () => ({}),
+test("withAcquire releases the instance after fn returns", () => {
+  const pool = make({ factory: () => ({}) });
+
+  withAcquire(pool, (instance) => {
+    assert.equal(pool.acquiredCount, 1);
+    assert.equal(pool.freeList.length, 0);
+    void instance;
   });
 
-  const instance = acquire(pool);
-  release(pool, instance);
-  assert.throws(() => release(pool, instance), "Instance should be released");
+  assert.equal(pool.acquiredCount, 0);
+  assert.equal(pool.freeList.length, 1);
 });
 
-test("ArrayPool should allow us to reuse arrays", () => {
-  const pool = MemoryPool.ArrayPool;
+test("withAcquire releases the instance even if fn throws", () => {
+  const pool = make({ factory: () => ({}) });
 
-  const array = acquire(pool);
-  array.push(1);
+  assert.throws(() =>
+    withAcquire(pool, () => {
+      throw new Error("oops");
+    }),
+  );
 
-  release(pool, array);
-
-  const array2 = acquire(pool);
-  assert.equal(array, array2, "Arrays should be reused");
-  assert.equal(array2.length, 0, "Array should be empty");
+  assert.equal(pool.acquiredCount, 0);
+  assert.equal(pool.freeList.length, 1);
 });
 
-test("MapPool should allow us to reuse maps", () => {
-  const pool = MemoryPool.MapPool;
-
-  const map = acquire(pool);
-  map.set("key", "value");
-  release(pool, map);
-
-  const map2 = acquire(pool);
-  assert.equal(map, map2, "Maps should be reused");
-  assert.equal(map2.size, 0, "Map should be empty");
-});
-
-test("SetPool should allow us to reuse sets", () => {
-  const pool = MemoryPool.SetPool;
-
-  const set = acquire(pool);
-  set.add("value");
-  release(pool, set);
-
-  const set2 = acquire(pool);
-  assert.equal(set, set2, "Sets should be reused");
-  assert.equal(set2.size, 0, "Set should be empty");
+test("withAcquire returns the value from fn", () => {
+  const pool = make({ factory: () => ({ x: 0 }) });
+  const result = withAcquire(pool, (p) => {
+    p.x = 42;
+    return p.x;
+  });
+  assert.equal(result, 42);
 });

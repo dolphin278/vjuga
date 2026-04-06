@@ -28,7 +28,7 @@ export function make<T, R>(
       arg: null,
       deferred: null,
     }),
-    dispose: (request) => {
+    reset: (request) => {
       request.arg = null;
       request.deferred = null;
     },

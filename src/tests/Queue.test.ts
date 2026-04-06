@@ -1,6 +1,17 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import { make, push, pop, size, shift, toArray, dumpToArray, unshift } from "../Queue.js";
+import {
+  make,
+  push,
+  pop,
+  size,
+  shift,
+  toArray,
+  dumpToArray,
+  unshift,
+  peekFront,
+  peekBack,
+} from "../Queue.js";
 
 test("push/pop acts as LIFO", () => {
   const queue = make<number>();
@@ -107,4 +118,57 @@ test("creation of array from iterable source recognized array as special case", 
   const array = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
   const queue = make(array);
   assert.deepEqual(toArray(queue), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+});
+
+test("peekFront returns front element without removing it", () => {
+  const queue = make([1, 2, 3]);
+  assert.equal(peekFront(queue), 1);
+  assert.equal(size(queue), 3, "peekFront must not mutate the queue");
+  assert.equal(peekFront(queue), 1, "repeated peekFront returns same value");
+});
+
+test("peekBack returns back element without removing it", () => {
+  const queue = make([1, 2, 3]);
+  assert.equal(peekBack(queue), 3);
+  assert.equal(size(queue), 3, "peekBack must not mutate the queue");
+  assert.equal(peekBack(queue), 3, "repeated peekBack returns same value");
+});
+
+test("peekFront and peekBack return undefined for empty queue", () => {
+  const queue = make<number>();
+  assert.equal(peekFront(queue), void 0);
+  assert.equal(peekBack(queue), void 0);
+});
+
+test("peekFront agrees with shift", () => {
+  const queue = make([10, 20, 30]);
+  assert.equal(peekFront(queue), shift(queue));
+  assert.equal(peekFront(queue), shift(queue));
+  assert.equal(peekFront(queue), shift(queue));
+  assert.equal(peekFront(queue), void 0);
+});
+
+test("peekBack agrees with pop", () => {
+  const queue = make([10, 20, 30]);
+  assert.equal(peekBack(queue), pop(queue));
+  assert.equal(peekBack(queue), pop(queue));
+  assert.equal(peekBack(queue), pop(queue));
+  assert.equal(peekBack(queue), void 0);
+});
+
+test("peekBack is correct after ring buffer wraps", () => {
+  // Initial capacity is 4. Fill it, drain two from the front to advance kHead,
+  // then push two more so kTail wraps past the original end of the backing array.
+  const queue = make<number>();
+  push(queue, 1);
+  push(queue, 2);
+  push(queue, 3);
+  push(queue, 4);
+  shift(queue); // kHead advances
+  shift(queue); // kHead advances again
+  push(queue, 5); // kTail wraps around
+  push(queue, 6);
+  // queue now holds [3, 4, 5, 6]; back element is 6
+  assert.equal(peekBack(queue), 6);
+  assert.equal(size(queue), 4, "peekBack must not mutate");
 });

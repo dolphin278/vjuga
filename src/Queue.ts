@@ -114,6 +114,25 @@ export function unshift<T>(queue: Queue<T>, value: T): void {
   }
 }
 
+/**
+ * Returns the front element (the next one that `shift` would return) without
+ * removing it. Returns `undefined` if the queue is empty.
+ */
+export function peekFront<T>(queue: Queue<T>): T | undefined {
+  if (queue[kTail] === queue[kHead]) return void 0;
+  return queue[kList][queue[kHead]];
+}
+
+/**
+ * Returns the back element (the next one that `pop` would return) without
+ * removing it. Returns `undefined` if the queue is empty.
+ */
+export function peekBack<T>(queue: Queue<T>): T | undefined {
+  if (queue[kTail] === queue[kHead]) return void 0;
+  const list = queue[kList];
+  return list[(queue[kTail] - 1 + list.length) & queue[kCapacityMask]];
+}
+
 export function toArray<T>(queue: Queue<T>): Array<T> {
   const list = queue[kList];
   const head = queue[kHead];

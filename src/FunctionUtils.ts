@@ -25,6 +25,36 @@ export type TaggedUnion<T> = {
 }[keyof T];
 
 /**
+ * Branded type — attaches a phantom brand to `Base` so that two values of the
+ * same underlying type but different brands are not assignable to each other.
+ *
+ * `Kind` is constrained to `PropertyKey` so it can serve as a mapped-type key.
+ * The brand uses a mapped type `{ [K in Kind]: true }` so that intersecting two
+ * branded types merges their brands, enabling compound types:
+ *
+ * ```ts
+ * type PositiveNumber  = Branded<number, 'PositiveNumber'>
+ * type Integer         = Branded<number, 'Integer'>
+ * type PositiveInteger = PositiveNumber & Integer
+ * // = number & { __brand: { PositiveNumber: true; Integer: true } }
+ * // A PositiveInteger is assignable to both PositiveNumber and Integer ✓
+ * ```
+ */
+export type Branded<Base, Kind extends PropertyKey> = Base & {
+  readonly __brand: { readonly [K in Kind]: true };
+};
+
+/**
+ * Zero-runtime-cost cast that asserts `value` is a `Branded<Base, Kind>`.
+ *
+ * The caller is responsible for ensuring the invariant holds at the call site.
+ * This function compiles away entirely — it emits no instructions.
+ */
+export function brand<Base, Kind extends PropertyKey>(value: Base): Branded<Base, Kind> {
+  return value as Branded<Base, Kind>;
+}
+
+/**
  * Partially applied function application.
  */
 export function partial<T1 extends unknown[], T2 extends unknown[], R>(

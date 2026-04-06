@@ -111,3 +111,47 @@ export function set<T>(soa: SOA<T>, index: number, item: T): void {
 export function getSlice<T, K extends keyof T>(soa: SOA<T>, sliceName: K): T[K][] {
   return soa[sliceName];
 }
+
+/**
+ * Returns the number of elements currently stored in the SOA.
+ * All slices are co-length, so the length of the first slice is authoritative.
+ * Returns 0 for an empty SOA (no keys).
+ */
+export function length<T>(soa: SOA<T>): number {
+  for (const key in soa) {
+    return (soa as Record<string, unknown[]>)[key].length;
+  }
+  return 0;
+}
+
+/**
+ * O(1) order-non-preserving removal. Copies the last row over `index`, then
+ * pops every slice. Callers must update any external index that pointed at the
+ * last element, as it now lives at `index`.
+ *
+ * Throws a RangeError if `index` is out of bounds.
+ */
+export function swapRemove<T>(soa: SOA<T>, index: number): void {
+  const last = length(soa) - 1;
+  if (index < 0 || index > last) {
+    throw new RangeError(`swapRemove: index ${index} out of bounds (length ${last + 1})`);
+  }
+  if (index !== last) {
+    for (const key in soa) {
+      const arr = (soa as Record<string, unknown[]>)[key];
+      arr[index] = arr[last];
+    }
+  }
+  for (const key in soa) {
+    (soa as Record<string, unknown[]>)[key].pop();
+  }
+}
+
+/**
+ * Removes all elements from every slice, resetting the SOA to length 0.
+ */
+export function clear<T>(soa: SOA<T>): void {
+  for (const key in soa) {
+    (soa as Record<string, unknown[]>)[key].length = 0;
+  }
+}

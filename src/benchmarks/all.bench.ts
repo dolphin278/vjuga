@@ -28,8 +28,12 @@ const modules = [
   "./ErrorChain.bench.js",
   "./SOA.bench.js",
   "./BufferizedFunction.bench.js",
-"./PromiseUtils.bench.js",
+  "./PromiseUtils.bench.js",
   "./FunctionReference.bench.js",
+  "./Result.bench.js",
+  "./LRUCache.bench.js",
+  "./PriorityQueue.bench.js",
+  "./Validator.bench.js",
 ] as const;
 
 console.log("=== vjuga benchmark suite ===\n");

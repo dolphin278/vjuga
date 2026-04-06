@@ -25,13 +25,27 @@ export function memoize<T extends readonly unknown[], R, K = string>(
     const key: K = Reflect.apply(cacheKeyFn, undefined, args) as K;
     const cached = cache.get(key);
     if (cached !== undefined) return cached;
-    if (cache.has(key)) return undefined as R; // fn returned undefined — rare
+    // Two-lookup trick: `cache.get` returns `undefined` for both a missing key
+    // and a key whose cached result is `undefined`. The second `cache.has` lookup
+    // disambiguates — it is only reached when `cache.get` returned `undefined`,
+    // i.e. when `fn` itself returned `undefined`. This keeps the common
+    // (non-undefined) case to a single Map lookup.
+    if (cache.has(key)) return undefined as R;
     const result: R = Reflect.apply(fn, undefined, args) as R;
     cache.set(key, result);
     return result;
   };
 }
 
+// `defaultCacheKeyFn` is declared as variadic (`...args: T`) rather than as a
+// single-array argument (`(args: T) => string`) because `memoized` calls it via
+// `Reflect.apply(cacheKeyFn, undefined, args)` — which spreads the argument
+// array as individual positional arguments. A variadic signature receives them
+// correctly, whereas a single-array signature would receive the entire args
+// tuple as its first element, producing the same JSON but via a different
+// (and less monomorphic) call shape. The two signatures are functionally
+// equivalent here; the variadic form keeps the Reflect.apply call site
+// monomorphic.
 function defaultCacheKeyFn<T extends readonly unknown[]>(...args: T): string {
   return JSON.stringify(args);
 }

@@ -26,10 +26,18 @@ const gc = (): void => {
   const growQ = Queue.make<number>();
   for (let i = 0; i < 100; i++) Queue.push(growQ, i);
   for (let i = 0; i < 100; i++) Queue.shift(growQ);
+  // Warm up peek operations.
+  const peekQ = Queue.make<number>([1, 2, 3, 4, 5]);
+  for (let i = 0; i < 100_000; i++) {
+    Queue.peekFront(peekQ);
+    Queue.peekBack(peekQ);
+  }
   reportOptimizationStatus(Queue.push, "Queue.push");
   reportOptimizationStatus(Queue.shift, "Queue.shift");
   reportOptimizationStatus(Queue.pop, "Queue.pop");
   reportOptimizationStatus(Queue.unshift, "Queue.unshift");
+  reportOptimizationStatus(Queue.peekFront, "Queue.peekFront");
+  reportOptimizationStatus(Queue.peekBack, "Queue.peekBack");
 }
 
 // --- Benchmarks ---
@@ -110,6 +118,16 @@ bench("Queue.dumpToArray (10 elements)", () => {
 bench("Queue.size (branchless)", () => {
   const q = Queue.make<number>([1, 2, 3, 4, 5]);
   return Queue.size(q);
+});
+
+bench("Queue.peekFront (non-empty)", () => {
+  const q = Queue.make<number>([1, 2, 3, 4, 5]);
+  return Queue.peekFront(q);
+});
+
+bench("Queue.peekBack (non-empty)", () => {
+  const q = Queue.make<number>([1, 2, 3, 4, 5]);
+  return Queue.peekBack(q);
 });
 
 await run();

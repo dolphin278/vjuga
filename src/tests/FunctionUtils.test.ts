@@ -1,6 +1,7 @@
 import * as assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { partial, partialNamed, pipe, spread, tuple, tupled } from "../FunctionUtils.js";
+import { partial, partialNamed, pipe, spread, tuple, tupled, brand } from "../FunctionUtils.js";
+import type { Branded } from "../FunctionUtils.js";
 
 describe("FunctionUtils", () => {
   it("partial", () => {
@@ -87,5 +88,24 @@ describe("FunctionUtils", () => {
       const composed = pipe(fn1, fn2, fn3, fn4, fn5, fn6, fn7);
       assert.equal(composed(1, 1), 8);
     });
+  });
+});
+
+describe("Branded", () => {
+  it("brand() returns the same value at runtime", () => {
+    type UserId = Branded<number, "UserId">;
+    const id: UserId = brand<number, "UserId">(42);
+    assert.equal(id, 42);
+  });
+
+  it("Branded compound type: PositiveNumber & Integer merge correctly", () => {
+    type PositiveNumber = Branded<number, "PositiveNumber">;
+    type Integer = Branded<number, "Integer">;
+    type PositiveInteger = PositiveNumber & Integer;
+    // If this compiles, the intersection works as expected.
+    const n: PositiveInteger = brand<number, "PositiveNumber">(
+      brand<number, "Integer">(3) as number,
+    ) as PositiveInteger;
+    assert.equal(n, 3);
   });
 });

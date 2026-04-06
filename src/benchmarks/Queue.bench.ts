@@ -13,10 +13,19 @@ const gc = (): void => {
 // --- Warm-up ---
 {
   const q = Queue.make<number>();
+  // Exercise all four operations so each accumulates type feedback.
   for (let i = 0; i < 100_000; i++) {
     Queue.push(q, i);
+    Queue.unshift(q, i);
     Queue.shift(q);
+    Queue.pop(q);
   }
+  // Exercise the grow path so V8 sees kCapacityMask written before compiling
+  // the hot path; without this, the first resize during measurement causes
+  // a cascade deopt even with the redundant-write guard in make().
+  const growQ = Queue.make<number>();
+  for (let i = 0; i < 100; i++) Queue.push(growQ, i);
+  for (let i = 0; i < 100; i++) Queue.shift(growQ);
   reportOptimizationStatus(Queue.push, "Queue.push");
   reportOptimizationStatus(Queue.shift, "Queue.shift");
   reportOptimizationStatus(Queue.pop, "Queue.pop");

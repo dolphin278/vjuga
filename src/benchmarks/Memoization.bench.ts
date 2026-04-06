@@ -30,8 +30,15 @@ const identity = (x: number) => x;
   for (let i = 0; i < 100_000; i++) {
     memoAdd(i % 100, i % 50);
   }
-  reportOptimizationStatus(memoize, "memoize");
-  reportOptimizationStatus(once, "once");
+  // Report the inner memoized closure, not the factory — memoize() itself is
+  // only called a handful of times (once per test) so it never becomes hot.
+  // The closure is what runs 100k times and gets JIT-compiled.
+  reportOptimizationStatus(memoAdd, "memoized (closure)");
+
+  // Warm up once() with enough calls to reach the JIT threshold.
+  const onceAdd = once(() => 42);
+  for (let i = 0; i < 100_000; i++) onceAdd();
+  reportOptimizationStatus(onceAdd, "once (closure)");
 }
 
 // --- Benchmarks ---

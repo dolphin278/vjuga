@@ -64,6 +64,11 @@ export function createView<T extends object>(soa: SOA<T>, index = 0): T & { inde
   const view = {
     [idxSymbol]: index,
   } as T & { [idxSymbol]: number; index: number };
+  // Write idxSymbol a second time so V8 treats it as a mutable field.
+  // The index setter (view.index = n) writes to idxSymbol on every call;
+  // without this, the first such write causes a "field constness changed"
+  // cascade deoptimization of the view's property getters/setters.
+  view[idxSymbol] = index;
 
   Object.defineProperties(view, getOrCreateDescriptors(soa));
   Object.defineProperty(view, "index", indexDescriptor);

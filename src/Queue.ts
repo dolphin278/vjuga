@@ -17,6 +17,12 @@ export function make<T>(items?: Iterable<T>): Queue<T> {
     [kTail]: 0,
     [kList]: Array(4),
   };
+  // Write kCapacityMask a second time so V8 marks it as a mutable field from
+  // the very first make() call. growList() writes to kCapacityMask on every
+  // resize; without this, the first resize triggers a cascade deoptimization
+  // of every compiled Queue function — V8 assumed the field was const because
+  // it was only written once (during object literal construction).
+  queue[kCapacityMask] = 0x3;
 
   if (items !== undefined) {
     for (const value of items) {

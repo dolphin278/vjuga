@@ -12,18 +12,53 @@ const gc = (): void => {
 
 type Particle = { x: number; y: number; vx: number; vy: number };
 
+// Returns arrays pre-primed as PACKED_DOUBLE_ELEMENTS by pushing and removing
+// a float sentinel. Without this, arrays start as PACKED_SMI_ELEMENTS and
+// transition on the first float push — causing a "not a Smi" deopt each time
+// SOA.push is compiled for double arrays but called with a fresh SMI array.
+function makeDoubleArray(): number[] {
+  const a: number[] = [];
+  a.push(0.5);
+  a.length = 0;
+  return a;
+}
+
 function makeParticleSOA() {
-  return { x: [] as number[], y: [] as number[], vx: [] as number[], vy: [] as number[] };
+  return {
+    x: makeDoubleArray(),
+    y: makeDoubleArray(),
+    vx: makeDoubleArray(),
+    vy: makeDoubleArray(),
+  };
 }
 
 // --- Warm-up ---
 {
   const soa = makeParticleSOA();
+  // Use floats (not integers) to match the bench-case data types so the
+  // underlying arrays are in PACKED_DOUBLE_ELEMENTS from the start.
+  // Warming up with integers and then benching with floats causes a
+  // PACKED_SMI → PACKED_DOUBLE element-kind transition and a "not a Smi" deopt.
   for (let i = 0; i < 100_000; i++) {
-    push(soa, { x: i, y: i * 2, vx: 1, vy: 1 });
+    push(soa, { x: i * 0.1, y: i * 0.2, vx: 0.5, vy: 0.3 });
   }
   for (let i = 0; i < 100_000; i++) {
     get(soa, i % 100_000);
+    set(soa, i % 100_000, { x: 0.1, y: 0.2, vx: 0.3, vy: 0.4 });
+  }
+  // Warm up createView itself (needs many calls to become hot for JIT)
+  const viewSoa = makeParticleSOA();
+  for (let i = 0; i < 100; i++) push(viewSoa, { x: i * 0.1, y: i * 0.2, vx: 0.5, vy: 0.3 });
+  for (let i = 0; i < 10_000; i++) {
+    createView(viewSoa, i % 100);
+  }
+  // Warm up view accessor hot path (index mutation, read, write)
+  const warmView = createView(viewSoa, 0);
+  for (let i = 0; i < 100_000; i++) {
+    warmView.index = i % 100;
+    // eslint-disable-next-line @typescript-eslint/no-unused-expressions
+    warmView.x;
+    warmView.x = i * 0.1;
   }
   reportOptimizationStatus(push, "SOA.push");
   reportOptimizationStatus(get, "SOA.get");
@@ -94,6 +129,21 @@ bench("SOA.createView: traverse 100 items via view index change", () => {
   const soa = makeParticleSOA();
   for (let i = 0; i < 100; i++) push(soa, { x: i, y: i, vx: 1, vy: 1 });
   const view = createView(soa, 0);
+  let sum = 0;
+  for (let i = 0; i < 100; i++) {
+    view.index = i;
+    sum += view.x;
+  }
+  return sum;
+});
+
+// Pre-built SOA so bench measures only view creation + traversal, not SOA setup.
+// This is the warm path: getOrCreateDescriptors returns cached descriptors.
+const _prebuiltSoa = makeParticleSOA();
+for (let i = 0; i < 100; i++) push(_prebuiltSoa, { x: i * 0.1, y: i * 0.2, vx: 0.5, vy: 0.3 });
+
+bench("SOA.createView: traverse 100 items (pre-built SOA, warm descriptor cache)", () => {
+  const view = createView(_prebuiltSoa, 0);
   let sum = 0;
   for (let i = 0; i < 100; i++) {
     view.index = i;

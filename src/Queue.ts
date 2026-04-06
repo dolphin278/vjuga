@@ -53,7 +53,7 @@ export function pop<T>(queue: Queue<T>): T | undefined {
   queue[kTail] = (queue[kTail] - 1 + list.length) & queue[kCapacityMask];
   const value = list[queue[kTail]];
   list[queue[kTail]] = void 0;
-  tryToShrinkList(queue);
+  if (list.length > 10000) tryToShrinkList(queue);
   return value;
 }
 
@@ -94,7 +94,7 @@ export function shift<T>(queue: Queue<T>): T | undefined {
   list[queue[kHead]] = void 0;
   queue[kHead] = (queue[kHead] + 1) & queue[kCapacityMask];
 
-  tryToShrinkList(queue);
+  if (list.length > 10000) tryToShrinkList(queue);
   return value;
 }
 
@@ -113,7 +113,7 @@ export function toArray<T>(queue: Queue<T>): Array<T> {
   const head = queue[kHead];
   const tail = queue[kTail];
 
-  const result: Array<T | undefined> = Array(size(queue));
+  const result: Array<T | undefined> = Array((tail - head + list.length) & queue[kCapacityMask]);
 
   if (tail >= head) {
     for (let i = head; i < tail; i++) {
@@ -136,7 +136,7 @@ export function dumpToArray<T>(queue: Queue<T>): Array<T> {
   const head = queue[kHead];
   const tail = queue[kTail];
 
-  const result: Array<T> = Array(size(queue));
+  const result: Array<T> = Array((tail - head + list.length) & queue[kCapacityMask]);
 
   if (tail >= head) {
     for (let i = head; i < tail; i++) {

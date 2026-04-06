@@ -83,7 +83,7 @@ export function acquire<T extends object>(pool: MemoryPool<T>): T {
     return freeList.pop()!;
   }
 
-  if (pool.freeList.length + pool.acquiredCount >= pool.maxSize) {
+  if (pool.acquiredCount >= pool.maxSize) {
     throw new Error("MemoryPool is full");
   }
 

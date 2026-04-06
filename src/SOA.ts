@@ -10,48 +10,63 @@ export type SOA<T> = { [K in keyof T]: T[K][] };
 const idxSymbol: unique symbol = Symbol("index");
 
 /**
+ * Cached per-SOA property descriptors. Sharing getter/setter function objects across
+ * all views from the same SOA instance ensures their hidden classes are identical,
+ * keeping V8 ICs for property accesses monomorphic. Each getter also captures the
+ * array reference directly (rather than going through soa[key] on every access).
+ */
+const viewDescriptorCache = new WeakMap<object, PropertyDescriptorMap>();
+
+function getOrCreateDescriptors<T>(soa: SOA<T>): PropertyDescriptorMap {
+  let descriptors = viewDescriptorCache.get(soa as object);
+  if (descriptors !== undefined) return descriptors;
+  descriptors = {};
+  for (const key in soa) {
+    const arr = (soa as Record<string, unknown[]>)[key];
+    descriptors[key] = {
+      get(this: { [idxSymbol]: number }) {
+        return arr[this[idxSymbol]];
+      },
+      set(this: { [idxSymbol]: number }, v: unknown) {
+        arr[this[idxSymbol]] = v;
+      },
+      enumerable: true,
+      configurable: false,
+    };
+  }
+  viewDescriptorCache.set(soa as object, descriptors);
+  return descriptors;
+}
+
+// Shared index property descriptor — no per-instance captures, allocated once.
+const indexDescriptor: PropertyDescriptor = {
+  get(this: { [idxSymbol]: number }) {
+    return this[idxSymbol];
+  },
+  set(this: { [idxSymbol]: number }, value: number) {
+    this[idxSymbol] = value | 0;
+  },
+  enumerable: false,
+  configurable: false,
+};
+
+/**
  * Function creates view-like object with the shape of aggregated entity across
  * all SOA arrays.
  *
  * Accessing properties of the view object will actually access the corresponding
  * array at the index of the view.
  *
- * Note: Object.defineProperty + this = dynamic dispatch — perf trade-off; mark as profiling candidate.
+ * Getter/setter functions are shared across all views from the same SOA instance
+ * (via WeakMap cache), keeping V8 ICs monomorphic across views.
  */
 export function createView<T extends object>(soa: SOA<T>, index = 0): T & { index: number } {
   const view = {
     [idxSymbol]: index,
   } as T & { [idxSymbol]: number; index: number };
 
-  for (const key in soa) {
-    const k = key as keyof T & string;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    Object.defineProperty(view, k, {
-      get() {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        return (soa as Record<string, unknown[]>)[k][(this as any)[idxSymbol]];
-      },
-      set(value: unknown) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (soa as Record<string, unknown[]>)[k][(this as any)[idxSymbol]] = value;
-      },
-      enumerable: true,
-      configurable: false,
-    });
-  }
-
-  Object.defineProperty(view, "index", {
-    get() {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return (this as any)[idxSymbol];
-    },
-    set(value: number) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (this as any)[idxSymbol] = value | 0;
-    },
-    enumerable: false,
-    configurable: false,
-  });
+  Object.defineProperties(view, getOrCreateDescriptors(soa));
+  Object.defineProperty(view, "index", indexDescriptor);
 
   return view as T & { index: number };
 }

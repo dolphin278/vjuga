@@ -28,8 +28,7 @@ const modules = [
   "./ErrorChain.bench.js",
   "./SOA.bench.js",
   "./BufferizedFunction.bench.js",
-  "./ManagedResource.bench.js",
-  "./PromiseUtils.bench.js",
+"./PromiseUtils.bench.js",
   "./FunctionReference.bench.js",
 ] as const;
 

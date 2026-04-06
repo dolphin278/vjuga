@@ -25,6 +25,18 @@ test("default cache key function is JSON.stringify", () => {
   assert.deepEqual(calls, [{ a: 1 }]);
 });
 
+test("memoize caches undefined return values correctly", () => {
+  let calls = 0;
+  const fn = (_x: number): undefined => {
+    calls++;
+    return undefined;
+  };
+  const memoized = memoize(fn);
+  assert.strictEqual(memoized(1), undefined);
+  assert.strictEqual(memoized(1), undefined);
+  assert.strictEqual(calls, 1);
+});
+
 test("once returns function that calls original function only once", () => {
   let counter = 0;
   const fn = () => (counter++, counter);

@@ -31,5 +31,5 @@ export function make<T>(fn: Fn1<T[]>): Fn<T[]> {
 
 function worker<T>(queue: Queue.Queue<T>, fn: Fn1<T[]>, scheduled: Ref.RefCell<boolean>): void {
   scheduled.contents = false;
-  Reflect.apply(fn, null, [Queue.dumpToArray(queue)]);
+  fn.call(undefined, Queue.dumpToArray(queue));
 }

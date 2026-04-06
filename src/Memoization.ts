@@ -23,11 +23,9 @@ export function memoize<T extends readonly unknown[], R, K = string>(
 
   return function memoized(...args: T): R {
     const key: K = Reflect.apply(cacheKeyFn, undefined, args) as K;
-    if (cache.has(key)) {
-      const value = cache.get(key);
-      if (value === undefined) throw new Error("Undefined value in cache");
-      return value;
-    }
+    const cached = cache.get(key);
+    if (cached !== undefined) return cached;
+    if (cache.has(key)) return undefined as R; // fn returned undefined — rare
     const result: R = Reflect.apply(fn, undefined, args) as R;
     cache.set(key, result);
     return result;

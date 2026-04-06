@@ -100,10 +100,7 @@ export function release<T extends object>(pool: MemoryPool<T>, instance: T): voi
   pool.freeList.push(instance);
 }
 
-export function withAcquire<T extends object, R>(
-  pool: MemoryPool<T>,
-  fn: (instance: T) => R,
-): R {
+export function withAcquire<T extends object, R>(pool: MemoryPool<T>, fn: (instance: T) => R): R {
   const instance = acquire(pool);
   try {
     return fn(instance);

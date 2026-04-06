@@ -43,10 +43,7 @@ test("DebugMemoryPool preallocates minimum number of instances", () => {
 
 test("DebugMemoryPool throws on release of object not from this pool", () => {
   const pool = make({ factory: () => ({}) });
-  assert.throws(
-    () => release(pool, {}),
-    "Instance should belong to this pool",
-  );
+  assert.throws(() => release(pool, {}), "Instance should belong to this pool");
 });
 
 test("DebugMemoryPool throws when trying to acquire more than maxSize", () => {
@@ -141,7 +138,9 @@ test("dispose does not fire onLeak when no objects are acquired", () => {
 test("DebugMemoryPool usable as drop-in for ArrayPool pattern", () => {
   const pool = make<unknown[]>({
     factory: (): unknown[] => [],
-    reset: (arr) => { arr.length = 0; },
+    reset: (arr) => {
+      arr.length = 0;
+    },
   });
 
   const arr = acquire(pool) as number[];

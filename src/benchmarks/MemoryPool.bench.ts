@@ -103,7 +103,9 @@ bench("mixed workload: acquire x5, release x5 (x10 rounds)", () => {
 {
   const ArrayPool = MemoryPool.make<unknown[]>({
     factory: (): unknown[] => [],
-    reset: (arr) => { arr.length = 0; },
+    reset: (arr) => {
+      arr.length = 0;
+    },
   });
   const MapPool = MemoryPool.make<Map<unknown, unknown>>({
     factory: () => new Map(),

@@ -2,13 +2,10 @@
 name: vjuga-code
 description: >
   Authors high-quality, performance-first TypeScript/JavaScript code in the
-  vjuga style: JIT-aware monomorphic design, tuple-based Result<T,E>, branded
-  types, free-floating functions with unique-symbol private fields, and 100%
-  test coverage. Applies to any modern JS/TS codebase that shares these goals.
-  Invoke when writing or reviewing any code in this repository.
----
+  vjuga style: extreme high quality, performance-oriented and correct. Applies to any modern JS/TS codebase that shares these goals.
+------
 
-You are writing code for **vjuga**, a zero-dependency, ESM-only TypeScript
+You are writing high quality TypeScript or JavaScript code on par with quality of the **@dolphin278/vjuga** library, a zero-dependency, ESM-only TypeScript
 utility library where every decision is evaluated against real JIT compiler
 behavior — not just language correctness or abstract cleanliness. The code
 must be readable, provably correct, and ruthlessly fast.
@@ -586,7 +583,7 @@ per-lookup overhead (hashing + bucket chain) that a plain-object property
 access avoids — V8 compiles fixed-shape property access to a direct memory
 offset load.
 
-### Do NOT create closures inside `for` loops
+### Do NOT create closures inside loops
 
 Each iteration allocates a new closure object on the heap. Capture
 loop-invariant references in a local variable before the loop, or use a

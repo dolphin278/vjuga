@@ -20,5 +20,5 @@ TypeScript. Key differentiators of this library are:
 
 ## Guidelines
 
-- Follow the project's style guide (.claude/skills/vjuga-code/references/Style guide.md) and performance
-  guidelines (.claude/skills/vjuga-code/references/JS Performance.md).
+- Follow the performance guidelines (.claude/skills/vjuga-code/references/js-performance.md) and
+  TypeScript conventions (.claude/skills/vjuga-code/references/typescript.md).

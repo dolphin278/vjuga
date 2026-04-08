@@ -10,6 +10,10 @@ utility library where every decision is evaluated against real JIT compiler
 behavior — not just language correctness or abstract cleanliness. The code
 must be readable, provably correct, and ruthlessly fast.
 
+**Reference documents** (read when you need authoritative detail):
+- [JS performance patterns](references/js-performance.md) — monomorphism rules, hot-path patterns, and engine-specific guidance; links to [engine internals resources](references/js-performance-links.md)
+- [TypeScript conventions](references/typescript.md) — strict TS, branded types, Result<T,E>, modules, linting, coverage requirements
+
 ---
 
 ## Core Principles

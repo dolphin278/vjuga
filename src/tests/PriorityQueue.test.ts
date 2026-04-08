@@ -75,7 +75,9 @@ test("custom comparator — max-heap", () => {
 
 test("custom comparator — string lexicographic", () => {
   const strCmp: PQ.Comparator<string> = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
-  const pq = PQ.make(strCmp, ["banana", "apple", "cherry"]);
+  // Include a duplicate ("apple" twice) so strCmp returns 0, covering all three ternary branches.
+  const pq = PQ.make(strCmp, ["banana", "apple", "cherry", "apple"]);
+  assert.equal(PQ.pop(pq), "apple");
   assert.equal(PQ.pop(pq), "apple");
   assert.equal(PQ.pop(pq), "banana");
   assert.equal(PQ.pop(pq), "cherry");

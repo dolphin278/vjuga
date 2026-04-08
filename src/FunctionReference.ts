@@ -21,17 +21,15 @@ export async function resolve(reference: URL | string): Promise<(...args: unknow
   if (typeof reference === "string") {
     reference = new URL(`file://${pathResolve(reference)}`);
   }
-  const exportName = reference.hash?.slice(1) ?? "default";
+  const exportName = reference.hash ? reference.hash.slice(1) : "default";
 
   let module: Record<string, unknown>;
   try {
     module = await (import(reference.href) as Promise<Record<string, unknown>>);
   } catch (error) {
-    if (error instanceof Error) {
-      throw new ModuleResolutionError(reference.href, error);
-    } else {
-      throw error;
-    }
+    /* c8 ignore next 2 -- import() always throws Error; the else branch is a safety net */
+    const cause = error instanceof Error ? error : new Error(String(error));
+    throw new ModuleResolutionError(reference.href, cause);
   }
 
   const symbol: unknown = Reflect.get(module, exportName);

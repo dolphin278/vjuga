@@ -65,6 +65,7 @@ test("flatMap() propagates inner Err", () => {
 test("flatMap() passes outer Err through without calling fn", () => {
   let called = false;
   const r = Result.flatMap(Result.err("outer") as Result.Result<number, string>, (x) => {
+    /* c8 ignore next 2 -- this callback is intentionally never invoked; the test verifies that */
     called = true;
     return Result.ok(x + 1);
   });
@@ -99,6 +100,14 @@ test("unwrap() wraps non-Error Err payload in Error", () => {
   });
 });
 
+// Shared mapErrFn used across fromThrowable/fromPromise/fromAsyncThrowable tests.
+// Defined once so V8 tracks branch coverage on a single function object — both
+// the Error path (e.message) and the non-Error path (String(e)) are covered
+// across the test suite.
+function mapErrToString(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
 // --- fromThrowable ---
 
 test("fromThrowable() wraps successful call in Ok", () => {
@@ -112,14 +121,19 @@ test("fromThrowable() wraps thrown error in Err", () => {
   assert.ok(r[1] instanceof SyntaxError);
 });
 
-test("fromThrowable() applies mapErrFn to caught value", () => {
-  const r = Result.fromThrowable(
-    () => {
-      throw new Error("raw");
-    },
-    (e) => (e instanceof Error ? e.message : String(e)),
-  );
+test("fromThrowable() applies mapErrFn to caught Error", () => {
+  const r = Result.fromThrowable(() => {
+    throw new Error("raw");
+  }, mapErrToString);
   assert.deepEqual(r, [false, "raw"]);
+});
+
+test("fromThrowable() mapErrFn handles non-Error thrown values", () => {
+  const r = Result.fromThrowable(() => {
+    // eslint-disable-next-line @typescript-eslint/only-throw-error
+    throw "non-error string";
+  }, mapErrToString);
+  assert.deepEqual(r, [false, "non-error string"]);
 });
 
 // --- fromPromise ---
@@ -135,11 +149,15 @@ test("fromPromise() resolves Err for rejected promise", async () => {
   assert.ok(r[1] instanceof Error);
 });
 
-test("fromPromise() applies mapErrFn on rejection", async () => {
-  const r = await Result.fromPromise(Promise.reject(new Error("raw")), (e) =>
-    e instanceof Error ? e.message : String(e),
-  );
+test("fromPromise() applies mapErrFn on Error rejection", async () => {
+  const r = await Result.fromPromise(Promise.reject(new Error("raw")), mapErrToString);
   assert.deepEqual(r, [false, "raw"]);
+});
+
+test("fromPromise() applies mapErrFn on non-Error rejection", async () => {
+  // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+  const r = await Result.fromPromise(Promise.reject("non-error"), mapErrToString);
+  assert.deepEqual(r, [false, "non-error"]);
 });
 
 // --- fromAsyncThrowable ---
@@ -159,15 +177,21 @@ test("fromAsyncThrowable() wraps rejected promise in Err", async () => {
   assert.ok(r[1] instanceof Error);
 });
 
-test("fromAsyncThrowable() applies mapErrFn on rejection", async () => {
-  const safe = Result.fromAsyncThrowable(
-    async (_x: number) => {
-      throw new Error("async fail");
-    },
-    (e) => (e instanceof Error ? e.message : String(e)),
-  );
+test("fromAsyncThrowable() applies mapErrFn on Error rejection", async () => {
+  const safe = Result.fromAsyncThrowable(async (_x: number) => {
+    throw new Error("async fail");
+  }, mapErrToString);
   const r = await safe(1);
   assert.deepEqual(r, [false, "async fail"]);
+});
+
+test("fromAsyncThrowable() mapErrFn handles non-Error rejection", async () => {
+  const safe = Result.fromAsyncThrowable(async (_x: number) => {
+    // eslint-disable-next-line @typescript-eslint/only-throw-error
+    throw "non-error string";
+  }, mapErrToString);
+  const r = await safe(1);
+  assert.deepEqual(r, [false, "non-error string"]);
 });
 
 // --- TypeScript narrowing (compile-time check via assignment) ---
@@ -177,8 +201,8 @@ test("discriminant at [0] narrows the union correctly", () => {
   if (r[0]) {
     const v: number = r[1]; // must compile — r is Ok<number> here
     assert.equal(v, 1);
+    /* c8 ignore next 5 -- Err branch is unreachable; kept to verify TypeScript narrowing compiles */
   } else {
-    // TypeScript narrows r[1] to string here — assert it is assignable
     assert.equal(typeof (r[1] satisfies string), "string");
     assert.fail("should not reach Err branch");
   }

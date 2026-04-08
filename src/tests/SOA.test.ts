@@ -157,6 +157,16 @@ test("SOA-swapRemove throws RangeError for out-of-bounds index", () => {
   assert.throws(() => SOA.swapRemove(soa, -1), RangeError);
 });
 
+test("SOA-createView descriptor cache hit (second view reuses cached descriptors)", () => {
+  const soa = { x: [1, 2, 3], y: [4, 5, 6] };
+  const view1 = SOA.createView(soa, 0);
+  const view2 = SOA.createView(soa, 2); // second call → descriptor cache is hit
+  assert.equal(view1.x, 1);
+  assert.equal(view2.x, 3);
+  view2.y = 99;
+  assert.equal(soa.y[2], 99);
+});
+
 test("SOA-clear empties all slices", () => {
   const soa = { x: [1, 2, 3], y: [4, 5, 6] };
   SOA.clear(soa);

@@ -20,3 +20,11 @@ test("referencing non-function export throws an error", async () => {
     /Resolving (.*) failed - module loaded but exported symbol is not a function/,
   );
 });
+
+test("resolve without hash falls back to 'default' export name", async () => {
+  // No '#hash' → exportName = "default"; FunctionReference.js has no default export → throws.
+  await assert.rejects(
+    resolve("./src/FunctionReference.js"),
+    /Resolving (.*) failed - module loaded but exported symbol is not a function/,
+  );
+});

@@ -27,8 +27,8 @@ export interface MemoryPoolConfig<T> {
  * micro-benchmarks.
  *
  * This implementation intentionally has no ownership tracking or double-release
- * guards.  Use `DebugMemoryPool` during development for those safety checks,
- * then swap back to this module for production.
+ * guards.  If ownership tracking is needed during development, wrap the pool in
+ * a Set-based borrow-checker at the call site.
  *
  * `maxSize` is the maximum number of objects this pool will ever *create*
  * (pre-allocated + lazily allocated).  Acquiring beyond that limit throws.

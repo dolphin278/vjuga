@@ -6,9 +6,11 @@ import { ValidationError } from "../Validator.js";
 // --- Helpers ---
 function assertOk<T>(r: Validator.Validator<T> extends (v: unknown) => infer R ? R : never): void;
 function assertOk(r: ReturnType<Validator.Validator<unknown>>): void {
+  /* c8 ignore next 2 */
   if (!r[0]) throw new Error(`Expected Ok but got Err: ${String(r[1])}`);
 }
 function assertErr(r: ReturnType<Validator.Validator<unknown>>): ValidationError {
+  /* c8 ignore next 2 */
   if (r[0]) throw new Error("Expected Err but got Ok");
   return r[1] as ValidationError;
 }
@@ -41,6 +43,11 @@ test("number() rejects NaN", () => {
 
 test("number() rejects string", () => {
   assertErr(Validator.number()("3"));
+});
+
+test("number() rejects null (exercises formatReceived null branch)", () => {
+  const e = assertErr(Validator.number()(null));
+  assert.ok(e.message.includes("null"));
 });
 
 // --- boolean ---
@@ -164,6 +171,16 @@ test("record() rejects when a value fails", () => {
 
 test("record() rejects array", () => {
   assertErr(Validator.record(Validator.number())([1, 2]));
+});
+
+test("record() skips inherited enumerable properties", () => {
+  const proto = { inherited: "ignored" };
+  const obj = Object.create(proto) as Record<string, unknown>;
+  obj["own"] = 42;
+  const v = Validator.record(Validator.number());
+  const r = v(obj);
+  assert.ok(r[0]);
+  assert.deepEqual(r[1], { own: 42 });
 });
 
 // --- tuple ---

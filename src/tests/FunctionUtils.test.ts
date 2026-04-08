@@ -1,6 +1,6 @@
 import * as assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { partial, partialNamed, pipe, spread, tuple, tupled, brand } from "../FunctionUtils.js";
+import { partial, partialNamed, pipe, spread, tuple, tupled, brand, unreachable } from "../FunctionUtils.js";
 import type { Branded } from "../FunctionUtils.js";
 
 describe("FunctionUtils", () => {
@@ -88,6 +88,12 @@ describe("FunctionUtils", () => {
       const composed = pipe(fn1, fn2, fn3, fn4, fn5, fn6, fn7);
       assert.equal(composed(1, 1), 8);
     });
+  });
+});
+
+describe("unreachable", () => {
+  it("throws 'unreachable'", () => {
+    assert.throws(() => unreachable(undefined as never), /unreachable/);
   });
 });
 

@@ -15,3 +15,8 @@ and resource management utilities.
   guidelines (references/JS Performance.md).
 - When making changes, ensure that they are profiled and benchmarked to avoid
   performance regressions
+- **100% code coverage is required** (branches, statements, functions, lines).
+  The `npm run coverage` script enforces this with `--check-coverage`. Every new
+  module must ship with tests that cover all code paths. Use `/* c8 ignore next */`
+  only for platform-specific branches that cannot be exercised in Node.js tests
+  (e.g. Bun-only paths), and add a comment explaining why.

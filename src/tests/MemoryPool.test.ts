@@ -73,6 +73,7 @@ test("Memory pool throws when min size is greater than max size", () => {
       make({
         minSize: 2,
         maxSize: 1,
+        /* c8 ignore next -- make() throws before the factory is ever called */
         factory: () => ({}),
       }),
     "Min size should be less than or equal to max size",

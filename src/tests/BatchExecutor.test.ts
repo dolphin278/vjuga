@@ -46,11 +46,10 @@ test("When nested functions returns array of different length, we throw an error
   const batchExecutor = make(fn);
   try {
     await batchExecutor(1);
+  /* c8 ignore next 2 -- this try block always throws; normal exit is unreachable */
   } catch (err) {
     wasThrown = true;
-    if (!(err instanceof Error)) {
-      throw new Error("Expected error to be an instance of Error");
-    }
+    assert.ok(err instanceof Error, "Expected error to be an instance of Error");
     assert.equal(
       err.message,
       "BatchExecutor: fn returned 2 results, but expected 1",

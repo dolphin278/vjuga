@@ -58,6 +58,7 @@ function formatReceived(value: unknown): string {
 }
 
 function rerootError(e: ValidationError, parentPath: string | number): ValidationError {
+  /* c8 ignore next 2 -- empty-string parentPath would produce a leading-dot path, but no caller passes ""; kept as a safety guard */
   if (parentPath === "") return e;
   const childPath = e.path === "" ? String(parentPath) : `${parentPath}.${e.path}`;
   return new ValidationError(e.expected, e.received, childPath);

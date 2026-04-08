@@ -60,6 +60,7 @@ const _escapeImpl = (str: string): string => {
 
 declare const Bun: { escapeHTML: (str: string) => string | Uint8Array } | undefined;
 
+/* c8 ignore next 4 -- Bun path is exercised by `npm run test:bun`; Node tests always take _escapeImpl. */
 export const escape: (str: string) => string =
   typeof Bun !== "undefined" && typeof Bun.escapeHTML === "function"
     ? (str) => Bun.escapeHTML(str) as string

@@ -11,8 +11,8 @@ and resource management utilities.
 
 ## Guidelines for Claude
 
-- Follow the project's style guide (references/Style guide.md) and performance
-  guidelines (references/JS Performance.md).
+- Follow the project's style guide (.claude/skills/vjuga-code/references/Style guide.md) and performance
+  guidelines (.claude/skills/vjuga-code/references/JS Performance.md).
 - When making changes, ensure that they are profiled and benchmarked to avoid
   performance regressions
 - **100% code coverage is required** (branches, statements, functions, lines).

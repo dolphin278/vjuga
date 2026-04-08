@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
-import { parseExn, stringify, parse } from "../JSON.js";
+import { parseExn, stringify, parse, safeParse } from "../JSON.js";
 
 describe("JSON", () => {
   describe("stringify", () => {
@@ -99,6 +99,68 @@ describe("JSON", () => {
 
     it("should return undefined on invalid JSON", () => {
       assert.equal(parse("asdf"), undefined);
+    });
+  });
+
+  describe("safeParse", () => {
+    it("should parse valid JSON and return Ok", () => {
+      const r = safeParse('{"a":1}');
+      assert.equal(r[0], true);
+      assert.deepEqual(r[1], { a: 1 });
+    });
+
+    it("should return Err on invalid JSON", () => {
+      const r = safeParse("not json");
+      assert.equal(r[0], false);
+      assert.equal(r[1], "invalid JSON");
+    });
+
+    it("should strip __proto__ keys from objects", () => {
+      const r = safeParse('{"__proto__":{"polluted":true},"safe":"value"}');
+      assert.equal(r[0], true);
+      assert.deepEqual(r[1], { safe: "value" });
+    });
+
+    it("should strip constructor keys from objects", () => {
+      const r = safeParse('{"constructor":{"prototype":{"polluted":true}},"ok":1}');
+      assert.equal(r[0], true);
+      assert.deepEqual(r[1], { ok: 1 });
+    });
+
+    it("should strip __proto__ from nested objects", () => {
+      const r = safeParse('{"a":{"__proto__":{"bad":true},"b":1}}');
+      assert.equal(r[0], true);
+      assert.deepEqual(r[1], { a: { b: 1 } });
+    });
+
+    it("should strip dangerous keys from objects inside arrays", () => {
+      const r = safeParse('[{"__proto__":1,"ok":2},{"constructor":3,"safe":4}]');
+      assert.equal(r[0], true);
+      assert.deepEqual(r[1], [{ ok: 2 }, { safe: 4 }]);
+    });
+
+    it("should handle deeply nested structures", () => {
+      const r = safeParse('{"a":{"b":{"c":{"__proto__":"bad","d":"good"}}}}');
+      assert.equal(r[0], true);
+      assert.deepEqual(r[1], { a: { b: { c: { d: "good" } } } });
+    });
+
+    it("should pass through primitives unchanged", () => {
+      assert.deepEqual(safeParse("42"), [true, 42]);
+      assert.deepEqual(safeParse('"hello"'), [true, "hello"]);
+      assert.deepEqual(safeParse("true"), [true, true]);
+      assert.deepEqual(safeParse("null"), [true, null]);
+    });
+
+    it("should handle empty objects and arrays", () => {
+      assert.deepEqual(safeParse("{}"), [true, {}]);
+      assert.deepEqual(safeParse("[]"), [true, []]);
+    });
+
+    it("should handle clean objects without stripping anything", () => {
+      const r = safeParse('{"name":"test","value":123}');
+      assert.equal(r[0], true);
+      assert.deepEqual(r[1], { name: "test", value: 123 });
     });
   });
 });

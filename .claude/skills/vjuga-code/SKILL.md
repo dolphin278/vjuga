@@ -398,6 +398,248 @@ Error hierarchies stay flat — no more than one level of subclassing.
 
 ---
 
+## Additional Principles
+
+These principles complement the core set above. They are drawn from
+battle-tested patterns in high-throughput Node.js libraries (Pino, Fastify,
+Undici, sonic-boom) and Matteo Collina's engineering methodology.
+
+### 10. Pre-compute at initialization, not per-call
+
+When a computation depends only on configuration known at startup — schemas,
+format strings, lookup tables, dispatch maps — generate the specialized
+function or data structure **once** during initialization. The hot path should
+execute pre-compiled code, not re-derive it on every call.
+
+```ts
+// Good: build the lookup once at module load
+const flagToString: ReadonlyMap<number, string> = new Map([
+  [1, "read"], [2, "write"], [4, "exec"],
+]);
+
+// Bad: re-derive the mapping on every call
+function flagToStringBad(flag: number): string {
+  if (flag === 1) return "read";  // fine for 3 cases, but the principle
+  if (flag === 2) return "write"; // scales: pre-compiled validators,
+  return "exec";                  // serializers, routers, etc.
+}
+```
+
+This is the pattern behind `fast-json-stringify` (pre-compiled serializers)
+and Fastify's startup-time schema compilation. Move work to initialization
+so the hot path pays zero derivation cost.
+
+### 11. Offload non-critical work from hot paths
+
+Operations not on the critical response path — logging, metrics collection,
+analytics, serialization for external systems — should be **deferred or
+offloaded**:
+
+- `setTimeout(fn, 0)` — next macrotask (used by vjuga's `BufferizedFunction`)
+- `queueMicrotask(fn)` — end of current task, before next macrotask
+- `worker_threads` — for CPU-heavy processing (logging transports, encoding)
+
+Use the platform's built-in event loop monitoring to measure impact:
+- Node.js: `perf_hooks.monitorEventLoopDelay()`, `performance.eventLoopUtilization()`
+- Bun: equivalent built-in APIs
+
+Do **not** reinvent event loop monitoring — the platform APIs are
+well-optimized and well-maintained.
+
+### 12. Backpressure at producer-consumer boundaries
+
+When one component produces data faster than another consumes it, the
+producer must be signaled to slow down. Without backpressure, unbounded
+memory growth or data loss occurs.
+
+Patterns:
+- Return `false` from write operations to signal "buffer full"
+- Use bounded buffers with explicit capacity limits
+- Await flush completion before producing more
+
+```ts
+// Producer checks return value to know when to pause
+const accepted = write(buffer, item);
+if (!accepted) {
+  // Wait for drain before sending more
+  await flush(buffer);
+}
+```
+
+### 13. Security at parse boundaries
+
+Validate and sanitize at system boundaries where **untrusted data enters**.
+Internal code paths between trusted modules need not re-validate.
+
+Specific threats to address at parse boundaries:
+- **Prototype pollution**: filter `__proto__` and `constructor` keys from
+  parsed JSON (see `safeParse` in `JSON.ts`, inspired by `secure-json-parse`)
+- **Schema compliance**: validate before processing, reject early with
+  `Result.err()`
+- **Input size**: bound input length before parsing to prevent DoS
+
+Do **not** add validation in internal hot paths between trusted modules —
+that is wasted CPU. Validate once at the boundary, then trust the result.
+
+---
+
+## GC-Aware Allocation Patterns
+
+V8 uses a **generational garbage collector**:
+
+- **Young generation** (Scavenger): small, fast, collects short-lived objects
+  cheaply via copying. Most allocations land here.
+- **Old generation** (Mark-Sweep / Mark-Compact): larger, slower, collects
+  long-lived objects. Objects that survive multiple Scavenger cycles are
+  promoted here.
+
+Implications for hot-path code:
+
+1. **Short-lived temporaries are cheap** — objects allocated and discarded
+   within one function call are collected by the Scavenger at near-zero cost.
+   Do not contort code to avoid them unless profiling shows GC pressure.
+
+2. **Long-lived mutable objects are expensive to collect** — once promoted to
+   old generation, they persist until a Mark-Compact cycle. Pre-allocate and
+   reuse them (see `MemoryPool`).
+
+3. **Avoid allocation in tight loops** — each iteration that creates an object
+   produces Scavenger work proportional to iteration count. Use pre-allocated
+   typed arrays or `MemoryPool.acquire/release` instead.
+
+4. **`WeakRef` + `FinalizationRegistry`** — for caches of expensive objects
+   that should not prevent GC. The runtime will clean them up when memory
+   pressure rises. Cleanup callbacks are non-deterministic — never rely on
+   them for correctness.
+
+```ts
+// Good: reuse pool objects in hot loop
+for (let i = 0; i < N; i++) {
+  const obj = MemoryPool.acquire(pool);
+  process(obj);
+  MemoryPool.release(pool, obj);
+}
+
+// Bad: allocate per iteration — Scavenger runs N times
+for (let i = 0; i < N; i++) {
+  process({ x: 0, y: 0 }); // N heap objects created and discarded
+}
+```
+
+---
+
+## Advanced TypeScript Patterns
+
+Beyond the strict-TypeScript basics in principle 8, these patterns are useful
+for vjuga's API surface:
+
+### Conditional types for overloaded returns
+
+When a function's return type depends on a type parameter:
+
+```ts
+type LookupResult<T, Fallback> =
+  Fallback extends undefined ? T | undefined : T;
+
+function get<T, F = undefined>(
+  cache: Cache<T>, key: string, fallback?: F
+): LookupResult<T, F> { ... }
+```
+
+### Template literal types for branded strings
+
+Create branded string subtypes from string literal patterns:
+
+```ts
+type EmailAddress = Branded<string, 'EmailAddress'>;
+type UUID = Branded<string, 'UUID'>;
+```
+
+### `infer` for extracting inner types
+
+Extract the success/error types from `Result`:
+
+```ts
+type UnwrapOk<R> = R extends Ok<infer T> ? T : never;
+type UnwrapErr<R> = R extends Err<infer E> ? E : never;
+```
+
+### Variance annotations
+
+Use `in`/`out` annotations on generic parameters to make variance explicit:
+
+```ts
+interface Reader<out T> { read(): T }    // covariant
+interface Writer<in T> { write(v: T): void }  // contravariant
+```
+
+---
+
+## Common Anti-Patterns
+
+Explicit list of things to **avoid** — each with an explanation of why.
+
+### Do NOT use `Map` for fixed-key lookups
+
+When the set of keys is known at compile time, use a plain object. `Map` has
+per-lookup overhead (hashing + bucket chain) that a plain-object property
+access avoids — V8 compiles fixed-shape property access to a direct memory
+offset load.
+
+### Do NOT create closures inside `for` loops
+
+Each iteration allocates a new closure object on the heap. Capture
+loop-invariant references in a local variable before the loop, or use a
+module-level helper function.
+
+### Do NOT use recursion in tree traversals on untrusted input
+
+Recursive traversal is bounded by call-stack depth (~10K frames in V8).
+Malicious or deeply nested input causes a stack overflow. Use an explicit
+stack array instead.
+
+### Do NOT ignore the return value of `Result`
+
+Every `Result<T, E>` must be checked. Discarding the result silently swallows
+errors — use the `[0]` discriminant to branch on success/failure.
+
+### Do NOT use `Object.keys()` + `forEach` in hot paths
+
+`Object.keys()` allocates a new array. Use `for...in` with
+`Object.hasOwn()` or, better, redesign the data structure to avoid
+property enumeration in hot code.
+
+---
+
+## Decision Frameworks
+
+### When to use typed arrays vs plain arrays
+
+```
+Is the element type numeric or binary?
+  ├─ YES → Use typed array (Int32Array, Float64Array, Uint8Array, etc.)
+  │        Choose the narrowest type that fits the domain.
+  └─ NO → Is it a hot-path data structure?
+           ├─ YES → Use plain Array<T> but pre-allocate capacity.
+           │        Avoid push() in tight loops — pre-size and assign by index.
+           └─ NO → Use plain Array<T> with standard methods.
+```
+
+### When to use SharedArrayBuffer vs postMessage
+
+```
+Do multiple Workers need to share the same data?
+  ├─ NO → Use postMessage (structured clone). Simple and safe.
+  └─ YES → Is the data read-only after initialization?
+            ├─ YES → Share the ArrayBuffer, no Atomics needed.
+            └─ NO → Can mutations be expressed as single Atomics operations?
+                     ├─ YES → Use SharedArrayBuffer + Atomics.
+                     └─ NO → Design a lock protocol or reconsider the architecture.
+                              Multi-field updates without a lock are a correctness hazard.
+```
+
+---
+
 ## Pre-ship Checklist
 
 Before any code is considered complete:

@@ -169,3 +169,64 @@ optimized for:
   V8 are outdated. The foundational concepts (shapes, ICs, monomorphism) still
   apply, but specific patterns (e.g. "don't use try-catch") are no longer
   relevant.
+
+---
+
+## 8. High-Performance Node.js Patterns (Matteo Collina / Fastify Ecosystem)
+
+Libraries that demonstrate applied JIT-aware, allocation-conscious design in
+production-grade Node.js code. Study their source for transferable patterns.
+
+### Logging & I/O Buffering
+
+- **Pino** (fast JSON logger): https://github.com/pinojs/pino
+  - Worker-thread transport isolation, ring-buffer communication, async
+    buffering with configurable flush thresholds
+- **sonic-boom** (async file writer): https://github.com/pinojs/sonic-boom
+  - Buffer batching to reduce syscall overhead, backpressure signaling
+    (`write()` returns `false`), periodic flushing, UTF-8-only fast path
+
+### Serialization & Parsing
+
+- **fast-json-stringify**: https://github.com/fastify/fast-json-stringify
+  - Schema-driven code generation: compiles a JSON Schema into a specialized
+    `stringify` function at initialization time, 2–3× faster than
+    `JSON.stringify` for small payloads
+- **secure-json-parse**: https://github.com/fastify/secure-json-parse
+  - Prototype-pollution prevention: strips `__proto__` and `constructor`
+    keys during JSON parsing (OWASP threat)
+
+### Routing & Data Structures
+
+- **find-my-way** (radix tree router): https://github.com/delvedor/find-my-way
+  - Compact prefix trie for O(log n) string-key lookup, used by Fastify
+    for route matching
+
+### HTTP & Networking
+
+- **Undici** (HTTP/1.1 client): https://github.com/nodejs/undici
+  - Connection pooling, HTTP pipelining, minimal abstraction layers,
+    direct low-level API (`undici.request`) over standards-compliant wrapper
+    (`undici.fetch`)
+
+### Event Loop Monitoring
+
+- **loopbench**: https://github.com/mcollina/loopbench
+  - Interval-based event loop delay sampling with threshold-based overload
+    detection. Note: Node.js now provides built-in alternatives via
+    `perf_hooks.monitorEventLoopDelay()` and
+    `performance.eventLoopUtilization()`
+
+### Object Pooling
+
+- **reusify**: https://github.com/mcollina/reusify
+  - Linked-list-based free list for object reuse, ~10% throughput
+    improvement in middleware pipelines (less impactful on Node ≥ v16 due
+    to GC improvements)
+
+### Frameworks (for architectural patterns, not direct use)
+
+- **Fastify**: https://github.com/fastify/fastify
+  - Pre-initialization optimization (schema compilation at startup),
+    minimal call-stack depth, plugin-based encapsulation, schema-first
+    validation

@@ -265,6 +265,37 @@ test("map() passes Err through", () => {
   assertErr(v(42));
 });
 
+// --- toGuard ---
+
+test("toGuard() returns true for valid input", () => {
+  const isString = Validator.toGuard(Validator.string());
+  assert.equal(isString("hello"), true);
+});
+
+test("toGuard() returns false for invalid input", () => {
+  const isString = Validator.toGuard(Validator.string());
+  assert.equal(isString(42), false);
+});
+
+test("toGuard() narrows type (compiles with filter)", () => {
+  const isNumber = Validator.toGuard(Validator.number());
+  const mixed: unknown[] = [1, "two", 3];
+  const nums: number[] = mixed.filter(isNumber);
+  assert.deepEqual(nums, [1, 3]);
+});
+
+// --- toAssertion ---
+
+test("toAssertion() does not throw for valid input", () => {
+  const assertString = Validator.toAssertion(Validator.string());
+  assert.doesNotThrow(() => assertString("hello"));
+});
+
+test("toAssertion() throws ValidationError for invalid input", () => {
+  const assertString = Validator.toAssertion(Validator.string());
+  assert.throws(() => assertString(42), ValidationError);
+});
+
 // --- ValidationError ---
 
 test("ValidationError has correct fields", () => {

@@ -292,3 +292,37 @@ export function map<T, U>(validator: Validator<T>, fn: (value: T) => U): Validat
     return ok(Reflect.apply(fn, undefined, [result[1]]) as U);
   };
 }
+
+/**
+ * Converts a `Validator<T>` into a TypeScript type-guard function.
+ *
+ * ```ts
+ * const isUser = Validator.toGuard(userValidator);
+ * if (isUser(value)) { // value is User here }
+ * unknowns.filter(isUser); // → User[]
+ * ```
+ */
+export function toGuard<T>(validator: Validator<T>): (value: unknown) => value is T {
+  return function isT(value: unknown): value is T {
+    return (Reflect.apply(validator, undefined, [value]) as Result<T, ValidationError>)[0];
+  };
+}
+
+/**
+ * Converts a `Validator<T>` into a TypeScript assertion function.
+ * Throws the `ValidationError` directly when validation fails.
+ *
+ * ```ts
+ * const assertUser = Validator.toAssertion(userValidator);
+ * assertUser(value); // throws ValidationError if invalid
+ * // value is narrowed to User here
+ * ```
+ */
+export function toAssertion<T>(
+  validator: Validator<T>,
+): (value: unknown) => asserts value is T {
+  return function assertT(value: unknown): asserts value is T {
+    const result = Reflect.apply(validator, undefined, [value]) as Result<T, ValidationError>;
+    if (!result[0]) throw result[1];
+  };
+}

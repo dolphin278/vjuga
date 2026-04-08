@@ -1,6 +1,15 @@
 import * as assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { partial, partialNamed, pipe, spread, tuple, tupled, brand, unreachable } from "../FunctionUtils.js";
+import {
+  partial,
+  partialNamed,
+  pipe,
+  spread,
+  tuple,
+  tupled,
+  brand,
+  unreachable,
+} from "../FunctionUtils.js";
 import type { Branded } from "../FunctionUtils.js";
 
 describe("FunctionUtils", () => {

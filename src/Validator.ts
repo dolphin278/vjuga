@@ -318,9 +318,7 @@ export function toGuard<T>(validator: Validator<T>): (value: unknown) => value i
  * // value is narrowed to User here
  * ```
  */
-export function toAssertion<T>(
-  validator: Validator<T>,
-): (value: unknown) => asserts value is T {
+export function toAssertion<T>(validator: Validator<T>): (value: unknown) => asserts value is T {
   return function assertT(value: unknown): asserts value is T {
     const result = Reflect.apply(validator, undefined, [value]) as Result<T, ValidationError>;
     if (!result[0]) throw result[1];

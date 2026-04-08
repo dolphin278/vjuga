@@ -18,21 +18,19 @@ test("ErrorChain.toArray", () => {
   assert.deepStrictEqual(chain, [error, cause]);
 });
 
-test("ErrorChain.find", async (t) => {
-  await t.test("finds error in the chain", () => {
-    const cause = new Error("cause");
-    const error = new Error("error", { cause });
-    const result = ErrorChain.find((err) => err instanceof Error && err.message === "cause", error);
-    assert.strictEqual(result, cause);
-  });
+test("ErrorChain.find - finds error in the chain", () => {
+  const cause = new Error("cause");
+  const error = new Error("error", { cause });
+  const result = ErrorChain.find((err) => err instanceof Error && err.message === "cause", error);
+  assert.strictEqual(result, cause);
+});
 
-  await t.test("returns undefined if not found", () => {
-    const cause = new Error("cause");
-    const error = new Error("error", { cause });
-    const result = ErrorChain.find(
-      (err) => err instanceof Error && err.message === "not found",
-      error,
-    );
-    assert.strictEqual(result, undefined);
-  });
+test("ErrorChain.find - returns undefined if not found", () => {
+  const cause = new Error("cause");
+  const error = new Error("error", { cause });
+  const result = ErrorChain.find(
+    (err) => err instanceof Error && err.message === "not found",
+    error,
+  );
+  assert.strictEqual(result, undefined);
 });

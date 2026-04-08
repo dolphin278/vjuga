@@ -172,17 +172,23 @@ export function pipe(...fns: ((...args: any[]) => any)[]): (...args: unknown[]) 
       const fn4 = fns[4];
       return (...x) => fn4(fn3(fn2(fn1(fn0(...x)))));
     }
-    default: {
-      const call = Function.prototype.call;
-      const apply = Function.prototype.apply;
-
-      return (...x) => {
-        let result: unknown = apply.call(fns[0], void 0, x);
-        for (let i = 1; i < fns.length; i++) {
-          result = call.call(fns[i], void 0, result);
-        }
-        return result;
-      };
-    }
+    default:
+      // Extracted to avoid a `{}` block — Bun's coverage instrument marks the
+      // closing `}` of a default: block as uncovered when the block only contains
+      // a `return` statement (oven-sh/bun#16148).
+      return pipeVariadic(fns);
   }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function pipeVariadic(fns: ((...args: any) => any)[]): (...args: unknown[]) => unknown {
+  const call = Function.prototype.call;
+  const apply = Function.prototype.apply;
+  return (...x) => {
+    let result: unknown = apply.call(fns[0], void 0, x);
+    for (let i = 1; i < fns.length; i++) {
+      result = call.call(fns[i], void 0, result);
+    }
+    return result;
+  };
 }

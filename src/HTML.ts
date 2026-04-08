@@ -13,6 +13,7 @@ const AMP_STR = "&amp;";
 const QUOTE_STR = "&quot;";
 const APOS_STR = "&#039;";
 
+/* istanbul ignore next -- Node-only fallback; Bun always takes the Bun.escapeHTML fast path below. */
 const _escapeImpl = (str: string): string => {
   let char: string | undefined;
   let left = 0;
@@ -60,8 +61,8 @@ const _escapeImpl = (str: string): string => {
 
 declare const Bun: { escapeHTML: (str: string) => string | Uint8Array } | undefined;
 
-/* c8 ignore next 4 -- Bun path is exercised by `npm run test:bun`; Node tests always take _escapeImpl. */
+/* c8 ignore next 5 -- Bun path is exercised by `npm run test:bun`; Node tests always take _escapeImpl. */
 export const escape: (str: string) => string =
   typeof Bun !== "undefined" && typeof Bun.escapeHTML === "function"
-    ? (str) => Bun.escapeHTML(str) as string
+    ? (str) => (Bun.escapeHTML(str) as string).replaceAll("&#x27;", "&#039;")
     : _escapeImpl;

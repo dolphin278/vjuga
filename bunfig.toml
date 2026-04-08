@@ -1,0 +1,8 @@
+[test]
+# Exclude the Node-only HTML escape fallback (_escapeImpl).
+# Bun always takes the Bun.escapeHTML fast path; _escapeImpl is fully
+# covered by the Node/c8 coverage run instead.
+coveragePathIgnorePatterns = ["src/HTML.js"]
+
+# Enforce 100 % coverage for all other source files.
+coverageThreshold = { lines = 1, functions = 1 }

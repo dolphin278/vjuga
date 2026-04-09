@@ -53,6 +53,7 @@ const kReset: unique symbol = Symbol("reset");
 const kMaxSize: unique symbol = Symbol("maxSize");
 const kFreeList: unique symbol = Symbol("freeList");
 const kAcquiredCount: unique symbol = Symbol("acquiredCount");
+
 export interface MemoryPool<T> {
   [kFactory]: Fn0<T>;
   [kReset]: Fn1<T, void> | undefined;

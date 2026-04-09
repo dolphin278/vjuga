@@ -1,4 +1,30 @@
 /**
+ * FunctionUtils — foundational function types, branded-type utilities, and
+ * left-to-right function composition.
+ *
+ * All function types (`Fn`, `Fn0`, `Fn1`, `Fn2`, `Predicate`, `Lazy`) bind
+ * `this: void` to prevent accidental context leaks. `Branded<Base, Kind>`
+ * attaches a phantom brand via a mapped type so that intersecting two branded
+ * types merges their brands — enabling compound types like `PositiveInteger`
+ * (= `PositiveNumber & Integer`).
+ *
+ * When to use: `Fn` / `Fn1` / `Fn2` as callback types throughout the library.
+ * Branded types for domain values that need compile-time distinction (validated
+ * IDs, constrained numbers). `pipe` for left-to-right composition of 2–5
+ * functions with full type inference.
+ *
+ * @example
+ * ```ts
+ * import { pipe, positiveInteger, type Fn1 } from "vjuga/FunctionUtils";
+ * const double: Fn1<number, number> = (n) => n * 2;
+ * const inc: Fn1<number, number> = (n) => n + 1;
+ * const doubleThenInc = pipe(double, inc);
+ * doubleThenInc(3); // 7
+ * const id = positiveInteger(42); // PositiveInteger (branded number)
+ * ```
+ */
+
+/**
  * Root function type that is independent of the context in which it is called.
  * Hence, it is a function that does not have `this` parameter.
  */

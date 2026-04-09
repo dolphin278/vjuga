@@ -1,3 +1,27 @@
+/**
+ * JSON — typed JSON parsing with prototype-pollution protection.
+ *
+ * Wraps native `JSON.parse` / `JSON.stringify` with a `JSONValue` return type
+ * that is narrower than `any` (forces runtime type checking) yet broader than
+ * `unknown` (reflects the actual JSON value space).
+ *
+ * When to use: `safeParse` for untrusted external input — it strips `__proto__`
+ * and `constructor` keys via an explicit stack walk to prevent prototype
+ * poisoning. `parseExn` / `parse` for trusted sources where prototype pollution
+ * is not a concern.
+ *
+ * Prior art: Matteo Collina's `secure-json-parse` (Fastify) — prototype
+ * pollution via `__proto__` in parsed JSON is a well-known attack vector.
+ *
+ * @example
+ * ```ts
+ * import * as JSON from "vjuga/JSON";
+ * const result = JSON.safeParse('{"a":1}');     // Ok<JSONValue>
+ * const value  = JSON.parse('{"a":1}');         // JSONValue | undefined
+ * const str    = JSON.stringify({ a: 1 });      // string
+ * ```
+ */
+
 import type { Result } from "./Result.js";
 import { ok, err } from "./Result.js";
 

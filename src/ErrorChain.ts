@@ -1,3 +1,23 @@
+/**
+ * ErrorChain — utilities for walking ES2022 `Error.cause` chains.
+ *
+ * Provides generator-based (`chain`) and eager (`toArray`) traversal of the
+ * `Error.cause` chain, plus a `find` helper that short-circuits on the first
+ * match.
+ *
+ * When to use: when you need to inspect or search a wrapped error chain (e.g.,
+ * finding a specific error type deep in a cause chain). If you only need the
+ * immediate cause, access `error.cause` directly.
+ *
+ * @example
+ * ```ts
+ * import * as ErrorChain from "vjuga/ErrorChain";
+ * const root = new Error("root", { cause: new Error("inner") });
+ * ErrorChain.toArray(root);  // [Error("root"), Error("inner")]
+ * ErrorChain.find(root, (e) => e.message === "inner"); // Error("inner")
+ * ```
+ */
+
 import type { Predicate } from "./FunctionUtils.js";
 
 /**

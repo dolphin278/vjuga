@@ -1,15 +1,28 @@
-import { resolve as pathResolve } from "node:path";
-
 /**
- * Function references represent pointer to functions that can be imported by
- * various execution contexts. It may become handy when you want to share
- * functions between execution contexts, like child processes, threads,
- * remote machines, etc.
+ * FunctionReference — serializable pointers to functions for cross-context
+ * dispatch.
  *
- * Resolution is done by native `import()` function with slight twist - hash in
- * the path is used to determine the name of the exported function to be
- * imported.
+ * A function reference is a `file:///path/to/module.ts#exportName` URL that can
+ * be resolved via native `import()` in any execution context (child processes,
+ * worker threads, remote machines). The URL hash fragment selects the named
+ * export; omitting it defaults to the `default` export.
+ *
+ * When to use: cross-thread or cross-process function dispatch where closures
+ * cannot be serialized. Not needed for same-thread callbacks — pass functions
+ * directly.
+ *
+ * Prior art: Piscina's `filename` + `name` pattern for worker-thread task
+ * dispatch; Temporal.io's activity references for cross-process invocation.
+ *
+ * @example
+ * ```ts
+ * import * as FunctionReference from "vjuga/FunctionReference";
+ * const fn = await FunctionReference.resolve("./handlers.ts#processItem");
+ * await fn(data);
+ * ```
  */
+
+import { resolve as pathResolve } from "node:path";
 
 /**
  * Function takes path to module file and name of the exported function

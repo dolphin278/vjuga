@@ -1,3 +1,33 @@
+/**
+ * MemoryPool — object pool with LIFO free list for allocation-free hot paths.
+ *
+ * Pre-allocates or lazily creates objects via a `factory` function and recycles
+ * them through a stack-based (LIFO) free list. An optional `reset` callback
+ * clears mutable state before returning objects to the pool.
+ *
+ * When to use: hot loops that create and discard thousands of same-shape
+ * objects per tick (request handlers, parsers, batch processors). For very
+ * short stacks of reusable objects (fewer than ~10 items), a plain array with
+ * `.push()` / `.pop()` is faster — the pool's factory/reset/maxSize
+ * bookkeeping adds overhead that only pays off at scale.
+ *
+ * Design tradeoffs:
+ *   - LIFO stack is 13× faster than a Queue-backed free list in
+ *     micro-benchmarks (cache-hot top-of-stack vs ring-buffer pointer chase).
+ *   - No ownership tracking or double-release guards — intentionally simple.
+ *     If ownership tracking is needed during development, wrap the pool in a
+ *     Set-based borrow-checker at the call site.
+ *
+ * @example
+ * ```ts
+ * import * as MemoryPool from "vjuga/MemoryPool";
+ * const pool = MemoryPool.make({ factory: () => [], reset: (a) => { a.length = 0; } });
+ * const arr = MemoryPool.acquire(pool);
+ * arr.push(1, 2, 3);
+ * MemoryPool.release(pool, arr); // reset clears it, returned to free list
+ * ```
+ */
+
 import type { Fn0, Fn1 } from "./FunctionUtils.js";
 
 export interface MemoryPoolConfig<T> {
@@ -18,30 +48,6 @@ export interface MemoryPoolConfig<T> {
   minSize?: number;
 }
 
-/**
- * `MemoryPool` is a simple memory pool for objects. Using it allows you to
- * avoid allocating new objects when you can reuse them.
- *
- * The free list is a plain array used as a stack (LIFO) for maximum
- * performance — measured 13× faster than a Queue-backed free list in
- * micro-benchmarks.
- *
- * This implementation intentionally has no ownership tracking or double-release
- * guards.  If ownership tracking is needed during development, wrap the pool in
- * a Set-based borrow-checker at the call site.
- *
- * `maxSize` is the maximum number of objects this pool will ever *create*
- * (pre-allocated + lazily allocated).  Acquiring beyond that limit throws.
- *
- * @example Application-level singleton (consumer-owned):
- *
- * ```ts
- * // my-app/pools.ts
- * export const ArrayPool = MemoryPool.make({ factory: () => [], reset: (a) => { a.length = 0; } });
- * export const MapPool   = MemoryPool.make({ factory: () => new Map(), reset: (m) => m.clear() });
- * export const SetPool   = MemoryPool.make({ factory: () => new Set(), reset: (s) => s.clear() });
- * ```
- */
 export interface MemoryPool<T> {
   factory: Fn0<T>;
   reset: Fn1<T, void> | undefined;

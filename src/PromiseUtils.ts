@@ -1,15 +1,18 @@
 /**
- * Function takes an object with promise fields and returns
- * an object with all fields resolved.
+ * PromiseUtils — named-field parallel resolution for promise records.
  *
- * If any of the promises rejects, the returned promise will reject.
+ * When to use: parallel resolution of a record of promises where you want
+ * named results instead of positional. For arrays, use `Promise.all` directly.
  *
- * Example:
- * ```js
- *  const arg = { a: Promise.resolve(1), b: "asdf" }
+ * Prior art: Bluebird's `Promise.props()`.
  *
- *  await props(arg); // { a: 1, b: "asdf" }
- *
+ * @example
+ * ```ts
+ * import * as PromiseUtils from "vjuga/PromiseUtils";
+ * const { user, posts } = await PromiseUtils.props({
+ *   user: fetchUser(id),
+ *   posts: fetchPosts(id),
+ * });
  * ```
  */
 export async function props<T extends object>(obj: T): Promise<{ [K in keyof T]: Awaited<T[K]> }> {

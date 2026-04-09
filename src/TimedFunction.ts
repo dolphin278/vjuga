@@ -8,6 +8,18 @@ import type { Fn } from "./FunctionUtils.js";
  * state rather than a plain closure variable. This keeps the timer handle
  * outside the returned function's closure, making the state mutation explicit
  * and the returned function itself allocation-free after construction.
+ *
+ * When to use: `throttle` for rate-limiting continuous events (scroll, resize)
+ * — fires immediately then drops calls within the window. `debounce` for
+ * waiting until activity stops (search input, resize-end) — fires only after
+ * `ms` of silence.
+ *
+ * @example
+ * ```ts
+ * import * as TimedFunction from "vjuga/TimedFunction";
+ * const throttled = TimedFunction.throttle(onScroll, 100);
+ * const debounced = TimedFunction.debounce(onSearchInput, 300);
+ * ```
  */
 
 /**

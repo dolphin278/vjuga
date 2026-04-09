@@ -1,14 +1,23 @@
 /**
- * Deeply immutable data type. This type supports all basic JavaScript types:
- * - primitives (number, string, boolean, null, undefined, bigint, symbols)
- * - containers (array, map, set)
+ * Immutable — deeply immutable data type for compile-time mutation prevention.
  *
- * Functions are not allowed since they can modify internal state in arbitrary
- * manner. This is not decided, because having functions intact may be convenient
- * when you deal with, say, immutable instances of `Date`.
+ * Recursively applies `readonly` to all properties, Map → ReadonlyMap,
+ * Set → ReadonlySet. Supports primitives, containers, and Promises.
  *
- * Note: We don't include Array -> ReadonlyArray, because it's covered by the
- * object case and it turns tuples into arrays, losing the type information.
+ * Functions are excluded since they can modify internal state in arbitrary
+ * ways. Array → ReadonlyArray is handled by the object case to preserve
+ * tuple type information.
+ *
+ * When to use: marking API boundaries where callers should not mutate returned
+ * data. Purely a type-level construct — `make()` is a zero-cost identity cast
+ * with no runtime overhead.
+ *
+ * @example
+ * ```ts
+ * import * as Immutable from "vjuga/Immutable";
+ * const config = Immutable.make({ host: "localhost", port: 3000 });
+ * // config.port = 8080;  // TS error: Cannot assign to 'port' — readonly
+ * ```
  */
 export type Immutable<T> =
   T extends Map<infer K, infer V>

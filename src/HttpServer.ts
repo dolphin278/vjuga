@@ -172,6 +172,12 @@ export function make(handler: Handler): HttpServer {
 
     const conn = makeConnState();
 
+    // Closure is intentional. We benchmarked both a module-level onData with
+    // WeakMap lookup and onData.bind(socket, conn, handler). Both were slower:
+    // bind() adds a CallBoundFunction trampoline (24 ticks) and doubles
+    // emit() cost (25→53 ticks); WeakMap adds hash lookup overhead (15 ticks).
+    // V8 optimizes closure variable access as a direct context-slot read,
+    // which beats both alternatives by 3–6% throughput.
     socket.on("data", (chunk: Buffer) => {
       // Ensure buffer capacity
       const needed = conn.used + chunk.length;

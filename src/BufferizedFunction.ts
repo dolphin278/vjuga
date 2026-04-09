@@ -1,15 +1,32 @@
+/**
+ * BufferizedFunction — batches individual calls into a single deferred
+ * invocation.
+ *
+ * Returns a function that accumulates arguments from individual calls into a
+ * Queue and fires `fn` with the collected batch on the next macrotask
+ * (`setTimeout(worker, 0)`). Using a macrotask (not `queueMicrotask`) ensures
+ * the batch collects all synchronous calls in the current turn before firing.
+ *
+ * When to use: fire-and-forget batching where callers do not need per-item
+ * results (logging, analytics, telemetry). When callers need per-item return
+ * values or per-item rejection, use BatchExecutor instead.
+ *
+ * Note: error handling is the caller's responsibility — if `fn` throws, the
+ * exception becomes unhandled. Handle errors inside `fn` itself.
+ *
+ * @example
+ * ```ts
+ * import * as BufferizedFunction from "vjuga/BufferizedFunction";
+ * const log = BufferizedFunction.make((batch: string[]) => sendLogs(batch));
+ * log("a");
+ * log("b");
+ * // fn called once on next macrotask with ["a", "b"]
+ * ```
+ */
+
 import * as Queue from "./Queue.js";
 import * as Ref from "./Ref.js";
 import type { Fn, Fn1 } from "./FunctionUtils.js";
-
-/**
- * Higher order function that returns a function that accumulates arguments from
- * individual calls and invokes `fn` with all accumulated arguments.
- *
- * Note: this function does not do any error handling so if an exception is thrown
- * during execution of `fn` over batch of arguments, it will turn into unhandled
- * exception. Error handling should be done inside `fn` itself.
- */
 export function make<T>(fn: Fn1<T[]>): Fn<T[]> {
   /**
    * Mutable reference to a boolean flag that indicates whether the `worker`

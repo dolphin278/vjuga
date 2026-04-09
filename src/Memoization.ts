@@ -1,3 +1,31 @@
+/**
+ * Memoization — function memoization with pluggable cache and key strategies.
+ *
+ * Default cache is an unbounded `Map`; callers should supply a bounded map
+ * (e.g., LRUCache-backed) via the `cache` option when the key space is large
+ * or unbounded. Default key function is `JSON.stringify(args)`.
+ *
+ * When to use: pure functions with repeated identical arguments. Supply a
+ * bounded cache when the key space is large. Use `once` for one-shot lazy
+ * initialization that ignores arguments entirely.
+ *
+ * Design notes:
+ *   - The two-lookup trick (`cache.get` then `cache.has`) keeps the common
+ *     non-undefined case to a single Map lookup while correctly handling
+ *     cached `undefined` values.
+ *   - `defaultCacheKeyFn` is variadic (not single-array) to match the
+ *     `Reflect.apply` call shape and keep the call site monomorphic.
+ *
+ * @example
+ * ```ts
+ * import * as Memoization from "vjuga/Memoization";
+ * const expensive = Memoization.memoize((n: number) => fibonacci(n));
+ * expensive(40); // computed
+ * expensive(40); // cached
+ * const init = Memoization.once(() => loadConfig());
+ * ```
+ */
+
 import type { Fn } from "./FunctionUtils.js";
 
 /**

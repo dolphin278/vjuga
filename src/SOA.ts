@@ -1,7 +1,28 @@
 /**
- * Structure Of Arrays
+ * SOA — Structure of Arrays with zero-copy element views.
+ *
+ * Stores each field of a record type as a separate contiguous array, enabling
+ * cache-line-friendly iteration over individual fields. Views are getter/setter
+ * proxy objects backed by shared property descriptors (cached per SOA instance
+ * via WeakMap). The `idxSymbol` field on each view holds the current row index;
+ * changing it repoints all property accesses without copying data.
+ *
+ * When to use: tight iteration over many records where cache-line utilization
+ * matters (physics loops, columnar data transforms, ECS-style engines). For
+ * small record counts or random-access patterns, plain Array-of-Structs
+ * objects are simpler and equally fast.
  *
  * @see https://en.wikipedia.org/wiki/AoS_and_SoA
+ *
+ * @example
+ * ```ts
+ * import * as SOA from "vjuga/SOA";
+ * const soa: SOA.SOA<{x: number; y: number}> = { x: [1, 2, 3], y: [4, 5, 6] };
+ * const view = SOA.createView(soa, 0);
+ * view.x;       // 1
+ * view.index = 2;
+ * view.x;       // 3
+ * ```
  */
 
 /** Structure of Arrays type. */

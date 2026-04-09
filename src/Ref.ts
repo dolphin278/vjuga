@@ -1,6 +1,23 @@
 /**
- * RefCell used to provide immutable container for mutable data.
- * Using it enables passing by reference for primitive types.
+ * Ref — mutable reference cell for pass-by-reference semantics.
+ *
+ * A `RefCell<T>` is a single-field object (`{ contents: T }`) that enables
+ * pass-by-reference for primitives and explicit mutation tracking for
+ * closure-captured state.
+ *
+ * When to use: passing mutable state into closures or across module boundaries
+ * where a primitive would be captured by value (used by TimedFunction,
+ * BufferizedFunction). For object fields, direct mutation is simpler.
+ *
+ * Prior art: OCaml's `ref` type.
+ *
+ * @example
+ * ```ts
+ * import * as Ref from "vjuga/Ref";
+ * const counter = Ref.make(0);
+ * Ref.set(counter, Ref.get(counter) + 1);
+ * Ref.get(counter); // 1
+ * ```
  */
 export interface RefCell<T> {
   contents: T;

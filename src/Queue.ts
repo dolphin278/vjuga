@@ -1,3 +1,37 @@
+/**
+ * Queue — circular-buffer deque with power-of-2 capacity.
+ *
+ * When to use: FIFO/LIFO queues larger than ~16 items where the O(n) cost of
+ * `Array.shift()` matters. For small fixed-size stacks, a plain array with
+ * `.push()` / `.pop()` is faster (no symbol-keyed field overhead).
+ *
+ * Internal design:
+ *   kCapacityMask: number               — `capacity - 1`; bitwise AND replaces modulo
+ *   kHead:         number               — index of the front element
+ *   kTail:         number               — index past the last element
+ *   kList:         Array<T | undefined>  — backing storage (always power-of-2 length)
+ *
+ * Capacity is always a power of 2 so modular index arithmetic reduces to a
+ * single bitwise AND with `capacityMask`. Size is computed branchlessly:
+ * `(tail - head + list.length) & capacityMask`.
+ *
+ * Growth doubles the buffer; shrink reclaims memory when utilization drops
+ * below 25% of a buffer larger than 10 000 slots.
+ *
+ * The double-write of `kCapacityMask` in `make()` forces V8 to mark the field
+ * mutable from the first allocation — without it, the first `growList` resize
+ * triggers a cascade deoptimization of every compiled Queue function.
+ *
+ * @example
+ * ```ts
+ * import * as Queue from "vjuga/Queue";
+ * const q = Queue.make<number>();
+ * Queue.push(q, 1);
+ * Queue.push(q, 2);
+ * Queue.shift(q); // 1
+ * ```
+ */
+
 const kCapacityMask: unique symbol = Symbol("capacityMask");
 const kHead: unique symbol = Symbol("head");
 const kTail: unique symbol = Symbol("tail");

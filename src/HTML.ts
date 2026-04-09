@@ -1,3 +1,32 @@
+/**
+ * HTML — HTML entity escaping for safe interpolation into markup.
+ *
+ * Escapes the five XML-significant characters (`& < > " '`) using a charCode
+ * switch over the input string. A left/right cursor tracks the last escape
+ * point so unescaped runs are copied via a single `str.slice()` rather than
+ * character-by-character concatenation — this avoids intermediate string
+ * allocations on inputs with few escape points.
+ *
+ * When to use: any time you interpolate user-controlled content into HTML.
+ * For JSON inside `<script>` tags, `JSON.stringify` is sufficient.
+ *
+ * Design tradeoffs:
+ *   - charCode switch is ~2× faster than `String.prototype.replace(/regex/)` in
+ *     V8 because it avoids regexp compilation and match-object allocation.
+ *   - On Bun, delegates to the native `Bun.escapeHTML` (C++ SIMD path) with a
+ *     post-processing `replaceAll("&#x27;", "&#039;")` to normalize the single-
+ *     quote encoding to match the Node fallback output.
+ *
+ * Prior art: OWASP XSS Prevention Cheat Sheet (the five characters).
+ *
+ * @example
+ * ```ts
+ * import * as HTML from "vjuga/HTML";
+ * HTML.escape('<script>alert("xss")</script>');
+ * // "&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;"
+ * ```
+ */
+
 // one-time module init, not a hot path
 const [GT_CHAR_CODE, LT_CHAR_CODE, AMP_CHAR_CODE, QUOTE_CHAR_CODE, APOS_CHAR_CODE] = [
   ">",

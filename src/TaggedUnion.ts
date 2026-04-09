@@ -54,28 +54,23 @@ export function variant<K extends PropertyKey, V>(
  * compile time if a case is missing. Each handler receives the variant's
  * `value` and must return `R`.
  */
-export function match<
-  T extends { readonly tag: PropertyKey; readonly value: unknown },
-  R,
->(
+export function match<T extends { readonly tag: PropertyKey; readonly value: unknown }, R>(
   union: T,
   handlers: {
     [K in T["tag"]]: (value: Extract<T, { readonly tag: K }>["value"]) => R;
   },
 ): R {
-  return Reflect.apply(
-    (handlers as Record<PropertyKey, (v: unknown) => R>)[union.tag],
-    undefined,
-    [union.value],
-  );
+  return Reflect.apply((handlers as Record<PropertyKey, (v: unknown) => R>)[union.tag], undefined, [
+    union.value,
+  ]);
 }
 
 /**
  * Type guard that narrows a tagged union to a single variant.
  */
-export function is<
-  T extends { readonly tag: PropertyKey },
-  K extends T["tag"],
->(union: T, tag: K): union is Extract<T, { readonly tag: K }> {
+export function is<T extends { readonly tag: PropertyKey }, K extends T["tag"]>(
+  union: T,
+  tag: K,
+): union is Extract<T, { readonly tag: K }> {
   return union.tag === tag;
 }

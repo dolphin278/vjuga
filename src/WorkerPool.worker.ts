@@ -1,14 +1,5 @@
-import {
-  MSG_SHUTDOWN,
-  MSG_RESULT,
-  MSG_ERROR,
-  MSG_READY,
-} from "./WorkerPool.protocol.js";
-import type {
-  InboundMessage,
-  OutboundMessage,
-  SerializedError,
-} from "./WorkerPool.protocol.js";
+import { MSG_SHUTDOWN, MSG_RESULT, MSG_ERROR, MSG_READY } from "./WorkerPool.protocol.js";
+import type { InboundMessage, OutboundMessage, SerializedError } from "./WorkerPool.protocol.js";
 
 export type { InboundMessage, OutboundMessage, SerializedError };
 

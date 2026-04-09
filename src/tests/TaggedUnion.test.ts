@@ -98,4 +98,3 @@ test("is() narrows correctly in conditional chain", () => {
   assert.equal(TU.is(s, "square"), true);
   assert.equal(TU.is(s, "point"), false);
 });
-

@@ -48,7 +48,11 @@ test("Memory pool preallocates minimum number of instances", () => {
   // Verify preallocated instances by acquiring them without triggering factory
   const a = acquire(pool);
   const b = acquire(pool);
-  assert.equal(allocated, 2, "Factory should have been called exactly 2 times for preallocated instances");
+  assert.equal(
+    allocated,
+    2,
+    "Factory should have been called exactly 2 times for preallocated instances",
+  );
   release(pool, a);
   release(pool, b);
 });
@@ -60,11 +64,14 @@ test("Memory pool throws MemoryPoolExhaustedError when someone tries to acquire 
   });
 
   acquire(pool);
-  assert.throws(() => acquire(pool), (err: unknown) => {
-    assert.ok(err instanceof MemoryPoolExhaustedError);
-    assert.equal((err as Error).message, "MemoryPool is full");
-    return true;
-  });
+  assert.throws(
+    () => acquire(pool),
+    (err: unknown) => {
+      assert.ok(err instanceof MemoryPoolExhaustedError);
+      assert.equal((err as Error).message, "MemoryPool is full");
+      return true;
+    },
+  );
 });
 
 test("maxSize limits total objects created, not concurrent borrows", () => {
@@ -75,14 +82,20 @@ test("maxSize limits total objects created, not concurrent borrows", () => {
 
   const a = acquire(pool); // creates 1st object
   const b = acquire(pool); // creates 2nd object
-  assert.throws(() => acquire(pool), (err: unknown) => err instanceof MemoryPoolExhaustedError);
+  assert.throws(
+    () => acquire(pool),
+    (err: unknown) => err instanceof MemoryPoolExhaustedError,
+  );
 
   release(pool, a);
   // a is back in freeList; total created is still 2
   const c = acquire(pool); // reuses a, no new object created
   assert.equal(c, a, "Should reuse released object");
 
-  assert.throws(() => acquire(pool), (err: unknown) => err instanceof MemoryPoolExhaustedError);
+  assert.throws(
+    () => acquire(pool),
+    (err: unknown) => err instanceof MemoryPoolExhaustedError,
+  );
   release(pool, b);
   release(pool, c);
 });

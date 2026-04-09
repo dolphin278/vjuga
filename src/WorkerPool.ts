@@ -18,18 +18,8 @@ import { fileURLToPath } from "node:url";
 import * as PQ from "./PriorityQueue.js";
 import { positiveInteger, nonNegativeInteger } from "./FunctionUtils.js";
 import type { PositiveInteger, NonNegativeInteger } from "./FunctionUtils.js";
-import {
-  MSG_TASK,
-  MSG_SHUTDOWN,
-  MSG_RESULT,
-  MSG_ERROR,
-  MSG_READY,
-} from "./WorkerPool.protocol.js";
-import type {
-  InboundMessage,
-  OutboundMessage,
-  SerializedError,
-} from "./WorkerPool.protocol.js";
+import { MSG_TASK, MSG_SHUTDOWN, MSG_RESULT, MSG_ERROR, MSG_READY } from "./WorkerPool.protocol.js";
+import type { InboundMessage, OutboundMessage, SerializedError } from "./WorkerPool.protocol.js";
 
 export class WorkerPoolDestroyedError extends Error {
   constructor() {

@@ -149,10 +149,7 @@ function siftDown<T>(pq: PriorityQueue<T>, i: number): void {
     const right = left + 1;
     // Pick the smaller child.
     const child =
-      right < n &&
-      Reflect.apply(cmp, undefined, [items[right], items[left]]) < 0
-        ? right
-        : left;
+      right < n && Reflect.apply(cmp, undefined, [items[right], items[left]]) < 0 ? right : left;
     if (Reflect.apply(cmp, undefined, [items[child], value]) < 0) {
       items[i] = items[child];
       i = child;

@@ -10,14 +10,9 @@ test("Ref.make", () => {
   assert.equal(ref.contents, 42);
 });
 
-test("Ref.set", () => {
+test("Ref.contents can be read and written directly", () => {
   const ref = Ref.make(42);
-  Ref.set(ref, 43);
-  assert.equal(ref.contents, 43);
-});
-
-test("Ref.get", () => {
-  const ref = Ref.make(42);
-  assert.equal(Ref.get(ref), 42);
   assert.equal(ref.contents, 42);
+  ref.contents = 43;
+  assert.equal(ref.contents, 43);
 });

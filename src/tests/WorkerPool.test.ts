@@ -2,6 +2,7 @@ import { test, describe } from "node:test";
 import * as assert from "node:assert/strict";
 import { setTimeout as sleep } from "node:timers/promises";
 import * as WP from "../WorkerPool.js";
+import { WorkerPoolDestroyedError, WorkerExitError } from "../WorkerPool.js";
 
 // ---------------------------------------------------------------------------
 // data: URL handlers (no fixture files needed)
@@ -145,10 +146,12 @@ describe("run()", () => {
     await WP.destroy(pool);
   });
 
-  test("on destroyed pool — rejects", async () => {
+  test("on destroyed pool — rejects with WorkerPoolDestroyedError", async () => {
     const pool = WP.make({ filename: echoUrl, maxThreads: 1 });
     await WP.destroy(pool);
-    await assert.rejects(() => WP.run(pool, "test"), /destroyed/);
+    const err = await WP.run(pool, "test").catch((e: unknown) => e);
+    assert.ok(err instanceof WorkerPoolDestroyedError);
+    assert.equal((err as Error).message, "WorkerPool is destroyed");
   });
 
   test("with transferList — ArrayBuffer transferred", async () => {
@@ -372,8 +375,8 @@ describe("destroy()", () => {
     await WP.destroy(pool);
     const e1 = await c1;
     const e2 = await c2;
-    assert.ok(e1 instanceof Error);
-    assert.ok(e2 instanceof Error);
+    assert.ok(e1 instanceof WorkerPoolDestroyedError);
+    assert.ok(e2 instanceof WorkerPoolDestroyedError);
     assert.match(e1.message, /destroyed/);
     assert.match(e2.message, /destroyed/);
   });
@@ -398,7 +401,9 @@ describe("worker lifecycle", () => {
     // Let the initial worker spawn.
     await sleep(200);
     // Crash the worker.
-    await assert.rejects(() => WP.run(pool, "crash"), /unexpectedly/);
+    const crashErr = await WP.run(pool, "crash").catch((e: unknown) => e);
+    assert.ok(crashErr instanceof WorkerExitError);
+    assert.equal((crashErr as Error).message, "Worker exited unexpectedly");
     // Wait for replacement.
     await sleep(300);
     // Pool should still work with the replacement worker.

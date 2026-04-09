@@ -13,7 +13,7 @@ const AMP_STR = "&amp;";
 const QUOTE_STR = "&quot;";
 const APOS_STR = "&#039;";
 
-/* istanbul ignore next -- Node-only fallback; Bun always takes the Bun.escapeHTML fast path below. */
+/* c8 ignore next -- Node-only fallback; Bun takes Bun.escapeHTML path */
 const _escapeImpl = (str: string): string => {
   let char: string | undefined;
   let left = 0;

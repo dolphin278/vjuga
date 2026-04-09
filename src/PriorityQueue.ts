@@ -1,5 +1,5 @@
 /**
- * PriorityQueue — binary min-heap backed by a `Queue<T>`.
+ * PriorityQueue — binary min-heap backed by a plain array.
  *
  * The heap is 0-indexed:
  *
@@ -11,18 +11,15 @@
  * A comparator function determines priority. The heap is a *min-heap*: the
  * element for which `comparator(a, b) < 0` is "less than" b is considered
  * higher priority and will be returned first by `pop`.
- *
- * The backing Queue handles growth/shrink automatically, including memory
- * recovery when the heap shrinks below 25% of a large buffer.
  */
 
-import * as Queue from "./Queue.js";
-
-const kQueue: unique symbol = Symbol("queue");
+const kItems: unique symbol = Symbol("items");
+const kSize: unique symbol = Symbol("size");
 const kCmp: unique symbol = Symbol("comparator");
 
 export interface PriorityQueue<T> {
-  [kQueue]: Queue.Queue<T>;
+  [kItems]: (T | undefined)[];
+  [kSize]: number;
   [kCmp]: (a: T, b: T) => number;
 }
 
@@ -39,9 +36,15 @@ export type Comparator<T> = (a: T, b: T) => number;
  */
 export function make<T>(comparator: Comparator<T>, items?: Iterable<T>): PriorityQueue<T> {
   const pq: PriorityQueue<T> = {
-    [kQueue]: Queue.make<T>(),
+    [kItems]: [],
+    [kSize]: 0,
     [kCmp]: comparator,
   };
+  // Write kItems and kSize a second time so V8 marks them as mutable fields
+  // from the very first make() call. push()/pop() mutate these on every call;
+  // without this, the first mutation triggers a cascade deoptimization.
+  pq[kItems] = [];
+  pq[kSize] = 0;
 
   if (items !== undefined) {
     heapify(pq, items);
@@ -54,7 +57,7 @@ export function make<T>(comparator: Comparator<T>, items?: Iterable<T>): Priorit
  * Returns the number of elements in the heap.
  */
 export function size<T>(pq: PriorityQueue<T>): number {
-  return Queue.size(pq[kQueue]);
+  return pq[kSize];
 }
 
 /**
@@ -62,17 +65,19 @@ export function size<T>(pq: PriorityQueue<T>): number {
  * Returns `undefined` if the heap is empty.
  */
 export function peek<T>(pq: PriorityQueue<T>): T | undefined {
-  if (Queue.size(pq[kQueue]) === 0) return void 0;
-  return Queue.get(pq[kQueue], 0);
+  if (pq[kSize] === 0) return void 0;
+  return pq[kItems][0];
 }
 
 /**
  * Inserts `value` into the heap in O(log n).
  */
 export function push<T>(pq: PriorityQueue<T>, value: T): void {
-  const queue = pq[kQueue];
-  Queue.push(queue, value);
-  siftUp(pq, Queue.size(queue) - 1);
+  const items = pq[kItems];
+  const n = pq[kSize];
+  items[n] = value;
+  pq[kSize] = n + 1;
+  siftUp(pq, n);
 }
 
 /**
@@ -80,16 +85,18 @@ export function push<T>(pq: PriorityQueue<T>, value: T): void {
  * Returns `undefined` if the heap is empty.
  */
 export function pop<T>(pq: PriorityQueue<T>): T | undefined {
-  const queue = pq[kQueue];
-  const n = Queue.size(queue);
+  const n = pq[kSize];
   if (n === 0) return void 0;
-  const min = Queue.get(queue, 0);
-  if (n === 1) {
-    Queue.pop(queue);
+  const items = pq[kItems];
+  const min = items[0] as T;
+  const newSize = n - 1;
+  if (newSize === 0) {
+    items[0] = void 0;
+    pq[kSize] = 0;
   } else {
-    // Move last element to root, remove last, then sift down.
-    Queue.set(queue, 0, Queue.get(queue, n - 1));
-    Queue.pop(queue);
+    items[0] = items[newSize];
+    items[newSize] = void 0;
+    pq[kSize] = newSize;
     siftDown(pq, 0);
   }
   return min;
@@ -100,14 +107,13 @@ export function pop<T>(pq: PriorityQueue<T>): T | undefined {
  * Replaces any existing contents of `pq`.
  */
 export function heapify<T>(pq: PriorityQueue<T>, items: Iterable<T>): void {
-  const queue = pq[kQueue];
-  // Drain existing queue.
-  Queue.dumpToArray(queue);
-  // Push all items.
+  const arr: (T | undefined)[] = [];
+  let n = 0;
   for (const item of items) {
-    Queue.push(queue, item);
+    arr[n++] = item;
   }
-  const n = Queue.size(queue);
+  pq[kItems] = arr;
+  pq[kSize] = n;
   // Bottom-up sift: start from the last non-leaf node ((n/2)-1) down to 0.
   for (let i = (n >> 1) - 1; i >= 0; i--) {
     siftDown(pq, i);
@@ -117,26 +123,26 @@ export function heapify<T>(pq: PriorityQueue<T>, items: Iterable<T>): void {
 // --- Internal helpers ---
 
 function siftUp<T>(pq: PriorityQueue<T>, i: number): void {
-  const queue = pq[kQueue];
+  const items = pq[kItems];
   const cmp = pq[kCmp];
-  const value = Queue.get(queue, i);
+  const value = items[i] as T;
   while (i > 0) {
     const parent = (i - 1) >> 1;
-    if (Reflect.apply(cmp, undefined, [value, Queue.get(queue, parent)]) < 0) {
-      Queue.set(queue, i, Queue.get(queue, parent));
+    if (Reflect.apply(cmp, undefined, [value, items[parent]]) < 0) {
+      items[i] = items[parent];
       i = parent;
     } else {
       break;
     }
   }
-  Queue.set(queue, i, value);
+  items[i] = value;
 }
 
 function siftDown<T>(pq: PriorityQueue<T>, i: number): void {
-  const queue = pq[kQueue];
+  const items = pq[kItems];
   const cmp = pq[kCmp];
-  const n = Queue.size(queue);
-  const value = Queue.get(queue, i);
+  const n = pq[kSize];
+  const value = items[i] as T;
   while (true) {
     const left = (i << 1) + 1;
     if (left >= n) break;
@@ -144,15 +150,15 @@ function siftDown<T>(pq: PriorityQueue<T>, i: number): void {
     // Pick the smaller child.
     const child =
       right < n &&
-      Reflect.apply(cmp, undefined, [Queue.get(queue, right), Queue.get(queue, left)]) < 0
+      Reflect.apply(cmp, undefined, [items[right], items[left]]) < 0
         ? right
         : left;
-    if (Reflect.apply(cmp, undefined, [Queue.get(queue, child), value]) < 0) {
-      Queue.set(queue, i, Queue.get(queue, child));
+    if (Reflect.apply(cmp, undefined, [items[child], value]) < 0) {
+      items[i] = items[child];
       i = child;
     } else {
       break;
     }
   }
-  Queue.set(queue, i, value);
+  items[i] = value;
 }

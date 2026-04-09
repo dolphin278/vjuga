@@ -81,44 +81,64 @@ export type Validator<T> = (value: unknown) => Result<T, ValidationError>;
 // Primitives
 // ---------------------------------------------------------------------------
 
+const _stringValidator: Validator<string> = function validateString(
+  value: unknown,
+): Result<string, ValidationError> {
+  if (typeof value === "string") return ok(value);
+  return err(new ValidationError("string", value));
+};
+
 /** Validates that `value` is a `string`. */
 export function string(): Validator<string> {
-  return function validateString(value: unknown): Result<string, ValidationError> {
-    if (typeof value === "string") return ok(value);
-    return err(new ValidationError("string", value));
-  };
+  return _stringValidator;
 }
+
+const _numberValidator: Validator<number> = function validateNumber(
+  value: unknown,
+): Result<number, ValidationError> {
+  if (typeof value === "number" && !Number.isNaN(value)) return ok(value);
+  return err(new ValidationError("number", value));
+};
 
 /** Validates that `value` is a `number` (and not NaN). */
 export function number(): Validator<number> {
-  return function validateNumber(value: unknown): Result<number, ValidationError> {
-    if (typeof value === "number" && !Number.isNaN(value)) return ok(value);
-    return err(new ValidationError("number", value));
-  };
+  return _numberValidator;
 }
+
+const _booleanValidator: Validator<boolean> = function validateBoolean(
+  value: unknown,
+): Result<boolean, ValidationError> {
+  if (typeof value === "boolean") return ok(value);
+  return err(new ValidationError("boolean", value));
+};
 
 /** Validates that `value` is a `boolean`. */
 export function boolean(): Validator<boolean> {
-  return function validateBoolean(value: unknown): Result<boolean, ValidationError> {
-    if (typeof value === "boolean") return ok(value);
-    return err(new ValidationError("boolean", value));
-  };
+  return _booleanValidator;
 }
+
+const _nullValidator: Validator<null> = function validateNull(
+  value: unknown,
+): Result<null, ValidationError> {
+  if (value === null) return ok(null);
+  return err(new ValidationError("null", value));
+};
 
 /** Validates that `value` is `null`. */
 export function null_(): Validator<null> {
-  return function validateNull(value: unknown): Result<null, ValidationError> {
-    if (value === null) return ok(null);
-    return err(new ValidationError("null", value));
-  };
+  return _nullValidator;
 }
+
+const _undefinedValidator: Validator<undefined> = function validateUndefined(
+  value: unknown,
+): Result<undefined, ValidationError> {
+  if (value === undefined) return ok(undefined);
+  return err(new ValidationError("undefined", value));
+};
 
 /** Validates that `value` is `undefined`. */
 export function undefined_(): Validator<undefined> {
-  return function validateUndefined(value: unknown): Result<undefined, ValidationError> {
-    if (value === undefined) return ok(undefined);
-    return err(new ValidationError("undefined", value));
-  };
+  return _undefinedValidator;
 }
 
 /** Validates that `value` is strictly equal to the given literal. */

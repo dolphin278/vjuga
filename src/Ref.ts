@@ -16,17 +16,3 @@ export interface RefCell<T> {
 export function make<T>(contents: T): RefCell<T> {
   return { contents };
 }
-
-/**
- * Sets the value of the RefCell.
- */
-export function set<T>(ref: RefCell<T>, value: T): void {
-  ref.contents = value;
-}
-
-/**
- * Gets the value of the RefCell.
- */
-export function get<T>(ref: RefCell<T>): T {
-  return ref.contents;
-}

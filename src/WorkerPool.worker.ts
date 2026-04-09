@@ -1,75 +1,20 @@
-/* c8 ignore start -- runs in a separate V8 isolate that c8 cannot instrument */
+import {
+  MSG_SHUTDOWN,
+  MSG_RESULT,
+  MSG_ERROR,
+  MSG_READY,
+} from "./WorkerPool.protocol.js";
+import type {
+  InboundMessage,
+  OutboundMessage,
+  SerializedError,
+} from "./WorkerPool.protocol.js";
 
-/**
- * WorkerPool bootstrap — loaded by each worker thread.
- *
- * Dynamically imports the user-provided handler module, signals readiness,
- * then processes task messages and returns results/errors to the main thread.
- */
-
-import { parentPort, workerData } from "node:worker_threads";
-
-// ---------------------------------------------------------------------------
-// Message protocol (numeric tags for V8 Smi optimization)
-// ---------------------------------------------------------------------------
-
-/** Main → Worker message tags. */
-const MSG_TASK = 0 as const;
-const MSG_SHUTDOWN = 1 as const;
-
-/** Worker → Main message tags. */
-const MSG_RESULT = 0 as const;
-const MSG_ERROR = 1 as const;
-const MSG_READY = 2 as const;
-
-/** Main → Worker: execute a task. */
-interface TaskMessage {
-  readonly tag: typeof MSG_TASK;
-  readonly taskId: number;
-  readonly data: unknown;
-}
-
-/** Main → Worker: graceful shutdown. */
-interface ShutdownMessage {
-  readonly tag: typeof MSG_SHUTDOWN;
-}
-
-/** Messages sent from main thread to worker. */
-type InboundMessage = TaskMessage | ShutdownMessage;
-
-/** Worker → Main: task result. */
-interface ResultMessage {
-  readonly tag: typeof MSG_RESULT;
-  readonly taskId: number;
-  readonly data: unknown;
-}
-
-/** Worker → Main: task error. */
-interface ErrorMessage {
-  readonly tag: typeof MSG_ERROR;
-  readonly taskId: number;
-  readonly error: SerializedError;
-}
-
-/** Worker → Main: worker is ready. */
-interface ReadyMessage {
-  readonly tag: typeof MSG_READY;
-}
-
-/** Messages sent from worker to main thread. */
-type OutboundMessage = ResultMessage | ErrorMessage | ReadyMessage;
+export type { InboundMessage, OutboundMessage, SerializedError };
 
 // ---------------------------------------------------------------------------
 // Error serialization
 // ---------------------------------------------------------------------------
-
-interface SerializedError {
-  message: string;
-  name: string;
-  stack: string | undefined;
-  cause: SerializedError | unknown | undefined;
-  properties: Record<string, unknown>;
-}
 
 function serializeError(err: unknown): SerializedError {
   if (!(err instanceof Error)) {
@@ -100,6 +45,10 @@ function serializeError(err: unknown): SerializedError {
 // Bootstrap
 // ---------------------------------------------------------------------------
 
+/* c8 ignore start -- runs in a separate V8 isolate that c8 cannot instrument */
+
+import { parentPort, workerData } from "node:worker_threads";
+
 const port = parentPort!;
 const { filename } = workerData as { filename: string };
 
@@ -127,7 +76,5 @@ port.on("message", async (msg: InboundMessage) => {
     } satisfies OutboundMessage);
   }
 });
-
-export type { InboundMessage, OutboundMessage, SerializedError };
 
 /* c8 ignore stop */

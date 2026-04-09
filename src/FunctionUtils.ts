@@ -19,10 +19,6 @@ export type Fn2<T1, T2, R = void> = Fn<[T1, T2], R>;
 /** Lazily evaluated value. */
 export type Lazy<T> = Fn0<T>;
 
-/** Tagged union type. */
-export type TaggedUnion<T> = {
-  [P in keyof T]: { readonly tag: P; readonly value: T[P] };
-}[keyof T];
 
 /**
  * Branded type — attaches a phantom brand to `Base` so that two values of the

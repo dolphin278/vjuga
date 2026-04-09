@@ -1,12 +1,14 @@
 /**
  * Benchmark orchestrator using oha (Rust HTTP load generator).
  *
+ * Compares the vjuga-optimized server against Express and Fastify baselines.
  * oha eliminates the JS client bottleneck — it can saturate the server
  * with far more concurrent requests than node:http or fetch().
  *
  * Usage:
  *   node --experimental-strip-types benchmark-apps/run-bench-oha.ts
  *   node --experimental-strip-types benchmark-apps/run-bench-oha.ts --smoke
+ *   node --experimental-strip-types benchmark-apps/run-bench-oha.ts --servers express,fastify,optimized
  */
 
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
@@ -26,6 +28,29 @@ function getArg(flag: string): string | undefined {
   const idx = args.indexOf(flag);
   return idx >= 0 && idx + 1 < args.length ? args[idx + 1] : undefined;
 }
+
+// ── Server definitions ──────────────────────────────────────────────
+
+interface ServerDef {
+  name: string;
+  script: string;
+  port: number;
+}
+
+const ALL_SERVERS: Record<string, ServerDef> = {
+  express:    { name: "express",    script: "express/server.ts",    port: 3100 },
+  fastify:    { name: "fastify",    script: "fastify/server.ts",    port: 3200 },
+  naive:      { name: "naive",      script: "naive/server.ts",      port: 3300 },
+  optimized:  { name: "optimized",  script: "optimized/server.ts",  port: 3400 },
+  "vjuga-http": { name: "vjuga-http", script: "vjuga-http/server.ts", port: 3500 },
+};
+
+const serverList = (getArg("--servers") || "express,fastify,vjuga-http").split(",");
+const SERVERS: ServerDef[] = serverList.map((s) => {
+  const def = ALL_SERVERS[s.trim()];
+  if (!def) throw new Error(`Unknown server: ${s}. Available: ${Object.keys(ALL_SERVERS).join(", ")}`);
+  return def;
+});
 
 // ── Server spawning ──────────────────────────────────────────────────
 
@@ -125,14 +150,20 @@ function runOha(
 
   // Parse oha text output
   const rpsMatch = output.match(/Requests\/sec:\s+([\d.]+)/);
-  const p50Match = output.match(/50\.00% in ([\d.]+) ms/);
-  const p99Match = output.match(/99\.00% in ([\d.]+) ms/);
+  const p50Match = output.match(/50\.00% in ([\d.]+) (secs|ms)/);
+  const p99Match = output.match(/99\.00% in ([\d.]+) (secs|ms)/);
   const totalMatch = output.match(/\[200\] (\d+) responses/);
+
+  const p50Val = parseFloat(p50Match?.[1] ?? "0");
+  const p99Val = parseFloat(p99Match?.[1] ?? "0");
+  // Normalize to seconds
+  const p50Secs = p50Match?.[2] === "ms" ? p50Val / 1000 : p50Val;
+  const p99Secs = p99Match?.[2] === "ms" ? p99Val / 1000 : p99Val;
 
   return {
     rps: Math.round(parseFloat(rpsMatch?.[1] ?? "0")),
-    p50: parseFloat(p50Match?.[1] ?? "0") / 1000, // convert ms to seconds
-    p99: parseFloat(p99Match?.[1] ?? "0") / 1000,
+    p50: p50Secs,
+    p99: p99Secs,
     total: parseInt(totalMatch?.[1] ?? "0", 10),
     errors: 0,
   };
@@ -192,74 +223,97 @@ async function smokeTest(port: number, label: string): Promise<boolean> {
 // ── Output ───────────────────────────────────────────────────────────
 
 function formatLatency(secs: number): string {
+  if (secs === 0) return "—";
   const ms = secs * 1000;
   return ms < 1 ? `${(ms * 1000).toFixed(0)}µs` : `${ms.toFixed(2)}ms`;
 }
 
-function printComparison(naiveResults: OhaResult[], optResults: OhaResult[]): void {
-  console.log("\n" + "═".repeat(95));
+function printComparison(
+  allResults: Map<string, OhaResult[]>,
+): void {
+  const serverNames = [...allResults.keys()];
+  const optResults = allResults.get("vjuga-http")!;
+
+  // Calculate column widths
+  const COL_W = 12;
+  const NAME_W = 25;
+  const totalW = NAME_W + serverNames.length * (COL_W + 3) + COL_W + 3;
+
+  console.log("\n" + "═".repeat(totalW));
   console.log(`  BENCHMARK (oha, ${CONCURRENCY} connections, ${DURATION_S}s per scenario)`);
-  console.log("═".repeat(95));
+  console.log("═".repeat(totalW));
 
-  const header = [
-    "Scenario".padEnd(25),
-    "naive rps".padStart(10),
-    "opt rps".padStart(10),
-    "speedup".padStart(8),
-    "naive p99".padStart(10),
-    "opt p99".padStart(10),
-  ].join(" │ ");
-
-  console.log(header);
-  console.log("─".repeat(95));
+  // Header: Scenario | server1 rps | server2 rps | ... | speedup vs best baseline
+  const headerParts = ["Scenario".padEnd(NAME_W)];
+  for (const name of serverNames) {
+    headerParts.push(`${name} rps`.padStart(COL_W));
+  }
+  headerParts.push("best gain".padStart(COL_W));
+  console.log(headerParts.join(" │ "));
+  console.log("─".repeat(totalW));
 
   for (let i = 0; i < SCENARIOS.length; i++) {
-    const n = naiveResults[i];
-    const o = optResults[i];
-    const speedup = n.rps > 0 ? (o.rps / n.rps) : 0;
-    const speedupStr = speedup >= 1
-      ? `${speedup.toFixed(2)}x`
-      : `${(1 / speedup).toFixed(2)}x ↓`;
+    const parts = [SCENARIOS[i].name.padEnd(NAME_W)];
 
-    console.log([
-      SCENARIOS[i].name.padEnd(25),
-      String(n.rps).padStart(10),
-      String(o.rps).padStart(10),
-      speedupStr.padStart(8),
-      formatLatency(n.p99).padStart(10),
-      formatLatency(o.p99).padStart(10),
-    ].join(" │ "));
+    // Find the best non-optimized baseline for this scenario
+    let bestBaseline = 0;
+    for (const name of serverNames) {
+      const r = allResults.get(name)![i];
+      parts.push(String(r.rps).padStart(COL_W));
+      if (name !== "vjuga-http" && r.rps > bestBaseline) {
+        bestBaseline = r.rps;
+      }
+    }
+
+    // Speedup vs best baseline
+    const optRps = optResults[i].rps;
+    if (bestBaseline > 0) {
+      const speedup = optRps / bestBaseline;
+      const str = speedup >= 1
+        ? `${speedup.toFixed(2)}x`
+        : `${(1 / speedup).toFixed(2)}x ↓`;
+      parts.push(str.padStart(COL_W));
+    } else {
+      parts.push("—".padStart(COL_W));
+    }
+
+    console.log(parts.join(" │ "));
   }
 
-  console.log("═".repeat(95));
+  console.log("═".repeat(totalW));
 
-  let totalN = 0, totalO = 0;
-  for (let i = 0; i < naiveResults.length; i++) {
-    totalN += naiveResults[i].rps;
-    totalO += optResults[i].rps;
+  // Overall totals
+  const totals = new Map<string, number>();
+  for (const name of serverNames) {
+    let total = 0;
+    for (const r of allResults.get(name)!) total += r.rps;
+    totals.set(name, total);
   }
-  console.log(`\n  Overall: naive ${totalN} rps, optimized ${totalO} rps (${(totalO / totalN).toFixed(2)}x)`);
+
+  const optTotal = totals.get("vjuga-http")!;
+  console.log("\n  Overall rps:");
+  for (const name of serverNames) {
+    const total = totals.get(name)!;
+    const ratio = name === "vjuga-http" ? "" : ` (optimized is ${(optTotal / total).toFixed(2)}x)`;
+    console.log(`    ${name}: ${total}${ratio}`);
+  }
 }
 
 // ── Main ─────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  const NAIVE_PORT = 3100;
-  const OPT_PORT = 3200;
+  console.log(`Spawning servers: ${SERVERS.map((s) => s.name).join(", ")}...`);
 
-  console.log("Spawning servers...");
-  const [naiveChild, optChild] = await Promise.all([
-    spawnServer("naive/server.ts", NAIVE_PORT),
-    spawnServer("optimized/server.ts", OPT_PORT),
-  ]);
+  const children = await Promise.all(
+    SERVERS.map((s) => spawnServer(s.script, s.port)),
+  );
 
   try {
-    // Smoke test
-    const [naiveOk, optOk] = await Promise.all([
-      smokeTest(NAIVE_PORT, "naive"),
-      smokeTest(OPT_PORT, "optimized"),
-    ]);
-    if (!naiveOk || !optOk) {
+    // Smoke test all servers
+    const smokeResults = await Promise.all(
+      SERVERS.map((s, i) => smokeTest(s.port, s.name)),
+    );
+    if (smokeResults.some((ok) => !ok)) {
       console.error("Smoke tests failed");
       process.exitCode = 1;
       return;
@@ -269,31 +323,47 @@ async function main(): Promise<void> {
     // Benchmark
     console.log(`\nBenchmarking: ${CONCURRENCY} connections, ${DURATION_S}s per scenario (oha)\n`);
 
-    const naiveResults: OhaResult[] = [];
-    const optResults: OhaResult[] = [];
+    const allResults = new Map<string, OhaResult[]>();
+    for (const s of SERVERS) allResults.set(s.name, []);
 
     for (const scenario of SCENARIOS) {
       process.stdout.write(`  ${scenario.name}...`);
-      const n = runOha(NAIVE_PORT, scenario.path, scenario.method, scenario.body, scenario.randRegex);
-      process.stdout.write(` naive=${n.rps}`);
-      const o = runOha(OPT_PORT, scenario.path, scenario.method, scenario.body, scenario.randRegex);
-      const speedup = n.rps > 0 ? (o.rps / n.rps).toFixed(2) : "N/A";
-      process.stdout.write(` opt=${o.rps} (${speedup}x)\n`);
-      naiveResults.push(n);
-      optResults.push(o);
+
+      for (const server of SERVERS) {
+        const r = runOha(server.port, scenario.path, scenario.method, scenario.body, scenario.randRegex);
+        allResults.get(server.name)!.push(r);
+        process.stdout.write(` ${server.name}=${r.rps}`);
+      }
+
+      // Show speedup vs best non-optimized baseline
+      const optRps = allResults.get("vjuga-http")!.at(-1)!.rps;
+      let bestBaseline = 0;
+      for (const server of SERVERS) {
+        if (server.name !== "vjuga-http") {
+          const rps = allResults.get(server.name)!.at(-1)!.rps;
+          if (rps > bestBaseline) bestBaseline = rps;
+        }
+      }
+      if (bestBaseline > 0) {
+        process.stdout.write(` (${(optRps / bestBaseline).toFixed(2)}x vs best)`);
+      }
+      process.stdout.write("\n");
     }
 
-    printComparison(naiveResults, optResults);
+    printComparison(allResults);
 
     // Fetch batch stats from optimized server
-    try {
-      const stats = await simpleRequest(OPT_PORT, "GET", "/debug/batch-stats");
-      console.log("\n  Batch stats:", stats.body);
-    } catch { /* ignore */ }
+    const optServer = SERVERS.find((s) => s.name === "vjuga-http");
+    if (optServer) {
+      try {
+        const stats = await simpleRequest(optServer.port, "GET", "/debug/batch-stats");
+        console.log("\n  Batch stats:", stats.body);
+      } catch { /* ignore */ }
+    }
 
   } finally {
     console.log("\nShutting down servers...");
-    await Promise.all([killServer(naiveChild), killServer(optChild)]);
+    await Promise.all(children.map(killServer));
   }
 }
 

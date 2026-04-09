@@ -393,7 +393,6 @@ const batchGetUsers = BufferizedFunction.make<BatchedGetUsersReq>((requests) => 
   batchGetUsersBatches++;
   batchGetUsersCount += requests.length;
   // Deduplicate: group by (limit, offset) — run one query per unique combo.
-  // With ~100 possible offsets and batch ~193, this eliminates ~50% of queries.
   // Numeric key avoids string allocation: limit * 1_000_000 + offset.
   const queryCache = new Map<number, unknown[]>();
   const results = new Array(requests.length);
@@ -538,6 +537,7 @@ server.listen(PORT, () => {
   if (process.send) process.send({ type: "ready", port: PORT });
   console.log(`optimized server listening on :${PORT}`);
 });
+
 
 process.on("SIGTERM", () => {
   server.close(() => process.exit(0));

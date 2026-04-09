@@ -103,6 +103,7 @@ function runOha(
   path: string,
   method: string,
   body?: string,
+  randRegex?: boolean,
 ): OhaResult {
   const ohaArgs = [
     "-c", String(CONCURRENCY),
@@ -110,6 +111,7 @@ function runOha(
     "-m", method,
     "--no-tui",
   ];
+  if (randRegex) ohaArgs.push("--rand-regex-url");
   if (body) {
     ohaArgs.push("-d", body);
     ohaArgs.push("-T", "application/json");
@@ -143,12 +145,15 @@ interface Scenario {
   method: string;
   path: string;
   body?: string;
+  randRegex?: boolean;
 }
 
 const SCENARIOS: Scenario[] = [
   { name: "GET /health", method: "GET", path: "/health" },
   { name: "GET /users?limit=20", method: "GET", path: "/users?offset=0&limit=20" },
   { name: "GET /users/:id", method: "GET", path: "/users/42" },
+  { name: "GET /users/:id varied", method: "GET", path: "/users/[1-9][0-9]{0,2}", randRegex: true },
+  { name: "GET /users?varied", method: "GET", path: "/users\\?offset=[0-9]{1,2}0&limit=20", randRegex: true },
   { name: "POST /auth/login", method: "POST", path: "/auth/login", body: '{"user":"user0","pass":"pass0"}' },
   { name: "POST /users", method: "POST", path: "/users", body: '{"username":"oha_bench","password":"p","email":"e@e.com"}' },
   { name: "GET /files/large.txt", method: "GET", path: "/files/large.txt" },
@@ -269,9 +274,9 @@ async function main(): Promise<void> {
 
     for (const scenario of SCENARIOS) {
       process.stdout.write(`  ${scenario.name}...`);
-      const n = runOha(NAIVE_PORT, scenario.path, scenario.method, scenario.body);
+      const n = runOha(NAIVE_PORT, scenario.path, scenario.method, scenario.body, scenario.randRegex);
       process.stdout.write(` naive=${n.rps}`);
-      const o = runOha(OPT_PORT, scenario.path, scenario.method, scenario.body);
+      const o = runOha(OPT_PORT, scenario.path, scenario.method, scenario.body, scenario.randRegex);
       const speedup = n.rps > 0 ? (o.rps / n.rps).toFixed(2) : "N/A";
       process.stdout.write(` opt=${o.rps} (${speedup}x)\n`);
       naiveResults.push(n);

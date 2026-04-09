@@ -2,14 +2,20 @@
  * Optimized server — applies vjuga patterns for V8-aware, allocation-conscious
  * HTTP serving.
  *
- * Patterns applied (informed by CPU + heap profiling):
+ * Patterns applied (informed by CPU + heap profiling, V8 --trace-opt/--trace-deopt):
  * - RadixTree for O(log k) route dispatch — handlers stored as direct function
  *   refs (NOT closures) with uniform signatures to avoid megamorphic call ICs
+ * - BufferizedFunction("io") for request batching — collects requests arriving
+ *   in the same I/O poll phase and processes them in tight loops for CPU cache
+ *   locality (instruction cache stays hot). No Promise/MemoryPool overhead.
+ * - Query deduplication within batches — numeric key Map avoids redundant SQLite
+ *   queries when multiple requests share the same (limit, offset) parameters
  * - LRUCache for bounded session store with typed-array spine
  * - Sync dispatch path for non-body routes (avoids async/microtask overhead)
  * - Result tuples for typed error handling (parseJSON returns Result)
  * - safeParse with indexOf fast-path for prototype-pollution protection
  * - Pre-serialized error responses (eliminates template literal allocation)
+ * - Flat array headers in writeHead (avoids per-request object literal allocation)
  * - Pre-encoded static file Buffers with frozen header objects
  * - crypto.randomUUID() instead of randomBytes().toString() (no intermediate Buffer)
  * - Module-level free functions for monomorphic ICs
@@ -22,7 +28,7 @@ import * as LRUCache from "../../src/LRUCache.ts";
 import * as RadixTree from "../../src/RadixTree.ts";
 import * as Result from "../../src/Result.ts";
 import * as JSON_ from "../../src/JSON.ts";
-import * as BatchExecutor from "../../src/BatchExecutor.ts";
+import * as BufferizedFunction from "../../src/BufferizedFunction.ts";
 
 // ── Database ──────────────────────────────────────────────────────────
 const db = await createDatabase();
@@ -30,7 +36,6 @@ const db = await createDatabase();
 // ── Prepared statements ──────────────────────────────────────────────
 const stmtGetUsers = db.prepare("SELECT id, username, email, created_at FROM users ORDER BY id LIMIT ? OFFSET ?");
 const stmtGetUser = db.prepare("SELECT id, username, email, created_at FROM users WHERE id = ?");
-const stmtGetUsersBatch = db.prepare("SELECT id, username, email, created_at FROM users WHERE id IN (SELECT value FROM json_each(?)) ORDER BY id");
 const stmtFindUser = db.prepare("SELECT id, password_hash FROM users WHERE username = ?");
 const stmtCreateUser = db.prepare("INSERT INTO users (username, password_hash, email, created_at) VALUES (?, ?, ?, ?)");
 const stmtUpdateUser = db.prepare("UPDATE users SET username = ?, email = ? WHERE id = ?");
@@ -125,7 +130,10 @@ function writePrebuilt(
 
 function writeJSONData(res: ServerResponse, status: number, data: unknown): void {
   const body = JSON.stringify(data);
-  res.writeHead(status, { "Content-Type": JSON_CT, "Content-Length": Buffer.byteLength(body) });
+  res.writeHead(status, [
+    "Content-Type", JSON_CT,
+    "Content-Length", String(Buffer.byteLength(body)),
+  ]);
   res.end(body);
 }
 
@@ -355,82 +363,54 @@ RadixTree.insert(GET_ROUTES, "/debug/batch-stats", handleBatchStats);
 RadixTree.insert(GET_ROUTES, "/users", handleGetUsers);
 
 // ── Batched handlers — tight-loop query + serialize for cache locality ─
-// BatchExecutor with "io" scheduling (setImmediate) collects all requests
+// BufferizedFunction with "io" scheduling (setImmediate) collects all requests
 // arriving in the same I/O poll phase and processes them in a tight loop.
-// Hypothesis: keeping SQLite query code and JSON serializer in CPU instruction
-// cache across N iterations improves throughput vs interleaved processing.
+// Using BufferizedFunction instead of BatchExecutor avoids per-request Promise
+// and MemoryPool overhead — we write directly to res, no return value needed.
 
 interface BatchedGetUserReq { id: number; res: ServerResponse }
 interface BatchedGetUsersReq { limit: number; offset: number; res: ServerResponse }
 
-const FULFILLED_VOID: PromiseSettledResult<void> = { status: "fulfilled", value: undefined };
-
-const batchGetUser = BatchExecutor.make<BatchedGetUserReq, void>(
-  async (requests) => {
-    batchGetUserBatches++;
-    batchGetUserCount += requests.length;
-
-    if (requests.length === 1) {
-      // Fast path: single request, skip json_each overhead
-      const row = stmtGetUser.get(requests[0].id);
-      if (!row) {
-        writePrebuilt(requests[0].res, 404, ERR_USER_NOT_FOUND, HDRS_USER_NOT_FOUND);
-      } else {
-        writeJSONData(requests[0].res, 200, row);
-      }
-      return [FULFILLED_VOID];
+const batchGetUser = BufferizedFunction.make<BatchedGetUserReq>((requests) => {
+  batchGetUserBatches++;
+  batchGetUserCount += requests.length;
+  // Phase 1: tight loop — all SQLite queries (instruction cache stays hot)
+  const rows = new Array(requests.length);
+  for (let i = 0; i < requests.length; i++) {
+    rows[i] = stmtGetUser.get(requests[i].id);
+  }
+  // Phase 2: tight loop — all JSON serialization + response writing
+  for (let i = 0; i < requests.length; i++) {
+    if (!rows[i]) {
+      writePrebuilt(requests[i].res, 404, ERR_USER_NOT_FOUND, HDRS_USER_NOT_FOUND);
+    } else {
+      writeJSONData(requests[i].res, 200, rows[i]);
     }
+  }
+}, "io");
 
-    // Batched SQL: one query fetches all rows via json_each
-    const ids = new Array(requests.length);
-    for (let i = 0; i < requests.length; i++) ids[i] = requests[i].id;
-    const rows = stmtGetUsersBatch.all(JSON.stringify(ids)) as { id: number; username: string; email: string; created_at: number }[];
-
-    // Build id→row map for O(1) lookup
-    const rowMap = new Map<number, { id: number; username: string; email: string; created_at: number }>();
-    for (let i = 0; i < rows.length; i++) rowMap.set(rows[i].id, rows[i]);
-
-    // Write responses in request order
-    for (let i = 0; i < requests.length; i++) {
-      const row = rowMap.get(requests[i].id);
-      if (!row) {
-        writePrebuilt(requests[i].res, 404, ERR_USER_NOT_FOUND, HDRS_USER_NOT_FOUND);
-      } else {
-        writeJSONData(requests[i].res, 200, row);
-      }
+const batchGetUsers = BufferizedFunction.make<BatchedGetUsersReq>((requests) => {
+  batchGetUsersBatches++;
+  batchGetUsersCount += requests.length;
+  // Deduplicate: group by (limit, offset) — run one query per unique combo.
+  // With ~100 possible offsets and batch ~193, this eliminates ~50% of queries.
+  // Numeric key avoids string allocation: limit * 1_000_000 + offset.
+  const queryCache = new Map<number, unknown[]>();
+  const results = new Array(requests.length);
+  for (let i = 0; i < requests.length; i++) {
+    const key = requests[i].limit * 1_000_000 + requests[i].offset;
+    let cached = queryCache.get(key);
+    if (!cached) {
+      cached = stmtGetUsers.all(requests[i].limit, requests[i].offset);
+      queryCache.set(key, cached);
     }
-    return requests.map(() => FULFILLED_VOID);
-  },
-  "io",
-);
-
-const batchGetUsers = BatchExecutor.make<BatchedGetUsersReq, void>(
-  async (requests) => {
-    batchGetUsersBatches++;
-    batchGetUsersCount += requests.length;
-
-    // Deduplicate: group requests by (limit, offset) — run one query per unique combo
-    const queryCache = new Map<string, unknown[]>();
-    const results = new Array(requests.length);
-
-    for (let i = 0; i < requests.length; i++) {
-      const key = `${requests[i].limit}:${requests[i].offset}`;
-      let cached = queryCache.get(key);
-      if (!cached) {
-        cached = stmtGetUsers.all(requests[i].limit, requests[i].offset);
-        queryCache.set(key, cached);
-      }
-      results[i] = cached;
-    }
-
-    // Write responses — requests with identical params share the same result reference
-    for (let i = 0; i < requests.length; i++) {
-      writeJSONData(requests[i].res, 200, results[i]);
-    }
-    return requests.map(() => FULFILLED_VOID);
-  },
-  "io",
-);
+    results[i] = cached;
+  }
+  // Phase 2: tight loop — all JSON serialization + response writing
+  for (let i = 0; i < requests.length; i++) {
+    writeJSONData(requests[i].res, 200, results[i]);
+  }
+}, "io");
 
 // ── Batch stats instrumentation ──────────────────────────────────────
 let batchGetUserCount = 0;

@@ -97,7 +97,7 @@ export function pop<T>(queue: Queue<T>): T | undefined {
   return value;
 }
 
-export function tryToShrinkList<T>(queue: Queue<T>): void {
+function tryToShrinkList<T>(queue: Queue<T>): void {
   const list = queue[kList];
   if (
     list.length > 10000 &&
@@ -113,7 +113,7 @@ export function tryToShrinkList<T>(queue: Queue<T>): void {
   }
 }
 
-export function growList<T>(queue: Queue<T>): void {
+function growList<T>(queue: Queue<T>): void {
   const list = queue[kList];
   const len = list.length;
   list.length = list.length << 1;

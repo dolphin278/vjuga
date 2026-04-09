@@ -67,7 +67,7 @@ bench("memoize: numeric key via JSON.stringify", () => {
 });
 
 bench("memoize: custom key function (fast path)", () => {
-  const fn = memoize(add, { cacheKeyFn: (args: [number, number]) => `${args[0]}:${args[1]}` });
+  const fn = memoize(add, { cacheKeyFn: (...args: [number, number]) => `${args[0]}:${args[1]}` });
   fn(3, 4);
   return fn(3, 4);
 });

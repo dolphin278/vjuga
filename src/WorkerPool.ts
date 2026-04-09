@@ -18,36 +18,32 @@ import { fileURLToPath } from "node:url";
 import * as PQ from "./PriorityQueue.js";
 import { positiveInteger, nonNegativeInteger } from "./FunctionUtils.js";
 import type { PositiveInteger, NonNegativeInteger } from "./FunctionUtils.js";
-import type { OutboundMessage, SerializedError } from "./WorkerPool.worker.js";
+import {
+  MSG_TASK,
+  MSG_SHUTDOWN,
+  MSG_RESULT,
+  MSG_ERROR,
+  MSG_READY,
+} from "./WorkerPool.protocol.js";
+import type {
+  InboundMessage,
+  OutboundMessage,
+  SerializedError,
+} from "./WorkerPool.protocol.js";
 
-// ---------------------------------------------------------------------------
-// Message protocol tags (must match WorkerPool.worker.ts)
-// ---------------------------------------------------------------------------
-
-/** Main → Worker message tags. */
-const MSG_TASK = 0 as const;
-const MSG_SHUTDOWN = 1 as const;
-
-/** Worker → Main message tags. */
-const MSG_RESULT = 0 as const;
-const MSG_ERROR = 1 as const;
-const MSG_READY = 2 as const;
-
-/** Main → Worker: execute a task. */
-interface TaskMessage {
-  readonly tag: typeof MSG_TASK;
-  readonly taskId: number;
-  readonly data: unknown;
-  readonly transferList?: readonly Transferable[];
+export class WorkerPoolDestroyedError extends Error {
+  constructor() {
+    super("WorkerPool is destroyed");
+    this.name = "WorkerPoolDestroyedError";
+  }
 }
 
-/** Main → Worker: graceful shutdown. */
-interface ShutdownMessage {
-  readonly tag: typeof MSG_SHUTDOWN;
+export class WorkerExitError extends Error {
+  constructor() {
+    super("Worker exited unexpectedly");
+    this.name = "WorkerExitError";
+  }
 }
-
-/** Messages sent from main thread to worker. */
-type InboundMessage = TaskMessage | ShutdownMessage;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -210,7 +206,7 @@ export function make<I, O>(config: WorkerPoolConfig): WorkerPool<I, O> {
  */
 export function run<I, O>(pool: WorkerPool<I, O>, data: I, options?: RunOptions): Promise<O> {
   if (pool[kDestroyed]) {
-    return Promise.reject(new Error("WorkerPool is destroyed"));
+    return Promise.reject(new WorkerPoolDestroyedError());
   }
 
   const signal = options?.signal;
@@ -307,7 +303,7 @@ export async function destroy<I, O>(pool: WorkerPool<I, O>): Promise<void> {
   pool[kDestroyed] = true;
 
   // Reject all queued tasks.
-  const destroyError = new Error("WorkerPool is destroyed");
+  const destroyError = new WorkerPoolDestroyedError();
   let task: Task<I, O> | undefined;
   while ((task = PQ.pop(pool[kTaskQueue])) !== undefined) {
     if (!task.aborted) {
@@ -558,7 +554,7 @@ function handleWorkerExit<I, O>(pool: WorkerPool<I, O>, entry: WorkerEntry, _cod
   if (task) {
     pool[kPendingTasks].delete(task.taskId);
     if (!task.aborted) {
-      task.reject(new Error("Worker exited unexpectedly"));
+      task.reject(new WorkerExitError());
     }
   }
 

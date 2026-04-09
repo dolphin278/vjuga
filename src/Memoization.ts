@@ -34,7 +34,7 @@ import type { Fn } from "./FunctionUtils.js";
  * Map (e.g., an LRU map) via the `cache` option when the key space is large.
  */
 export interface MemoizationOptions<T extends readonly unknown[], R, K = string> {
-  cacheKeyFn?: (args: T) => K;
+  cacheKeyFn?: (...args: T) => K;
   cache?: Map<K, R>;
 }
 
@@ -46,7 +46,7 @@ export function memoize<T extends readonly unknown[], R, K = string>(
   fn: Fn<T, R>,
   options?: MemoizationOptions<T, R, K>,
 ): Fn<T, R> {
-  const cacheKeyFn = (options?.cacheKeyFn ?? defaultCacheKeyFn) as unknown as (args: T) => K;
+  const cacheKeyFn = (options?.cacheKeyFn ?? defaultCacheKeyFn) as (...args: T) => K;
   const cache: Map<K, R> = options?.cache ?? new Map();
 
   return function memoized(...args: T): R {

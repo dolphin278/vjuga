@@ -14,12 +14,10 @@ const gc = (): void => {
 {
   const ref = Ref.make(0);
   for (let i = 0; i < 100_000; i++) {
-    Ref.set(ref, i);
-    Ref.get(ref);
+    ref.contents = i;
+    void ref.contents;
   }
   reportOptimizationStatus(Ref.make, "Ref.make");
-  reportOptimizationStatus(Ref.set, "Ref.set");
-  reportOptimizationStatus(Ref.get, "Ref.get");
 }
 
 // --- Benchmarks ---
@@ -38,22 +36,22 @@ bench("Ref.make via {} literal", () => {
   return { contents: 42 };
 });
 
-bench("Ref.set", () => {
+bench("ref.contents = value", () => {
   const ref = Ref.make(0);
-  Ref.set(ref, 1);
+  ref.contents = 1;
 });
 
-bench("Ref.get", () => {
+bench("ref.contents read", () => {
   const ref = Ref.make(42);
-  return Ref.get(ref);
+  return ref.contents;
 });
 
-bench("Ref.get + Ref.set cycle (10x)", () => {
+bench("ref.contents read/write cycle (10x)", () => {
   const ref = Ref.make(0);
   for (let i = 0; i < 10; i++) {
-    Ref.set(ref, Ref.get(ref) + 1);
+    ref.contents = ref.contents + 1;
   }
-  return Ref.get(ref);
+  return ref.contents;
 });
 
 // Investigation: Object.create(null) vs {} for internal cell — compare allocation shapes

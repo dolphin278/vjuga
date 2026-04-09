@@ -48,12 +48,31 @@ export interface MemoryPoolConfig<T> {
   minSize?: number;
 }
 
+const kFactory: unique symbol = Symbol("factory");
+const kReset: unique symbol = Symbol("reset");
+const kMaxSize: unique symbol = Symbol("maxSize");
+const kFreeList: unique symbol = Symbol("freeList");
+const kAcquiredCount: unique symbol = Symbol("acquiredCount");
 export interface MemoryPool<T> {
-  factory: Fn0<T>;
-  reset: Fn1<T, void> | undefined;
-  maxSize: number;
-  freeList: T[];
-  acquiredCount: number;
+  [kFactory]: Fn0<T>;
+  [kReset]: Fn1<T, void> | undefined;
+  [kMaxSize]: number;
+  [kFreeList]: T[];
+  [kAcquiredCount]: number;
+}
+
+export class MemoryPoolExhaustedError extends Error {
+  constructor() {
+    super("MemoryPool is full");
+    this.name = "MemoryPoolExhaustedError";
+  }
+}
+
+export class MemoryPoolMinSizeError extends Error {
+  constructor() {
+    super("minSize cannot be greater than maxSize");
+    this.name = "MemoryPoolMinSizeError";
+  }
 }
 
 export function make<T extends object>(options: MemoryPoolConfig<T>): MemoryPool<T> {
@@ -61,7 +80,7 @@ export function make<T extends object>(options: MemoryPoolConfig<T>): MemoryPool
   const maxSize = _maxSize ?? 1024;
 
   if (minSize !== undefined && minSize > maxSize) {
-    throw new Error("minSize cannot be greater than maxSize");
+    throw new MemoryPoolMinSizeError();
   }
 
   const freeList: T[] = [];
@@ -72,38 +91,45 @@ export function make<T extends object>(options: MemoryPoolConfig<T>): MemoryPool
     }
   }
 
-  return {
-    factory,
-    reset,
-    maxSize,
-    freeList,
-    acquiredCount: 0,
+  const pool: MemoryPool<T> = {
+    [kFactory]: factory,
+    [kReset]: reset,
+    [kMaxSize]: maxSize,
+    [kFreeList]: freeList,
+    [kAcquiredCount]: 0,
   };
+  // Write kAcquiredCount a second time so V8 marks it as a mutable field from
+  // the very first make() call. acquire()/release() write to kAcquiredCount on
+  // every call; without this, the first mutation triggers a cascade
+  // deoptimization of every compiled MemoryPool function.
+  pool[kAcquiredCount] = 0;
+
+  return pool;
 }
 
 export function acquire<T extends object>(pool: MemoryPool<T>): T {
-  const { freeList } = pool;
+  const freeList = pool[kFreeList];
 
   if (freeList.length > 0) {
-    pool.acquiredCount++;
+    pool[kAcquiredCount]++;
     return freeList.pop()!;
   }
 
-  if (pool.acquiredCount >= pool.maxSize) {
-    throw new Error("MemoryPool is full");
+  if (pool[kAcquiredCount] >= pool[kMaxSize]) {
+    throw new MemoryPoolExhaustedError();
   }
 
-  pool.acquiredCount++;
-  return pool.factory();
+  pool[kAcquiredCount]++;
+  return pool[kFactory]();
 }
 
 export function release<T extends object>(pool: MemoryPool<T>, instance: T): void {
-  if (pool.reset !== undefined) {
-    pool.reset(instance);
+  if (pool[kReset] !== undefined) {
+    Reflect.apply(pool[kReset], undefined, [instance]);
   }
 
-  pool.acquiredCount--;
-  pool.freeList.push(instance);
+  pool[kAcquiredCount]--;
+  pool[kFreeList].push(instance);
 }
 
 export function withAcquire<T extends object, R>(pool: MemoryPool<T>, fn: (instance: T) => R): R {

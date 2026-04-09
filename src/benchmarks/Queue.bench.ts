@@ -32,12 +32,22 @@ const gc = (): void => {
     Queue.peekFront(peekQ);
     Queue.peekBack(peekQ);
   }
+  // Warm up get/set/swap operations.
+  const accessQ = Queue.make<number>([1, 2, 3, 4, 5]);
+  for (let i = 0; i < 100_000; i++) {
+    Queue.get(accessQ, i % 5);
+    Queue.set(accessQ, i % 5, i);
+    Queue.swap(accessQ, 0, 4);
+  }
   reportOptimizationStatus(Queue.push, "Queue.push");
   reportOptimizationStatus(Queue.shift, "Queue.shift");
   reportOptimizationStatus(Queue.pop, "Queue.pop");
   reportOptimizationStatus(Queue.unshift, "Queue.unshift");
   reportOptimizationStatus(Queue.peekFront, "Queue.peekFront");
   reportOptimizationStatus(Queue.peekBack, "Queue.peekBack");
+  reportOptimizationStatus(Queue.get, "Queue.get");
+  reportOptimizationStatus(Queue.set, "Queue.set");
+  reportOptimizationStatus(Queue.swap, "Queue.swap");
 }
 
 // --- Benchmarks ---
@@ -128,6 +138,23 @@ bench("Queue.peekFront (non-empty)", () => {
 bench("Queue.peekBack (non-empty)", () => {
   const q = Queue.make<number>([1, 2, 3, 4, 5]);
   return Queue.peekBack(q);
+});
+
+bench("Queue.get (random index)", () => {
+  const q = Queue.make<number>([1, 2, 3, 4, 5]);
+  return Queue.get(q, 3);
+});
+
+bench("Queue.set (random index)", () => {
+  const q = Queue.make<number>([1, 2, 3, 4, 5]);
+  Queue.set(q, 3, 99);
+  return q;
+});
+
+bench("Queue.swap (two indices)", () => {
+  const q = Queue.make<number>([1, 2, 3, 4, 5]);
+  Queue.swap(q, 1, 3);
+  return q;
 });
 
 await run();

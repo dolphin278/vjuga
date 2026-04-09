@@ -312,3 +312,71 @@ test("ValidationError with empty path says 'value' in message", () => {
   const e = new ValidationError("string", 42);
   assert.ok(e.message.includes("value"));
 });
+
+// --- positiveNumber ---
+
+test("positiveNumber() accepts positive numbers", () => {
+  const v = Validator.positiveNumber();
+  assertOk(v(1));
+  assertOk(v(0.5));
+  assertOk(v(Infinity));
+});
+
+test("positiveNumber() rejects non-positive", () => {
+  const v = Validator.positiveNumber();
+  assertErr(v(0));
+  assertErr(v(-1));
+  assertErr(v(NaN));
+  assertErr(v("1"));
+});
+
+// --- integer ---
+
+test("integer() accepts safe integers", () => {
+  const v = Validator.integer();
+  assertOk(v(0));
+  assertOk(v(-1));
+  assertOk(v(42));
+});
+
+test("integer() rejects non-integers", () => {
+  const v = Validator.integer();
+  assertErr(v(1.5));
+  assertErr(v(NaN));
+  assertErr(v(Infinity));
+  assertErr(v("1"));
+});
+
+// --- positiveInteger ---
+
+test("positiveInteger() accepts positive integers", () => {
+  const v = Validator.positiveInteger();
+  assertOk(v(1));
+  assertOk(v(100));
+});
+
+test("positiveInteger() rejects non-positive-integers", () => {
+  const v = Validator.positiveInteger();
+  assertErr(v(0));
+  assertErr(v(-1));
+  assertErr(v(1.5));
+  assertErr(v(NaN));
+  assertErr(v("1"));
+});
+
+// --- nonNegativeInteger ---
+
+test("nonNegativeInteger() accepts non-negative integers", () => {
+  const v = Validator.nonNegativeInteger();
+  assertOk(v(0));
+  assertOk(v(1));
+  assertOk(v(100));
+});
+
+test("nonNegativeInteger() rejects negative or non-integers", () => {
+  const v = Validator.nonNegativeInteger();
+  assertErr(v(-1));
+  assertErr(v(1.5));
+  assertErr(v(NaN));
+  assertErr(v("0"));
+});

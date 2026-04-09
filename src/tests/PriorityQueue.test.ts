@@ -112,3 +112,18 @@ test("sort correctness: heapify + pop n times equals sorted array", () => {
   }
   assert.deepEqual(sorted, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
 });
+
+test("shrink behavior: push 20k items, pop most, verify correctness", () => {
+  const pq = PQ.make(numCmp);
+  const N = 20_000;
+  for (let i = 0; i < N; i++) PQ.push(pq, N - i);
+  // Pop most items — leaves a small number.
+  for (let i = 0; i < N - 10; i++) PQ.pop(pq);
+  assert.equal(PQ.size(pq), 10);
+  // Remaining items should still come out sorted.
+  const remaining: number[] = [];
+  while (PQ.size(pq) > 0) {
+    remaining.push(PQ.pop(pq) as number);
+  }
+  assert.deepEqual(remaining, [N - 9, N - 8, N - 7, N - 6, N - 5, N - 4, N - 3, N - 2, N - 1, N]);
+});

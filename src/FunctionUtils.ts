@@ -54,6 +54,44 @@ export function brand<Base, Kind extends PropertyKey>(value: Base): Branded<Base
   return value as Branded<Base, Kind>;
 }
 
+/** A number that is strictly greater than zero. */
+export type PositiveNumber = Branded<number, "PositiveNumber">;
+
+/** A number that is a safe integer (no fractional part). */
+export type Integer = Branded<number, "Integer">;
+
+/** A number that is both positive and a safe integer (>= 1). */
+export type PositiveInteger = PositiveNumber & Integer;
+
+/** A number that is a non-negative safe integer (>= 0). */
+export type NonNegativeInteger = Branded<number, "NonNegativeInteger"> & Integer;
+
+/** Asserts `n > 0`, returns branded PositiveNumber. Throws RangeError. */
+export function positiveNumber(n: number): PositiveNumber {
+  if (!(n > 0)) throw new RangeError(`Expected positive number, got ${n}`);
+  return n as PositiveNumber;
+}
+
+/** Asserts Number.isSafeInteger(n), returns branded Integer. Throws RangeError. */
+export function integer(n: number): Integer {
+  if (!Number.isSafeInteger(n)) throw new RangeError(`Expected integer, got ${n}`);
+  return n as Integer;
+}
+
+/** Asserts n is a safe integer >= 1, returns branded PositiveInteger. Throws RangeError. */
+export function positiveInteger(n: number): PositiveInteger {
+  if (!Number.isSafeInteger(n) || n < 1)
+    throw new RangeError(`Expected positive integer, got ${n}`);
+  return n as PositiveInteger;
+}
+
+/** Asserts n is a safe integer >= 0, returns branded NonNegativeInteger. Throws RangeError. */
+export function nonNegativeInteger(n: number): NonNegativeInteger {
+  if (!Number.isSafeInteger(n) || n < 0)
+    throw new RangeError(`Expected non-negative integer, got ${n}`);
+  return n as NonNegativeInteger;
+}
+
 /**
  * Partially applied function application.
  */

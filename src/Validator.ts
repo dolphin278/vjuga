@@ -17,6 +17,12 @@
  */
 
 import { type Result, ok, err } from "./Result.js";
+import type {
+  PositiveNumber,
+  Integer,
+  PositiveInteger,
+  NonNegativeInteger,
+} from "./FunctionUtils.js";
 
 // Cached at module level so every `for...in` call site in this file goes
 // through the same function reference — keeps V8 ICs monomorphic regardless of
@@ -123,6 +129,44 @@ export function literal<const T extends string | number | boolean | null | undef
   return function validateLiteral(value: unknown): Result<T, ValidationError> {
     if (value === expected) return ok(value as T);
     return err(new ValidationError(label, value));
+  };
+}
+
+/** Validates that `value` is a positive number (> 0, not NaN). */
+export function positiveNumber(): Validator<PositiveNumber> {
+  return function validatePositiveNumber(value: unknown): Result<PositiveNumber, ValidationError> {
+    if (typeof value === "number" && value > 0) return ok(value as PositiveNumber);
+    return err(new ValidationError("positive number", value));
+  };
+}
+
+/** Validates that `value` is a safe integer. */
+export function integer(): Validator<Integer> {
+  return function validateInteger(value: unknown): Result<Integer, ValidationError> {
+    if (typeof value === "number" && Number.isSafeInteger(value)) return ok(value as Integer);
+    return err(new ValidationError("integer", value));
+  };
+}
+
+/** Validates that `value` is a positive safe integer (>= 1). */
+export function positiveInteger(): Validator<PositiveInteger> {
+  return function validatePositiveInteger(
+    value: unknown,
+  ): Result<PositiveInteger, ValidationError> {
+    if (typeof value === "number" && Number.isSafeInteger(value) && value >= 1)
+      return ok(value as PositiveInteger);
+    return err(new ValidationError("positive integer", value));
+  };
+}
+
+/** Validates that `value` is a non-negative safe integer (>= 0). */
+export function nonNegativeInteger(): Validator<NonNegativeInteger> {
+  return function validateNonNegativeInteger(
+    value: unknown,
+  ): Result<NonNegativeInteger, ValidationError> {
+    if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0)
+      return ok(value as NonNegativeInteger);
+    return err(new ValidationError("non-negative integer", value));
   };
 }
 

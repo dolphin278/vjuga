@@ -9,6 +9,10 @@ import {
   tupled,
   brand,
   unreachable,
+  positiveNumber,
+  integer,
+  positiveInteger,
+  nonNegativeInteger,
 } from "../FunctionUtils.js";
 import type { Branded } from "../FunctionUtils.js";
 
@@ -111,6 +115,54 @@ describe("Branded", () => {
     type UserId = Branded<number, "UserId">;
     const id: UserId = brand<number, "UserId">(42);
     assert.equal(id, 42);
+  });
+
+  it("positiveNumber accepts valid values", () => {
+    assert.equal(positiveNumber(1), 1);
+    assert.equal(positiveNumber(0.5), 0.5);
+    assert.equal(positiveNumber(Infinity), Infinity);
+  });
+
+  it("positiveNumber rejects invalid values", () => {
+    assert.throws(() => positiveNumber(0), RangeError);
+    assert.throws(() => positiveNumber(-1), RangeError);
+    assert.throws(() => positiveNumber(NaN), RangeError);
+  });
+
+  it("integer accepts valid values", () => {
+    assert.equal(integer(0), 0);
+    assert.equal(integer(-1), -1);
+    assert.equal(integer(42), 42);
+  });
+
+  it("integer rejects invalid values", () => {
+    assert.throws(() => integer(1.5), RangeError);
+    assert.throws(() => integer(NaN), RangeError);
+    assert.throws(() => integer(Infinity), RangeError);
+  });
+
+  it("positiveInteger accepts valid values", () => {
+    assert.equal(positiveInteger(1), 1);
+    assert.equal(positiveInteger(100), 100);
+  });
+
+  it("positiveInteger rejects invalid values", () => {
+    assert.throws(() => positiveInteger(0), RangeError);
+    assert.throws(() => positiveInteger(-1), RangeError);
+    assert.throws(() => positiveInteger(1.5), RangeError);
+    assert.throws(() => positiveInteger(NaN), RangeError);
+  });
+
+  it("nonNegativeInteger accepts valid values", () => {
+    assert.equal(nonNegativeInteger(0), 0);
+    assert.equal(nonNegativeInteger(1), 1);
+    assert.equal(nonNegativeInteger(100), 100);
+  });
+
+  it("nonNegativeInteger rejects invalid values", () => {
+    assert.throws(() => nonNegativeInteger(-1), RangeError);
+    assert.throws(() => nonNegativeInteger(1.5), RangeError);
+    assert.throws(() => nonNegativeInteger(NaN), RangeError);
   });
 
   it("Branded compound type: PositiveNumber & Integer merge correctly", () => {

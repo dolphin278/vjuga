@@ -1,29 +1,28 @@
 /**
- * PriorityQueue — binary min-heap backed by a plain `T[]`.
+ * PriorityQueue — binary min-heap backed by a `Queue<T>`.
  *
- * The heap array is 1-indexed: the root occupies index 1 and the array at
- * index 0 is never used. This simplifies the parent/child arithmetic:
+ * The heap is 0-indexed:
  *
- *   parent(i)      = i >> 1
- *   leftChild(i)   = i << 1       (= 2i)
- *   rightChild(i)  = (i << 1) | 1 (= 2i+1)
+ *   parent(i)      = (i - 1) >> 1
+ *   leftChild(i)   = (i << 1) + 1    (= 2i + 1)
+ *   rightChild(i)  = (i << 1) + 2    (= 2i + 2)
+ *   root           = index 0
  *
  * A comparator function determines priority. The heap is a *min-heap*: the
  * element for which `comparator(a, b) < 0` is "less than" b is considered
  * higher priority and will be returned first by `pop`.
  *
- * The backing array follows the same on-demand growth strategy as Queue's
- * internal kList: it starts small and doubles on overflow, keeping the heap
- * cache-friendly without pre-allocating an upper bound.
+ * The backing Queue handles growth/shrink automatically, including memory
+ * recovery when the heap shrinks below 25% of a large buffer.
  */
 
-const kData: unique symbol = Symbol("data");
-const kSize: unique symbol = Symbol("size");
+import * as Queue from "./Queue.js";
+
+const kQueue: unique symbol = Symbol("queue");
 const kCmp: unique symbol = Symbol("comparator");
 
 export interface PriorityQueue<T> {
-  [kData]: T[];
-  [kSize]: number;
+  [kQueue]: Queue.Queue<T>;
   [kCmp]: (a: T, b: T) => number;
 }
 
@@ -39,16 +38,10 @@ export type Comparator<T> = (a: T, b: T) => number;
  *   the O(n) `heapify` algorithm rather than n individual pushes.
  */
 export function make<T>(comparator: Comparator<T>, items?: Iterable<T>): PriorityQueue<T> {
-  // Index 0 is unused; the heap root lives at index 1.
-  const data: T[] = [void 0 as unknown as T];
   const pq: PriorityQueue<T> = {
-    [kData]: data,
-    [kSize]: 0,
+    [kQueue]: Queue.make<T>(),
     [kCmp]: comparator,
   };
-  // Write kSize a second time so V8 marks the field as mutable from the first
-  // make() call — same rationale as Queue's kCapacityMask double-write.
-  pq[kSize] = 0;
 
   if (items !== undefined) {
     heapify(pq, items);
@@ -61,7 +54,7 @@ export function make<T>(comparator: Comparator<T>, items?: Iterable<T>): Priorit
  * Returns the number of elements in the heap.
  */
 export function size<T>(pq: PriorityQueue<T>): number {
-  return pq[kSize];
+  return Queue.size(pq[kQueue]);
 }
 
 /**
@@ -69,19 +62,17 @@ export function size<T>(pq: PriorityQueue<T>): number {
  * Returns `undefined` if the heap is empty.
  */
 export function peek<T>(pq: PriorityQueue<T>): T | undefined {
-  if (pq[kSize] === 0) return void 0;
-  return pq[kData][1];
+  if (Queue.size(pq[kQueue]) === 0) return void 0;
+  return Queue.get(pq[kQueue], 0);
 }
 
 /**
  * Inserts `value` into the heap in O(log n).
  */
 export function push<T>(pq: PriorityQueue<T>, value: T): void {
-  const data = pq[kData];
-  const i = pq[kSize] + 1;
-  pq[kSize] = i;
-  data[i] = value;
-  siftUp(pq, i);
+  const queue = pq[kQueue];
+  Queue.push(queue, value);
+  siftUp(pq, Queue.size(queue) - 1);
 }
 
 /**
@@ -89,17 +80,17 @@ export function push<T>(pq: PriorityQueue<T>, value: T): void {
  * Returns `undefined` if the heap is empty.
  */
 export function pop<T>(pq: PriorityQueue<T>): T | undefined {
-  if (pq[kSize] === 0) return void 0;
-  const data = pq[kData];
-  const min = data[1];
-  const last = pq[kSize];
-  pq[kSize] = last - 1;
-  if (last > 1) {
-    data[1] = data[last];
-    data[last] = void 0 as unknown as T; // release reference
-    siftDown(pq, 1);
+  const queue = pq[kQueue];
+  const n = Queue.size(queue);
+  if (n === 0) return void 0;
+  const min = Queue.get(queue, 0);
+  if (n === 1) {
+    Queue.pop(queue);
   } else {
-    data[1] = void 0 as unknown as T; // release reference
+    // Move last element to root, remove last, then sift down.
+    Queue.set(queue, 0, Queue.get(queue, n - 1));
+    Queue.pop(queue);
+    siftDown(pq, 0);
   }
   return min;
 }
@@ -109,16 +100,16 @@ export function pop<T>(pq: PriorityQueue<T>): T | undefined {
  * Replaces any existing contents of `pq`.
  */
 export function heapify<T>(pq: PriorityQueue<T>, items: Iterable<T>): void {
-  const data = pq[kData];
-  // Reset — keep index 0 as the unused sentinel.
-  data.length = 1;
+  const queue = pq[kQueue];
+  // Drain existing queue.
+  Queue.dumpToArray(queue);
+  // Push all items.
   for (const item of items) {
-    data.push(item);
+    Queue.push(queue, item);
   }
-  pq[kSize] = data.length - 1;
-
-  // Bottom-up sift: start from the last non-leaf node (floor(n/2)) down to 1.
-  for (let i = pq[kSize] >> 1; i >= 1; i--) {
+  const n = Queue.size(queue);
+  // Bottom-up sift: start from the last non-leaf node ((n/2)-1) down to 0.
+  for (let i = (n >> 1) - 1; i >= 0; i--) {
     siftDown(pq, i);
   }
 }
@@ -126,39 +117,42 @@ export function heapify<T>(pq: PriorityQueue<T>, items: Iterable<T>): void {
 // --- Internal helpers ---
 
 function siftUp<T>(pq: PriorityQueue<T>, i: number): void {
-  const data = pq[kData];
+  const queue = pq[kQueue];
   const cmp = pq[kCmp];
-  const value = data[i];
-  while (i > 1) {
-    const parent = i >> 1;
-    if (Reflect.apply(cmp, undefined, [value, data[parent]]) < 0) {
-      data[i] = data[parent];
+  const value = Queue.get(queue, i);
+  while (i > 0) {
+    const parent = (i - 1) >> 1;
+    if (Reflect.apply(cmp, undefined, [value, Queue.get(queue, parent)]) < 0) {
+      Queue.set(queue, i, Queue.get(queue, parent));
       i = parent;
     } else {
       break;
     }
   }
-  data[i] = value;
+  Queue.set(queue, i, value);
 }
 
 function siftDown<T>(pq: PriorityQueue<T>, i: number): void {
-  const data = pq[kData];
+  const queue = pq[kQueue];
   const cmp = pq[kCmp];
-  const n = pq[kSize];
-  const value = data[i];
+  const n = Queue.size(queue);
+  const value = Queue.get(queue, i);
   while (true) {
-    const left = i << 1;
-    if (left > n) break;
-    const right = left | 1;
+    const left = (i << 1) + 1;
+    if (left >= n) break;
+    const right = left + 1;
     // Pick the smaller child.
     const child =
-      right <= n && Reflect.apply(cmp, undefined, [data[right], data[left]]) < 0 ? right : left;
-    if (Reflect.apply(cmp, undefined, [data[child], value]) < 0) {
-      data[i] = data[child];
+      right < n &&
+      Reflect.apply(cmp, undefined, [Queue.get(queue, right), Queue.get(queue, left)]) < 0
+        ? right
+        : left;
+    if (Reflect.apply(cmp, undefined, [Queue.get(queue, child), value]) < 0) {
+      Queue.set(queue, i, Queue.get(queue, child));
       i = child;
     } else {
       break;
     }
   }
-  data[i] = value;
+  Queue.set(queue, i, value);
 }

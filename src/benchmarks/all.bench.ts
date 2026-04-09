@@ -35,6 +35,7 @@ const modules = [
   "./PriorityQueue.bench.js",
   "./Validator.bench.js",
   "./RadixTree.bench.js",
+  "./WorkerPool.bench.js",
 ] as const;
 
 console.log("=== vjuga benchmark suite ===\n");

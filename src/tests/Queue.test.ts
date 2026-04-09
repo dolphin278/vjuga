@@ -11,6 +11,9 @@ import {
   unshift,
   peekFront,
   peekBack,
+  get,
+  set,
+  swap,
 } from "../Queue.js";
 
 test("push/pop acts as LIFO", () => {
@@ -214,6 +217,68 @@ test("tryToShrinkList shrinks backing array when < 25% occupied (via pop)", () =
   for (let i = 0; i < 14001; i++) pop(queue);
   pop(queue); // this pop triggers tryToShrinkList
   assert.equal(size(queue), N - 14002);
+});
+
+test("get returns element at logical index", () => {
+  const queue = make([10, 20, 30, 40, 50]);
+  assert.equal(get(queue, 0), 10);
+  assert.equal(get(queue, 2), 30);
+  assert.equal(get(queue, 4), 50);
+});
+
+test("get handles circular-wrap (head advanced via shifts)", () => {
+  const queue = make<number>();
+  push(queue, 1);
+  push(queue, 2);
+  push(queue, 3);
+  shift(queue); // drop 1, head advances
+  shift(queue); // drop 2, head advances
+  push(queue, 4);
+  push(queue, 5);
+  // queue = [3, 4, 5], head is wrapped
+  assert.equal(get(queue, 0), 3);
+  assert.equal(get(queue, 1), 4);
+  assert.equal(get(queue, 2), 5);
+});
+
+test("set replaces element at logical index", () => {
+  const queue = make([10, 20, 30]);
+  set(queue, 1, 99);
+  assert.deepEqual(toArray(queue), [10, 99, 30]);
+});
+
+test("set handles circular-wrap", () => {
+  const queue = make<number>();
+  push(queue, 1);
+  push(queue, 2);
+  push(queue, 3);
+  shift(queue);
+  shift(queue);
+  push(queue, 4);
+  push(queue, 5);
+  // queue = [3, 4, 5]
+  set(queue, 2, 99);
+  assert.deepEqual(toArray(queue), [3, 4, 99]);
+});
+
+test("swap exchanges elements at two logical indices", () => {
+  const queue = make([10, 20, 30, 40]);
+  swap(queue, 0, 3);
+  assert.deepEqual(toArray(queue), [40, 20, 30, 10]);
+});
+
+test("swap handles circular-wrap", () => {
+  const queue = make<number>();
+  push(queue, 1);
+  push(queue, 2);
+  push(queue, 3);
+  shift(queue);
+  shift(queue);
+  push(queue, 4);
+  push(queue, 5);
+  // queue = [3, 4, 5]
+  swap(queue, 0, 2);
+  assert.deepEqual(toArray(queue), [5, 4, 3]);
 });
 
 test("peekBack is correct after ring buffer wraps", () => {

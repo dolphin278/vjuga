@@ -133,6 +133,37 @@ export function peekBack<T>(queue: Queue<T>): T | undefined {
   return list[(queue[kTail] - 1 + list.length) & queue[kCapacityMask]];
 }
 
+/**
+ * Returns the element at logical index `i` (0 = front/head).
+ * No bounds checking — caller is responsible for 0 <= i < size(queue).
+ */
+export function get<T>(queue: Queue<T>, i: number): T {
+  return queue[kList][(queue[kHead] + i) & queue[kCapacityMask]] as T;
+}
+
+/**
+ * Sets the element at logical index `i` (0 = front/head).
+ * No bounds checking — caller is responsible for 0 <= i < size(queue).
+ */
+export function set<T>(queue: Queue<T>, i: number, value: T): void {
+  queue[kList][(queue[kHead] + i) & queue[kCapacityMask]] = value;
+}
+
+/**
+ * Swaps elements at logical indices `i` and `j`.
+ * No bounds checking — caller is responsible for valid indices.
+ */
+export function swap<T>(queue: Queue<T>, i: number, j: number): void {
+  const list = queue[kList];
+  const mask = queue[kCapacityMask];
+  const head = queue[kHead];
+  const ri = (head + i) & mask;
+  const rj = (head + j) & mask;
+  const tmp = list[ri];
+  list[ri] = list[rj];
+  list[rj] = tmp;
+}
+
 export function toArray<T>(queue: Queue<T>): Array<T> {
   const list = queue[kList];
   const head = queue[kHead];

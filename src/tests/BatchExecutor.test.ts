@@ -1,6 +1,6 @@
 import * as assert from "node:assert";
 import { test } from "node:test";
-import { setTimeout as setTimeoutPromise } from "node:timers/promises";
+import { setTimeout as setTimeoutPromise, setImmediate as setImmediatePromise } from "node:timers/promises";
 import { make } from "../BatchExecutor.js";
 
 test("BatchExecutor batches function invocation and delivers corresponding results", async () => {
@@ -73,4 +73,29 @@ test("batch function may trigger rejections on individual results", async () => 
   assert.equal(results[0].status, "fulfilled", "First result is rejected");
   assert.equal(results[1].status, "fulfilled", "First result is rejected");
   assert.equal(results[2].status, "rejected", "First result is rejected");
+});
+
+test("io schedule mode: batches via setImmediate with lower latency", async () => {
+  let invocationArgs: number[][] = [];
+
+  const fn = (args: number[]) => {
+    invocationArgs.push(args);
+    return Promise.resolve(
+      args.map((arg) => ({
+        status: "fulfilled" as const,
+        value: arg * 3,
+      })),
+    );
+  };
+
+  const batchExecutor = make(fn, "io");
+
+  const result1 = Promise.all([batchExecutor(1), batchExecutor(2), batchExecutor(3)]);
+
+  await setImmediatePromise();
+  const result2 = Promise.all([batchExecutor(4), batchExecutor(5)]);
+  const result = [...(await result1), ...(await result2)];
+
+  assert.deepEqual(result, [3, 6, 9, 12, 15]);
+  assert.deepEqual(invocationArgs, [[1, 2, 3], [4, 5]]);
 });

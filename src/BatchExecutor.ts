@@ -1,4 +1,4 @@
-import { make as makeBufferizedFn } from "./BufferizedFunction.js";
+import { make as makeBufferizedFn, type ScheduleMode } from "./BufferizedFunction.js";
 import * as MemoryPool from "./MemoryPool.js";
 import type { Fn1 } from "./FunctionUtils.js";
 
@@ -19,9 +19,14 @@ interface Request<T, R> {
  * Compared to BufferizedFunction, BatchExecutor allows returning values
  * to original caller using deferred objects and allows wrapped function to
  * return rejections for some of the arguments.
+ *
+ * The optional `schedule` parameter controls batch timing:
+ * - `"macrotask"` (default): fires on next macrotask via `setTimeout(0)`
+ * - `"io"`: fires via `setImmediate` at end of I/O poll phase (lower latency)
  */
 export function make<T, R>(
   fn: Fn1<T[], Promise<PromiseSettledResult<R>[]>>,
+  schedule?: ScheduleMode,
 ): (arg: T) => Promise<R> {
   const RequestPool = MemoryPool.make<Request<T, R>>({
     factory: () => ({
@@ -69,7 +74,7 @@ export function make<T, R>(
         MemoryPool.release(RequestPool, args[i]);
       }
     }
-  });
+  }, schedule);
 
   return function (arg: T): Promise<R> {
     const deferred = Promise.withResolvers<R>();

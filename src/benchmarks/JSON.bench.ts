@@ -82,6 +82,14 @@ bench("JSON.safeParse: object with __proto__ keys", () => {
   return safeParse(protoJson);
 });
 
+bench("JSON.safeParse: clean nested object", () => {
+  return safeParse(nestedJson);
+});
+
+bench("JSON.safeParse: clean array of 100 objects", () => {
+  return safeParse(arrayJson);
+});
+
 bench("JSON.safeParse: invalid json (returns Err)", () => {
   return safeParse(invalidJson);
 });

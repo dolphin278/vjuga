@@ -15,7 +15,7 @@
     "typecheck": "tsc --noEmit --project tsconfig.json",
     "lint": "oxlint ./src",
     "lint:fix": "oxlint --fix ./src",
-    "coverage": "tsc --project tsconfig.test.json && c8 --src=src --all --exclude 'src/benchmarks/**' --exclude 'src/**/*.ts' --report --reporter html --reporter text --per-file --skip-full --check-coverage --branches 100 --statements 100 --functions 100 --lines 100 -- node --test 'src/tests/*.test.js'",
+    "coverage": "tsc --project tsconfig.test.json && c8 --src=src --all --exclude 'src/benchmarks/**' --exclude 'src/tests/fixtures/**' --exclude 'src/**/*.ts' --report --reporter html --reporter text --per-file --skip-full --check-coverage --branches 100 --statements 100 --functions 100 --lines 100 -- node --test 'src/tests/*.test.js'",
     "coverage:bun": "bash -c 'bun test --coverage src/tests/*.test.js'",
     "coverage:all": "bash -c 'npm run coverage & P1=$!; npm run coverage:bun & P2=$!; wait $P1; R1=$?; wait $P2; R2=$?; exit $((R1|R2))'",
     "prepare": "npm run clean && tsc --project tsconfig.json && npm run lint && oxfmt --check 'src/**/*.ts' '!src/**/*.d.ts' && npm run coverage:all",

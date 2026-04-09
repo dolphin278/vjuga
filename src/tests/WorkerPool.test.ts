@@ -5,19 +5,14 @@ import * as WP from "../WorkerPool.js";
 import { WorkerPoolDestroyedError, WorkerExitError } from "../WorkerPool.js";
 
 // ---------------------------------------------------------------------------
-// data: URL handlers (no fixture files needed)
+// fixture file URLs (avoids data: URLs which break in Bun worker_threads)
 // ---------------------------------------------------------------------------
 
-const echoUrl = "data:text/javascript," + encodeURIComponent("export default (x) => x;");
-const doubleUrl = "data:text/javascript," + encodeURIComponent("export default (x) => x * 2;");
-const throwUrl =
-  "data:text/javascript," +
-  encodeURIComponent(
-    'export default () => { const cause = new TypeError("root"); cause.code = 42; throw new Error("boom", { cause }); };',
-  );
-const slowUrl =
-  "data:text/javascript," +
-  encodeURIComponent('export default (ms) => new Promise(r => setTimeout(r, ms, "done"));');
+const echoUrl = new URL("./fixtures/echo.mjs", import.meta.url).href;
+const doubleUrl = new URL("./fixtures/double.mjs", import.meta.url).href;
+const throwUrl = new URL("./fixtures/throw.mjs", import.meta.url).href;
+const slowUrl = new URL("./fixtures/slow.mjs", import.meta.url).href;
+const transferUrl = new URL("./fixtures/transfer.mjs", import.meta.url).href;
 
 // ---------------------------------------------------------------------------
 // make()
@@ -155,9 +150,6 @@ describe("run()", () => {
   });
 
   test("with transferList — ArrayBuffer transferred", async () => {
-    const transferUrl =
-      "data:text/javascript," +
-      encodeURIComponent("export default (buf) => { return buf.byteLength; };");
     const pool = WP.make<ArrayBuffer, number>({
       filename: transferUrl,
       maxThreads: 1,
@@ -244,11 +236,7 @@ describe("error forwarding", () => {
   });
 
   test("error with non-Error cause is preserved", async () => {
-    const nonErrorCauseUrl =
-      "data:text/javascript," +
-      encodeURIComponent(
-        'export default () => { throw new Error("oops", { cause: "string cause" }); };',
-      );
+    const nonErrorCauseUrl = new URL("./fixtures/throw-non-error-cause.mjs", import.meta.url).href;
     const pool = WP.make({ filename: nonErrorCauseUrl, maxThreads: 1 });
     const err = await WP.run(pool, null).catch((e: unknown) => e);
     assert.ok(err instanceof Error);
@@ -258,9 +246,7 @@ describe("error forwarding", () => {
   });
 
   test("error without cause is deserialized correctly", async () => {
-    const noCauseUrl =
-      "data:text/javascript," +
-      encodeURIComponent('export default () => { throw new Error("no cause"); };');
+    const noCauseUrl = new URL("./fixtures/throw-no-cause.mjs", import.meta.url).href;
     const pool = WP.make({ filename: noCauseUrl, maxThreads: 1 });
     const err = await WP.run(pool, null).catch((e: unknown) => e);
     assert.ok(err instanceof Error);
@@ -270,9 +256,7 @@ describe("error forwarding", () => {
   });
 
   test("non-Error thrown is serialized", async () => {
-    const throwStringUrl =
-      "data:text/javascript," +
-      encodeURIComponent('export default () => { throw "string error"; };');
+    const throwStringUrl = new URL("./fixtures/throw-string.mjs", import.meta.url).href;
     const pool = WP.make({ filename: throwStringUrl, maxThreads: 1 });
     const err = await WP.run(pool, null).catch((e: unknown) => e);
     assert.ok(err instanceof Error);
@@ -324,9 +308,7 @@ describe("drain()", () => {
   });
 
   test("drain resolves after error task completes", async () => {
-    const throwOnceUrl =
-      "data:text/javascript," +
-      encodeURIComponent('export default () => { throw new Error("fail"); };');
+    const throwOnceUrl = new URL("./fixtures/throw-once.mjs", import.meta.url).href;
     const pool = WP.make({ filename: throwOnceUrl, maxThreads: 1 });
     const errPromise = WP.run(pool, null).catch((e: Error) => e);
     const drainPromise = WP.drain(pool);
@@ -388,11 +370,9 @@ describe("destroy()", () => {
 
 describe("worker lifecycle", () => {
   test("worker crash recovery — replacement spawned when below minThreads", async () => {
-    const crashUrl =
-      "data:text/javascript," +
-      encodeURIComponent(
-        "export default (x) => { if (x === 'crash') process.exit(1); return x; };",
-      );
+    /* c8 ignore next 2 -- Bun worker_threads does not fire 'exit' on process.exit() */
+    if (typeof (globalThis as Record<string, unknown>).Bun !== "undefined") return;
+    const crashUrl = new URL("./fixtures/crash.mjs", import.meta.url).href;
     const pool = WP.make<string, string>({
       filename: crashUrl,
       minThreads: 1,
@@ -462,8 +442,6 @@ describe("worker lifecycle", () => {
   });
 
   test("transferList via idle worker dispatch path", async () => {
-    const transferUrl =
-      "data:text/javascript," + encodeURIComponent("export default (buf) => buf.byteLength;");
     const pool = WP.make<ArrayBuffer, number>({
       filename: transferUrl,
       minThreads: 0,
@@ -496,19 +474,14 @@ describe("worker lifecycle", () => {
   });
 
   test("worker error event during initialization", async () => {
-    const badUrl = "data:text/javascript," + encodeURIComponent("throw new Error('init failed');");
+    const badUrl = new URL("./fixtures/bad-init.mjs", import.meta.url).href;
     const pool = WP.make({ filename: badUrl, maxThreads: 1, minThreads: 0 });
     await assert.rejects(() => WP.run(pool, "test"), /init failed/);
     await WP.destroy(pool);
   });
 
   test("worker exit while idle timer is running clears timer", async () => {
-    // Worker that self-exits 100ms after completing a task.
-    const selfExitUrl =
-      "data:text/javascript," +
-      encodeURIComponent(
-        "export default (x) => { setTimeout(() => process.exit(0), 100); return x; };",
-      );
+    const selfExitUrl = new URL("./fixtures/self-exit.mjs", import.meta.url).href;
     const pool = WP.make<string, string>({
       filename: selfExitUrl,
       minThreads: 0,

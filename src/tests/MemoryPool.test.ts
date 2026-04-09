@@ -106,7 +106,8 @@ test("Memory pool throws MemoryPoolMinSizeError when min size is greater than ma
       make({
         minSize: 2,
         maxSize: 1,
-        /* c8 ignore next -- make() throws before the factory is ever called */
+        // make() throws before the factory is ever called
+        /* node:coverage ignore next */
         factory: () => ({}),
       }),
     (err: unknown) => {

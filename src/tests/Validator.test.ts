@@ -6,11 +6,11 @@ import { ValidationError } from "../Validator.js";
 // --- Helpers ---
 function assertOk<T>(r: Validator.Validator<T> extends (v: unknown) => infer R ? R : never): void;
 function assertOk(r: ReturnType<Validator.Validator<unknown>>): void {
-  /* c8 ignore next 2 */
+  /* node:coverage ignore next 2 */
   if (!r[0]) throw new Error(`Expected Ok but got Err: ${String(r[1])}`);
 }
 function assertErr(r: ReturnType<Validator.Validator<unknown>>): ValidationError {
-  /* c8 ignore next 2 */
+  /* node:coverage ignore next 2 */
   if (r[0]) throw new Error("Expected Err but got Ok");
   return r[1] as ValidationError;
 }
@@ -261,6 +261,7 @@ test("map() transforms Ok value", () => {
 });
 
 test("map() passes Err through", () => {
+  /* node:coverage ignore next */
   const v = Validator.map(Validator.string(), (s) => s.length);
   assertErr(v(42));
 });

@@ -130,7 +130,8 @@ describe("run()", () => {
   });
 
   test("non-zero priority spawns new worker via tryDispatch", async () => {
-    /* c8 ignore next 2 -- Bun worker_threads flakes when spawning multiple workers rapidly */
+    // Bun worker_threads flakes when spawning multiple workers rapidly
+    /* node:coverage ignore next 2 */
     if (typeof (globalThis as Record<string, unknown>).Bun !== "undefined") return;
     const pool = WP.make<number, string>({ filename: slowUrl, minThreads: 0, maxThreads: 2 });
     // Submit a default-priority task to occupy the first worker (fast path).
@@ -372,7 +373,8 @@ describe("destroy()", () => {
 
 describe("worker lifecycle", () => {
   test("worker crash recovery — replacement spawned when below minThreads", async () => {
-    /* c8 ignore next 2 -- Bun worker_threads does not fire 'exit' on process.exit() */
+    // Bun worker_threads does not fire 'exit' on process.exit()
+    /* node:coverage ignore next 2 */
     if (typeof (globalThis as Record<string, unknown>).Bun !== "undefined") return;
     const crashUrl = new URL("./fixtures/crash.mjs", import.meta.url).href;
     const pool = WP.make<string, string>({

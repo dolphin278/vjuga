@@ -54,7 +54,8 @@ export function make<K, V extends object>(): WeakCache<K, V> {
   // — cannot be reliably triggered in unit tests without --expose-gc and
   // non-portable GC heuristics.  The logic it delegates to (cleanupStaleEntry)
   // is tested separately.
-  /* c8 ignore next 3 -- GC-triggered callback; tested via cleanupStaleEntry */
+  // GC-triggered callback; tested via cleanupStaleEntry
+  /* node:coverage ignore next 3 */
   const registry = new FinalizationRegistry<K>((key: K) => {
     cleanupStaleEntry(entries, key);
   });

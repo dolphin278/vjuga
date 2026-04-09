@@ -34,6 +34,7 @@ test("map() transforms Ok value", () => {
 });
 
 test("map() passes Err through unchanged", () => {
+  /* node:coverage ignore next */
   const r = Result.map(Result.err("e") as Result.Result<number, string>, (x) => x * 3);
   assert.deepEqual(r, [false, "e"]);
 });
@@ -46,6 +47,7 @@ test("mapErr() transforms Err value", () => {
 });
 
 test("mapErr() passes Ok through unchanged", () => {
+  /* node:coverage ignore next */
   const r = Result.mapErr(Result.ok("v") as Result.Result<string, number>, (e) => String(e));
   assert.deepEqual(r, [true, "v"]);
 });
@@ -64,11 +66,13 @@ test("flatMap() propagates inner Err", () => {
 
 test("flatMap() passes outer Err through without calling fn", () => {
   let called = false;
+  // this callback is intentionally never invoked; the test verifies that
+  /* node:coverage disable */
   const r = Result.flatMap(Result.err("outer") as Result.Result<number, string>, (x) => {
-    /* c8 ignore next 2 -- this callback is intentionally never invoked; the test verifies that */
     called = true;
     return Result.ok(x + 1);
   });
+  /* node:coverage enable */
   assert.deepEqual(r, [false, "outer"]);
   assert.equal(called, false);
 });
@@ -201,9 +205,11 @@ test("discriminant at [0] narrows the union correctly", () => {
   if (r[0]) {
     const v: number = r[1]; // must compile — r is Ok<number> here
     assert.equal(v, 1);
-    /* c8 ignore next 5 -- Err branch is unreachable; kept to verify TypeScript narrowing compiles */
+    // Err branch is unreachable; kept to verify TypeScript narrowing compiles
+    /* node:coverage disable */
   } else {
     assert.equal(typeof (r[1] satisfies string), "string");
     assert.fail("should not reach Err branch");
   }
+  /* node:coverage enable */
 });

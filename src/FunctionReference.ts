@@ -40,7 +40,8 @@ export async function resolve(reference: URL | string): Promise<(...args: unknow
   try {
     module = await (import(reference.href) as Promise<Record<string, unknown>>);
   } catch (error) {
-    /* c8 ignore next 2 -- import() always throws Error; the else branch is a safety net */
+    // import() always throws Error; the else branch is a safety net
+    /* node:coverage ignore next 2 */
     const cause = error instanceof Error ? error : new Error(String(error));
     throw new ModuleResolutionError(reference.href, cause);
   }

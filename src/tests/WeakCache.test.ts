@@ -187,7 +187,8 @@ test("cleanupStaleEntry does nothing when ref is still alive", () => {
   void alive;
 });
 
-/* c8 ignore start -- requires --expose-gc; cannot be exercised in standard test runner */
+// requires --expose-gc; cannot be exercised in standard test runner
+/* node:coverage disable */
 test("FinalizationRegistry callback cleans up stale entries after GC", async () => {
   const gc = (globalThis as unknown as Record<string, (() => void) | undefined>).gc;
   if (gc === undefined) return;
@@ -232,4 +233,4 @@ test("FinalizationRegistry callback ignores re-set keys", async () => {
 
   assert.equal(entries.has("key"), true);
 });
-/* c8 ignore stop */
+/* node:coverage enable */

@@ -36,7 +36,8 @@ function serializeError(err: unknown): SerializedError {
 // Bootstrap
 // ---------------------------------------------------------------------------
 
-/* c8 ignore start -- runs in a separate V8 isolate that c8 cannot instrument */
+// Runs in a separate V8 isolate that the coverage collector cannot instrument.
+/* node:coverage disable */
 
 import { parentPort, workerData } from "node:worker_threads";
 
@@ -68,4 +69,4 @@ port.on("message", async (msg: InboundMessage) => {
   }
 });
 
-/* c8 ignore stop */
+/* node:coverage enable */

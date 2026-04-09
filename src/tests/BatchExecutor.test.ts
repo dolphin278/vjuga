@@ -44,10 +44,11 @@ test("When nested functions returns array of different length, we throw an error
     }));
   let wasThrown = false;
   const batchExecutor = make(fn);
+  /* node:coverage disable */
   try {
     await batchExecutor(1);
-    /* c8 ignore next 2 -- this try block always throws; normal exit is unreachable */
   } catch (err) {
+    /* node:coverage enable */
     wasThrown = true;
     assert.ok(err instanceof Error, "Expected error to be an instance of Error");
     assert.equal(

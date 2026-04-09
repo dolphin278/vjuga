@@ -140,11 +140,10 @@ const taskMsg = { tag: MSG_TASK, taskId: 0, data: undefined as unknown };
 // ---------------------------------------------------------------------------
 
 const bootstrapUrl = new URL("./WorkerPool.worker.js", import.meta.url);
+// protocol is always file: in Node.js tests
+/* node:coverage ignore next 2 */
 const defaultBootstrapPath =
-  bootstrapUrl.protocol === "file:"
-    ? fileURLToPath(bootstrapUrl)
-    : /* c8 ignore next -- protocol is always file: in Node.js tests */
-      bootstrapUrl.href;
+  bootstrapUrl.protocol === "file:" ? fileURLToPath(bootstrapUrl) : bootstrapUrl.href;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -326,7 +325,8 @@ export async function destroy<I, O>(pool: WorkerPool<I, O>): Promise<void> {
   // Resolve drain if anyone is waiting. Worker exit handlers normally resolve
   // the drain via maybeResolveDrain, but this is a defensive fallback in case
   // all workers were already removed or terminate didn't fire exit.
-  /* c8 ignore next 5 -- defensive: exit handlers resolve drain before this runs */
+  // defensive: exit handlers resolve drain before this runs
+  /* node:coverage ignore next 5 */
   if (pool[kDrainDeferred]) {
     const deferred = pool[kDrainDeferred];
     pool[kDrainDeferred] = undefined;
@@ -372,7 +372,8 @@ function spawnWorker<I, O>(pool: WorkerPool<I, O>): WorkerEntry {
 function tryDispatch<I, O>(pool: WorkerPool<I, O>): void {
   while (PQ.size(pool[kTaskQueue]) > 0) {
     const task = dequeueNextValid(pool);
-    /* c8 ignore next 2 -- defensive: all queued tasks aborted synchronously */
+    // defensive: all queued tasks aborted synchronously
+    /* node:coverage ignore next 2 */
     if (!task) break;
 
     // Try to find an idle worker.
@@ -503,9 +504,11 @@ function markWorkerIdle<I, O>(pool: WorkerPool<I, O>, entry: WorkerEntry): void 
 }
 
 function terminateIdleWorker<I, O>(pool: WorkerPool<I, O>, entry: WorkerEntry): void {
-  /* c8 ignore next 2 -- defensive: timer fires after task dispatched to this worker */
+  // defensive: timer fires after task dispatched to this worker
+  /* node:coverage ignore next 2 */
   if (entry.currentTask) return;
-  /* c8 ignore next 2 -- defensive: another worker exited between setTimeout and callback */
+  // defensive: another worker exited between setTimeout and callback
+  /* node:coverage ignore next 2 */
   if (pool[kWorkers].size <= pool[kMinThreads]) return;
 
   entry.idleTimer = undefined;

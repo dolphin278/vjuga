@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "skills": {
+    "dolphin278-craft": {
+      "source": "dolphin278/prj-4187-skills",
+      "sourceType": "github",
+      "computedHash": "21b5d9382a8bbfc27f4e6ae27e0c61ca97b76502c48595b0110fb67553071029"
+    }
+  }
+}

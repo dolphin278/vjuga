@@ -34,31 +34,31 @@ test("boolean() accepts booleans", () => {
 // -------------------------------------------------------------------------
 
 test("string() rejects non-strings", () => {
-  const nonString = Arb.oneOf(
-    Arb.integer(),
-    Arb.boolean(),
-    Arb.constant(null),
-    Arb.constant(undefined),
+  const nonString: Arb.Arbitrary<unknown> = Arb.oneOf(
+    Arb.integer() as Arb.Arbitrary<unknown>,
+    Arb.boolean() as Arb.Arbitrary<unknown>,
+    Arb.constant(null as unknown),
+    Arb.constant(undefined as unknown),
   );
   Prop.assert(nonString, (v) => V.string()(v)[0] === false, { numRuns: NUM_RUNS });
 });
 
 test("number() rejects non-numbers", () => {
-  const nonNumber = Arb.oneOf(
-    Arb.string(),
-    Arb.boolean(),
-    Arb.constant(null),
-    Arb.constant(undefined),
+  const nonNumber: Arb.Arbitrary<unknown> = Arb.oneOf(
+    Arb.string() as Arb.Arbitrary<unknown>,
+    Arb.boolean() as Arb.Arbitrary<unknown>,
+    Arb.constant(null as unknown),
+    Arb.constant(undefined as unknown),
   );
   Prop.assert(nonNumber, (v) => V.number()(v)[0] === false, { numRuns: NUM_RUNS });
 });
 
 test("boolean() rejects non-booleans", () => {
-  const nonBool = Arb.oneOf(
-    Arb.string(),
-    Arb.integer(),
-    Arb.constant(null),
-    Arb.constant(undefined),
+  const nonBool: Arb.Arbitrary<unknown> = Arb.oneOf(
+    Arb.string() as Arb.Arbitrary<unknown>,
+    Arb.integer() as Arb.Arbitrary<unknown>,
+    Arb.constant(null as unknown),
+    Arb.constant(undefined as unknown),
   );
   Prop.assert(nonBool, (v) => V.boolean()(v)[0] === false, { numRuns: NUM_RUNS });
 });
@@ -68,12 +68,12 @@ test("boolean() rejects non-booleans", () => {
 // -------------------------------------------------------------------------
 
 test("literal() accepts the exact value", () => {
-  const litArb = Arb.oneOf(
-    Arb.string(),
-    Arb.integer(),
-    Arb.boolean(),
+  const litArb: Arb.Arbitrary<string | number | boolean> = Arb.oneOf(
+    Arb.string() as Arb.Arbitrary<string | number | boolean>,
+    Arb.integer() as Arb.Arbitrary<string | number | boolean>,
+    Arb.boolean() as Arb.Arbitrary<string | number | boolean>,
   );
-  Prop.assert(litArb, (v) => V.literal(v as string | number | boolean)(v)[0] === true, {
+  Prop.assert(litArb, (v) => V.literal(v)(v)[0] === true, {
     numRuns: NUM_RUNS,
   });
 });
@@ -176,7 +176,7 @@ test("toGuard(v)(x) === v(x)[0]", () => {
 
 test("toAssertion(v)(x) throws iff v(x)[0] === false", () => {
   const validator = V.string();
-  const assertion = V.toAssertion(validator);
+  const assertion: (value: unknown) => asserts value is string = V.toAssertion(validator);
   const arb = Arb.oneOf<unknown>(
     Arb.string(),
     Arb.integer(),

@@ -8,6 +8,7 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as Arb from "../Arbitrary.js";
 import * as Prop from "../Property.js";
+import type { Result } from "../Result.js";
 
 // ============================================================================
 // Result
@@ -38,7 +39,7 @@ test("Result: map transforms Ok, passes Err through", async () => {
     const doubled = R.map(R.ok(n), (x: number) => x * 2);
     if (!R.isOk(doubled) || doubled[1] !== n * 2) return false;
 
-    const errResult = R.map(R.err("fail") as R.Result<number, string>, (x: number) => x * 2);
+    const errResult = R.map(R.err("fail") as Result<number, string>, (x: number) => x * 2);
     if (!R.isErr(errResult) || errResult[1] !== "fail") return false;
 
     return true;
@@ -52,7 +53,7 @@ test("Result: mapErr transforms Err, passes Ok through", async () => {
     const mapped = R.mapErr(R.err(s), (e: string) => e.toUpperCase());
     if (!R.isErr(mapped) || mapped[1] !== s.toUpperCase()) return false;
 
-    const okResult = R.mapErr(R.ok(42) as R.Result<number, string>, (e: string) => e.toUpperCase());
+    const okResult = R.mapErr(R.ok(42) as Result<number, string>, (e: string) => e.toUpperCase());
     if (!R.isOk(okResult) || okResult[1] !== 42) return false;
 
     return true;
@@ -80,7 +81,7 @@ test("Result: unwrapOr returns fallback for Err", async () => {
 
   Prop.assert(Arb.tuple(Arb.integer(-100, 100), Arb.integer(-100, 100)), ([val, fallback]) => {
     if (R.unwrapOr(R.ok(val), fallback) !== val) return false;
-    if (R.unwrapOr(R.err("nope") as R.Result<number, string>, fallback) !== fallback) return false;
+    if (R.unwrapOr(R.err("nope") as Result<number, string>, fallback) !== fallback) return false;
     return true;
   }, { numRuns: 2000 });
 });
@@ -168,7 +169,7 @@ test("TaggedUnion: variant + match round-trip", async () => {
       const area = TU.match(shape, {
         circle: (v) => Math.PI * v.r ** 2,
         rect: (v) => v.w * v.h,
-      });
+      }) as number;
 
       if (isCircle) {
         return Math.abs(area - Math.PI * a * a) < 1e-10;
@@ -516,7 +517,6 @@ test("FunctionUtils: pipe variadic (>5 functions)", async () => {
     (x: number) => x / 2,
   ];
 
-  // @ts-expect-error -- variadic overload
   const piped = FU.pipe(...fns);
 
   Prop.assert(Arb.integer(-10, 10), (n) => {

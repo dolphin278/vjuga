@@ -10,6 +10,7 @@
   "scripts": {
     "clean": "tsc --build --clean",
     "test": "tsc --project tsconfig.test.json && node --test 'src/tests/*.test.js'",
+    "test:fuzz": "tsc --project tsconfig.test.json && node --test 'src/tests/*.fuzz.test.js' 'src/tests/*-fuzz.test.js'",
     "test:bun": "bash -c 'bun test src/tests/*.test.js'",
     "test:all": "bash -c 'npm run test & P1=$!; npm run test:bun & P2=$!; wait $P1; R1=$?; wait $P2; R2=$?; exit $((R1|R2))'",
     "typecheck": "tsc --noEmit --project tsconfig.json",
@@ -18,7 +19,7 @@
     "coverage": "tsc --project tsconfig.test.json && node --experimental-test-coverage --test-coverage-lines=100 --test-coverage-branches=100 --test-coverage-functions=100 --test-coverage-exclude='src/benchmarks/**' --test-coverage-exclude='src/tests/fixtures/**' --test-coverage-exclude='src/**/*.ts' --test 'src/tests/*.test.js'",
     "coverage:bun": "bash -c 'bun test src/tests/*.test.js'",
     "coverage:all": "bash -c 'npm run coverage & P1=$!; npm run coverage:bun & P2=$!; wait $P1; R1=$?; wait $P2; R2=$?; exit $((R1|R2))'",
-    "prepare": "npm run clean && tsc --project tsconfig.json && npm run lint && oxfmt --check 'src/**/*.ts' '!src/**/*.d.ts' && npm run coverage:all",
+    "prepare": "npm run clean && tsc --project tsconfig.json && npm run lint && oxfmt --check 'src/**/*.ts' '!src/**/*.d.ts' && npm run coverage:all && npm run test:fuzz",
     "format": "oxfmt 'src/**/*.ts' '!src/**/*.d.ts'",
     "bench:bun": "bun src/benchmarks/all.bench.ts",
     "bench:node": "node --experimental-strip-types src/benchmarks/all.bench.ts",

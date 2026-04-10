@@ -82,9 +82,9 @@ test("safeParse strips __proto__ and constructor keys at any depth", () => {
 
   Prop.assert(dangerousJsonArb, (json) => {
     const result = VJSON.safeParse(json);
-    if (result.tag === "Err") return; // invalid JSON is fine, skip
+    if (result[0] === false) return; // invalid JSON is fine, skip
     // Walk the value tree — no __proto__ or constructor keys should remain
-    const stack: unknown[] = [result.value];
+    const stack: unknown[] = [result[1]];
     let current: unknown;
     while ((current = stack.pop()) !== undefined) {
       if (current === null || typeof current !== "object") continue;

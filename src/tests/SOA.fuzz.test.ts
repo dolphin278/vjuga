@@ -12,10 +12,10 @@ const fixedSeed = PRNG.seed(42n);
 // Types
 // ---------------------------------------------------------------------------
 
-interface Point {
+type Point = {
   x: number;
   y: number;
-}
+};
 
 type PointSOA = SOA.SOA<Point>;
 

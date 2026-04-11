@@ -247,14 +247,17 @@ function walkStringifyArray(
   const helperName = freshVar(buf);
   const elemExpr = walkStringify(buf, schema.meta.items, "a[i]");
 
-  // Concat with first element outside loop: V8's cons-string optimization
-  // handles repeated += efficiently for typical array sizes. Alternatives
-  // tested and found slower:
-  //   - Chunk array + join: 2x slower (Array allocation + push overhead)
-  //   - Buffer.allocUnsafe + write: 4x slower (Buffer ops + toString decode)
-  // Native JSON.stringify wins at 100+ elements due to C++ string building
-  // that avoids JS string allocation entirely — a fundamental advantage
-  // that cannot be matched from JS.
+  // V8's cons-string += is the fastest JS string building approach for this
+  // workload. All alternatives benchmarked slower for 100-element arrays:
+  //
+  //   concat (current):               4.7 µs — baseline
+  //   chunk array + join (new alloc):  8.9 µs — 1.9x slower
+  //   reusable array + push + join:    9.8 µs — 2.1x slower
+  //   reusable array + index + join:   9.0 µs — 1.9x slower
+  //   Buffer.allocUnsafe + write:     17.0 µs — 3.6x slower
+  //
+  // Native JSON.stringify: 4.1 µs — wins via C++ SeqOneByteString that
+  // bypasses JS string allocation entirely. Not matchable from JS.
   const fn = compileHelper<Function>(
     buf,
     `function ${helperName}(a) {

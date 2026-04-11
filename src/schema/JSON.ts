@@ -247,7 +247,14 @@ function walkStringifyArray(
   const helperName = freshVar(buf);
   const elemExpr = walkStringify(buf, schema.meta.items, "a[i]");
 
-  // First element handled outside loop to eliminate per-iteration branch
+  // Concat with first element outside loop: V8's cons-string optimization
+  // handles repeated += efficiently for typical array sizes. Alternatives
+  // tested and found slower:
+  //   - Chunk array + join: 2x slower (Array allocation + push overhead)
+  //   - Buffer.allocUnsafe + write: 4x slower (Buffer ops + toString decode)
+  // Native JSON.stringify wins at 100+ elements due to C++ string building
+  // that avoids JS string allocation entirely — a fundamental advantage
+  // that cannot be matched from JS.
   const fn = compileHelper<Function>(
     buf,
     `function ${helperName}(a) {

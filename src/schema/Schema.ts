@@ -36,7 +36,7 @@
  */
 
 import { type Result, ok, err } from "../Result.js";
-import { assertNever } from "./Codegen.js";
+import { unreachable } from "../FunctionUtils.js";
 
 // ---------------------------------------------------------------------------
 // Schema node base
@@ -121,7 +121,6 @@ export type NullableSchema<I extends Schema> = SchemaBase<"nullable", { readonly
  * type parameters — the `any` here only affects the union discriminant, not
  * the builder return types.
  */
-// biome-ignore lint: any is required to break circular type alias
 export type Schema =
   | StringSchema
   | NumberSchema
@@ -383,7 +382,9 @@ export function toJsonSchema(schema: Schema): JsonSchemaObject {
     case "nullable":
       return { anyOf: [toJsonSchema(schema.meta.inner), { type: "null" }] };
     default: {
-      assertNever(schema);
+      // exhaustive — unreachable when all schema kinds are handled
+      /* node:coverage ignore next */
+      unreachable(schema);
     }
   }
 }

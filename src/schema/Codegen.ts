@@ -140,13 +140,3 @@ export function dynamicChildPath(parentExpr: string, indexVar: string): string {
 function isStaticPath(expr: string): boolean {
   return expr.indexOf("+") === -1;
 }
-
-/**
- * Exhaustive check helper — throws if a value reaches a code path that should
- * be unreachable. Use in `default:` switch branches to get compile-time
- * exhaustiveness checking.
- */
-/* c8 ignore next 3 — only reachable if a new schema kind is added without updating all switches */
-export function assertNever(value: never): never {
-  throw new Error("Unexpected value: " + String(value));
-}

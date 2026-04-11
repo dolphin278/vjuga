@@ -40,6 +40,7 @@ import type { Schema, Infer } from "./Schema.js";
 import type { SchemaError } from "./Validate.js";
 import { emitStandardRefs, emitValidation } from "./Validate.js";
 import { findDiscriminant } from "./Schema.js";
+import { unreachable } from "../FunctionUtils.js";
 import {
   type CodeBuffer,
   createBuffer,
@@ -48,7 +49,6 @@ import {
   freshVar,
   compileFunction,
   compileHelper,
-  assertNever,
 } from "./Codegen.js";
 
 // ---------------------------------------------------------------------------
@@ -158,7 +158,9 @@ function walkStringify(buf: CodeBuffer, schema: Schema, accessor: string): strin
     case "nullable":
       return `(${accessor} === null ? "null" : ${walkStringify(buf, schema.meta.inner, accessor)})`;
     default: {
-      assertNever(schema);
+      // exhaustive — unreachable when all schema kinds are handled
+      /* node:coverage ignore next */
+      unreachable(schema);
     }
   }
 }

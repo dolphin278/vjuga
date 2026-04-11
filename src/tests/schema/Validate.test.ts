@@ -391,12 +391,7 @@ test("discriminated union — 3+ variants", () => {
 // ---------------------------------------------------------------------------
 
 test("union — non-discriminated objects", () => {
-  const v = validate(
-    S.union(
-      S.object({ name: S.string() }),
-      S.object({ id: S.integer() }),
-    ),
-  );
+  const v = validate(S.union(S.object({ name: S.string() }), S.object({ id: S.integer() })));
   assertOk(v({ name: "Alice" }));
   assertOk(v({ id: 42 }));
   // Note: the first variant that matches wins
@@ -479,9 +474,7 @@ test("deeply nested schema", () => {
       ],
     }),
   );
-  const e = assertErr(
-    v({ users: [{ id: 1, name: "Alice", tags: [42] }] }),
-  );
+  const e = assertErr(v({ users: [{ id: 1, name: "Alice", tags: [42] }] }));
   // Path should include array index and field
   assert.ok(e.path.length > 0);
 });
@@ -561,12 +554,7 @@ test("union — array | tuple dispatch", () => {
 
 test("union — object | string dispatch (non-discriminated)", () => {
   // Exercises emitObjectVariantTest path for non-discriminated object unions
-  const v = validate(
-    S.union(
-      S.object({ x: S.number(), y: S.number() }),
-      S.string(),
-    ),
-  );
+  const v = validate(S.union(S.object({ x: S.number(), y: S.number() }), S.string()));
   assertOk(v({ x: 1, y: 2 }));
   assertOk(v("hello"));
   assertErr(v(42));
@@ -574,12 +562,7 @@ test("union — object | string dispatch (non-discriminated)", () => {
 
 test("union — non-discriminated objects fall through on property mismatch", () => {
   // When object variant's properties don't match, falls through to next variant
-  const v = validate(
-    S.union(
-      S.object({ x: S.string() }),
-      S.object({ y: S.number() }),
-    ),
-  );
+  const v = validate(S.union(S.object({ x: S.string() }), S.object({ y: S.number() })));
   assertOk(v({ x: "hello" }));
   assertOk(v({ y: 42 }));
 });

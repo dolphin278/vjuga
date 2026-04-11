@@ -28,6 +28,7 @@
 import type { Result } from "../Result.js";
 import { ok, err } from "../Result.js";
 import type { Schema, Infer } from "./Schema.js";
+import { unreachable } from "../FunctionUtils.js";
 import { findDiscriminant } from "./Schema.js";
 import {
   type CodeBuffer,
@@ -38,7 +39,6 @@ import {
   compileFunction,
   childPath,
   dynamicChildPath,
-  assertNever,
 } from "./Codegen.js";
 
 // ---------------------------------------------------------------------------
@@ -191,7 +191,9 @@ export function emitValidation(
       emit(buf, "}");
       break;
     default: {
-      assertNever(schema);
+      // exhaustive — unreachable when all schema kinds are handled
+      /* node:coverage ignore next */
+      unreachable(schema);
     }
   }
 }

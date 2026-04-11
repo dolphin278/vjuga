@@ -86,9 +86,11 @@ test("stringify object with optional — absent", () => {
 });
 
 test("stringify nested object", () => {
-  const fn = ST.stringify(S.object({
-    user: S.object({ name: S.string() }),
-  }));
+  const fn = ST.stringify(
+    S.object({
+      user: S.object({ name: S.string() }),
+    }),
+  );
   assert.equal(fn({ user: { name: "Alice" } }), "user:\n  name: Alice");
 });
 
@@ -134,10 +136,7 @@ test("stringify tabular array", () => {
       { id: 2, name: "Bob" },
     ],
   });
-  assert.equal(
-    result,
-    "users[2]{id,name}:\n  1,Alice\n  2,Bob",
-  );
+  assert.equal(result, "users[2]{id,name}:\n  1,Alice\n  2,Bob");
 });
 
 test("stringify empty tabular array", () => {
@@ -276,10 +275,7 @@ test("parse tuple", () => {
 // ---------------------------------------------------------------------------
 
 test("parse flexible order", () => {
-  const fn = ST.parse(
-    S.object({ name: S.string(), age: S.integer() }),
-    { flexibleOrder: true },
-  );
+  const fn = ST.parse(S.object({ name: S.string(), age: S.integer() }), { flexibleOrder: true });
   // Reverse order from schema
   assert.deepEqual(assertOk(fn("age: 30\nname: Alice")), { name: "Alice", age: 30 });
 });
@@ -338,7 +334,12 @@ test("round-trip — tabular array", () => {
   });
   const str = ST.stringify(schema);
   const par = ST.parse(schema);
-  const value = { users: [{ id: 1, name: "Alice" }, { id: 2, name: "Bob" }] };
+  const value = {
+    users: [
+      { id: 1, name: "Alice" },
+      { id: 2, name: "Bob" },
+    ],
+  };
   assert.deepEqual(assertOk(par(str(value))), value);
 });
 
@@ -361,10 +362,9 @@ test("round-trip — nested object", () => {
   const schema = S.object({ user: S.object({ name: S.string(), score: S.number() }) });
   const str = ST.stringify(schema);
   const par = ST.parse(schema);
-  assert.deepEqual(
-    assertOk(par(str({ user: { name: "Alice", score: 95.5 } }))),
-    { user: { name: "Alice", score: 95.5 } },
-  );
+  assert.deepEqual(assertOk(par(str({ user: { name: "Alice", score: 95.5 } }))), {
+    user: { name: "Alice", score: 95.5 },
+  });
 });
 
 test("round-trip — record of primitives", () => {
@@ -597,17 +597,13 @@ test("round-trip — nested record", () => {
 // ---------------------------------------------------------------------------
 
 test("parse flexible order — with optional missing", () => {
-  const fn = ST.parse(
-    S.object({ name: S.string(), age: S.optional(S.integer()) }),
-    { flexibleOrder: true },
-  );
+  const fn = ST.parse(S.object({ name: S.string(), age: S.optional(S.integer()) }), {
+    flexibleOrder: true,
+  });
   assert.deepEqual(assertOk(fn("name: Alice")), { name: "Alice" });
 });
 
 test("parse flexible order — rejects missing required", () => {
-  const fn = ST.parse(
-    S.object({ name: S.string(), age: S.integer() }),
-    { flexibleOrder: true },
-  );
+  const fn = ST.parse(S.object({ name: S.string(), age: S.integer() }), { flexibleOrder: true });
   assertErr(fn("name: Alice"));
 });

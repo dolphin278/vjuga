@@ -27,6 +27,7 @@ import { ok, err } from "../Result.js";
 import type { Schema, Infer } from "./Schema.js";
 import { type SchemaError, emitStandardRefs } from "./Validate.js";
 import { isPrimitive } from "./Schema.js";
+import { unreachable } from "../FunctionUtils.js";
 import {
   type CodeBuffer,
   createBuffer,
@@ -35,7 +36,6 @@ import {
   freshVar,
   compileFunction,
   compileHelper,
-  assertNever,
 } from "./Codegen.js";
 
 // ---------------------------------------------------------------------------
@@ -268,7 +268,9 @@ function emitStringifyBody(
       emit(ctx.buf, "}");
       break;
     default: {
-      assertNever(schema);
+      // exhaustive — unreachable when all schema kinds are handled
+      /* node:coverage ignore next */
+      unreachable(schema);
     }
   }
 }
@@ -622,7 +624,9 @@ function emitParseBody(
       emitParseBody(buf, schema.meta.inner, depth, pathExpr, indent, delim, flexible);
       break;
     default: {
-      assertNever(schema);
+      // exhaustive — unreachable when all schema kinds are handled
+      /* node:coverage ignore next */
+      unreachable(schema);
     }
   }
 }

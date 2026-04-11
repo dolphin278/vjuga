@@ -300,8 +300,23 @@ test("toJsonSchema — number", () => {
 
 test("toJsonSchema — number with constraints", () => {
   assert.deepEqual(
-    S.toJsonSchema(S.number({ minimum: 0, maximum: 100, exclusiveMinimum: -1, exclusiveMaximum: 101, multipleOf: 5 })),
-    { type: "number", minimum: 0, maximum: 100, exclusiveMinimum: -1, exclusiveMaximum: 101, multipleOf: 5 },
+    S.toJsonSchema(
+      S.number({
+        minimum: 0,
+        maximum: 100,
+        exclusiveMinimum: -1,
+        exclusiveMaximum: 101,
+        multipleOf: 5,
+      }),
+    ),
+    {
+      type: "number",
+      minimum: 0,
+      maximum: 100,
+      exclusiveMinimum: -1,
+      exclusiveMaximum: 101,
+      multipleOf: 5,
+    },
   );
 });
 
@@ -454,7 +469,13 @@ test("fromJsonSchema — string", () => {
 });
 
 test("fromJsonSchema — string with constraints", () => {
-  const r = S.fromJsonSchema({ type: "string", minLength: 1, maxLength: 10, pattern: "^a", format: "email" });
+  const r = S.fromJsonSchema({
+    type: "string",
+    minLength: 1,
+    maxLength: 10,
+    pattern: "^a",
+    format: "email",
+  });
   assert.equal(r[0], true);
   const s = r[1] as S.StringSchema;
   assert.equal(s.meta?.minLength, 1);
@@ -470,7 +491,14 @@ test("fromJsonSchema — number", () => {
 });
 
 test("fromJsonSchema — number with constraints", () => {
-  const r = S.fromJsonSchema({ type: "number", minimum: 0, maximum: 100, exclusiveMinimum: -1, exclusiveMaximum: 101, multipleOf: 5 });
+  const r = S.fromJsonSchema({
+    type: "number",
+    minimum: 0,
+    maximum: 100,
+    exclusiveMinimum: -1,
+    exclusiveMaximum: 101,
+    multipleOf: 5,
+  });
   assert.equal(r[0], true);
   const s = r[1] as S.NumberSchema;
   assert.equal(s.meta?.minimum, 0);
@@ -585,7 +613,12 @@ test("fromJsonSchema — array with items", () => {
 });
 
 test("fromJsonSchema — array with size constraints", () => {
-  const r = S.fromJsonSchema({ type: "array", items: { type: "string" }, minItems: 1, maxItems: 5 });
+  const r = S.fromJsonSchema({
+    type: "array",
+    items: { type: "string" },
+    minItems: 1,
+    maxItems: 5,
+  });
   assert.equal(r[0], true);
   const s = r[1] as S.ArraySchema<S.Schema>;
   assert.equal(s.meta.minItems, 1);
@@ -598,7 +631,11 @@ test("fromJsonSchema — array without items", () => {
 });
 
 test("fromJsonSchema — tuple (prefixItems)", () => {
-  const r = S.fromJsonSchema({ type: "array", prefixItems: [{ type: "string" }, { type: "number" }], items: false });
+  const r = S.fromJsonSchema({
+    type: "array",
+    prefixItems: [{ type: "string" }, { type: "number" }],
+    items: false,
+  });
   assert.equal(r[0], true);
   assert.equal(r[1].kind, "tuple");
   const t = r[1] as S.TupleSchema<readonly S.Schema[]>;

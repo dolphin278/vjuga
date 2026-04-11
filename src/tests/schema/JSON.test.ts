@@ -322,7 +322,7 @@ test("parse rejects non-object", () => {
 });
 
 test("parse rejects non-array", () => {
-  assertErr(SJ.parse(S.array(S.string()))('{}'));
+  assertErr(SJ.parse(S.array(S.string()))("{}"));
 });
 
 test("parse rejects wrong tuple length", () => {
@@ -330,7 +330,7 @@ test("parse rejects wrong tuple length", () => {
 });
 
 test("parse rejects non-object for record", () => {
-  assertErr(SJ.parse(S.record(S.number()))('[1]'));
+  assertErr(SJ.parse(S.record(S.number()))("[1]"));
 });
 
 // ---------------------------------------------------------------------------

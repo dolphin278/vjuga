@@ -36,6 +36,7 @@
  */
 
 import { type Result, ok, err } from "../Result.js";
+import { assertNever } from "./Codegen.js";
 
 // ---------------------------------------------------------------------------
 // Schema node base
@@ -381,10 +382,8 @@ export function toJsonSchema(schema: Schema): JsonSchemaObject {
       return toJsonSchema(schema.meta.inner);
     case "nullable":
       return { anyOf: [toJsonSchema(schema.meta.inner), { type: "null" }] };
-    /* c8 ignore next 3 — exhaustive check; unreachable when all schema kinds are handled */
     default: {
-      const _exhaustive: never = schema;
-      throw new Error("Unknown schema kind: " + (_exhaustive as Schema).kind);
+      assertNever(schema);
     }
   }
 }

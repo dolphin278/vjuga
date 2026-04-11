@@ -38,6 +38,7 @@ import {
   compileFunction,
   childPath,
   dynamicChildPath,
+  assertNever,
 } from "./Codegen.js";
 
 // ---------------------------------------------------------------------------
@@ -189,10 +190,8 @@ export function emitValidation(
       buf.indent--;
       emit(buf, "}");
       break;
-    /* c8 ignore next 3 — exhaustive check; unreachable when all schema kinds are handled */
     default: {
-      const _exhaustive: never = schema;
-      throw new Error("Unknown schema kind: " + (_exhaustive as Schema).kind);
+      assertNever(schema);
     }
   }
 }

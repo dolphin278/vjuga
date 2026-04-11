@@ -35,6 +35,7 @@ import {
   freshVar,
   compileFunction,
   compileHelper,
+  assertNever,
 } from "./Codegen.js";
 
 // ---------------------------------------------------------------------------
@@ -133,29 +134,6 @@ function splitByDelimiter(s: string, delim: string): string[] {
   }
   result.push(s.slice(start));
   return result;
-}
-
-/** Parse a TOON primitive value string to JS. */
-function parsePrimValue(raw: string, kind: string): unknown {
-  const s = toonUnquote(raw);
-  switch (kind) {
-    case "string":
-      return s;
-    case "number": {
-      const n = +raw;
-      return raw === "" || n !== n ? undefined : n;
-    }
-    case "integer": {
-      const n = +raw;
-      return Number.isSafeInteger(n) ? n : undefined;
-    }
-    case "boolean":
-      return raw === "true" ? true : raw === "false" ? false : undefined;
-    case "null":
-      return raw === "null" ? null : undefined;
-    default:
-      return s;
-  }
 }
 
 /** True if array(object({all primitives})) — qualifies for tabular format. */
@@ -289,10 +267,8 @@ function emitStringifyBody(
       ctx.buf.indent--;
       emit(ctx.buf, "}");
       break;
-    /* c8 ignore next 3 — exhaustive check; unreachable when all schema kinds are handled */
     default: {
-      const _exhaustive: never = schema;
-      throw new Error("Unknown schema kind: " + (_exhaustive as Schema).kind);
+      assertNever(schema);
     }
   }
 }
@@ -587,8 +563,9 @@ export function parse<S extends Schema>(
   emitStandardRefs(buf, ok, err);
   emitRef(buf, "_uq", toonUnquote);
   emitRef(buf, "_split", splitByDelimiter);
-  emitRef(buf, "_prim", parsePrimValue);
   emitRef(buf, "_delim", delim);
+  // Single shared regex for all array header parsing — avoids duplicate instances
+  emitRef(buf, "_hdrRe", /^[^[]*\[(\d+)\](\{[^}]*\})?:\s*(.*)?$/);
 
   emit(buf, "return function toonParse(input) {");
   buf.indent++;
@@ -644,10 +621,8 @@ function emitParseBody(
     case "nullable":
       emitParseBody(buf, schema.meta.inner, depth, pathExpr, indent, delim, flexible);
       break;
-    /* c8 ignore next 3 — exhaustive check; unreachable when all schema kinds are handled */
     default: {
-      const _exhaustive: never = schema;
-      throw new Error("Unknown schema kind: " + (_exhaustive as Schema).kind);
+      assertNever(schema);
     }
   }
 }
@@ -757,17 +732,18 @@ function emitEnumParse(
   pathExpr: string,
   resultVar: string,
 ): void {
-  const valuesRef = freshVar(buf);
-  emitRef(buf, valuesRef, schema.meta.values);
+  // Use Set for O(1) lookup instead of indexOf O(n) on the hot path
+  const setRef = freshVar(buf);
+  emitRef(buf, setRef, new Set(schema.meta.values as readonly (string | number)[]));
   emit(buf, `var ${resultVar} = _uq(${rawVar});`);
   emit(buf, `var ${resultVar}_n = +${rawVar};`);
   emit(
     buf,
-    `if (!isNaN(${resultVar}_n) && ${valuesRef}.indexOf(${resultVar}_n) !== -1) ${resultVar} = ${resultVar}_n;`,
+    `if (!isNaN(${resultVar}_n) && ${setRef}.has(${resultVar}_n)) ${resultVar} = ${resultVar}_n;`,
   );
   emit(
     buf,
-    `else if (${valuesRef}.indexOf(${resultVar}) === -1) return _err(_me(${pathExpr}, "enum", ${rawVar}));`,
+    `else if (!${setRef}.has(${resultVar})) return _err(_me(${pathExpr}, "enum", ${rawVar}));`,
   );
 }
 
@@ -960,24 +936,22 @@ function emitArrayHeaderParse(
   delim: string,
   resultVar: string,
 ): void {
-  const headerRe = freshVar(buf);
-  emitRef(buf, headerRe, /^[^[]*\[(\d+)\](\{[^}]*\})?:\s*(.*)?$/);
-
-  emit(buf, `var ${headerRe}_m = lines[li].match(${headerRe});`);
-  emit(buf, `if (!${headerRe}_m) return _err(_me(${pathExpr}, "array header", lines[li]));`);
+  const mv = freshVar(buf);
+  emit(buf, `var ${mv} = lines[li].match(_hdrRe);`);
+  emit(buf, `if (!${mv}) return _err(_me(${pathExpr}, "array header", lines[li]));`);
   emit(buf, "li++;");
-  emit(buf, `var ${headerRe}_n = +${headerRe}_m[1];`);
-  emit(buf, `var ${headerRe}_d = (${headerRe}_m[3] || "").trim();`);
+  emit(buf, `var ${mv}_n = +${mv}[1];`);
+  emit(buf, `var ${mv}_d = (${mv}[3] || "").trim();`);
 
   const arrVar = freshVar(buf);
   emit(buf, `var ${arrVar} = [];`);
 
   if (schema.kind === "array" && isTabular(schema)) {
-    emitTabularParse(buf, schema, arrVar, headerRe, depth, pathExpr, indent, delim);
+    emitTabularParse(buf, schema, arrVar, mv, depth, pathExpr, indent, delim);
   } else if (schema.kind === "array" && isPrimitive(schema.meta.items as Schema)) {
-    emitInlineArrayParse(buf, schema, arrVar, headerRe, pathExpr);
+    emitInlineArrayParse(buf, schema, arrVar, mv, pathExpr);
   } else if (schema.kind === "tuple") {
-    emitInlineTupleParse(buf, schema, arrVar, headerRe, pathExpr);
+    emitInlineTupleParse(buf, schema, arrVar, mv, pathExpr);
   }
 
   emit(buf, `${resultVar}[${JSON.stringify(key)}] = ${arrVar};`);
@@ -987,7 +961,7 @@ function emitTabularParse(
   buf: CodeBuffer,
   schema: Schema & { readonly kind: "array" },
   arrVar: string,
-  headerRe: string,
+  matchVar: string,
   depth: number,
   pathExpr: string,
   indent: number,
@@ -998,7 +972,7 @@ function emitTabularParse(
   const childPad = " ".repeat((depth + 1) * indent);
   const idx = freshVar(buf);
 
-  emit(buf, `for (var ${idx} = 0; ${idx} < ${headerRe}_n; ${idx}++) {`);
+  emit(buf, `for (var ${idx} = 0; ${idx} < ${matchVar}_n; ${idx}++) {`);
   buf.indent++;
   emit(buf, `var row = lines[li++];`);
   emit(
@@ -1027,12 +1001,12 @@ function emitInlineArrayParse(
   buf: CodeBuffer,
   schema: Schema & { readonly kind: "array" },
   arrVar: string,
-  headerRe: string,
+  matchVar: string,
   pathExpr: string,
 ): void {
-  emit(buf, `if (${headerRe}_d !== "") {`);
+  emit(buf, `if (${matchVar}_d !== "") {`);
   buf.indent++;
-  emit(buf, `var items = _split(${headerRe}_d, _delim);`);
+  emit(buf, `var items = _split(${matchVar}_d, _delim);`);
   const idx = freshVar(buf);
   emit(buf, `for (var ${idx} = 0; ${idx} < items.length; ${idx}++) {`);
   buf.indent++;
@@ -1049,10 +1023,10 @@ function emitInlineTupleParse(
   buf: CodeBuffer,
   schema: Schema & { readonly kind: "tuple" },
   arrVar: string,
-  headerRe: string,
+  matchVar: string,
   pathExpr: string,
 ): void {
-  emit(buf, `var items = _split(${headerRe}_d, _delim);`);
+  emit(buf, `var items = _split(${matchVar}_d, _delim);`);
   for (let i = 0; i < schema.meta.items.length; i++) {
     const itemVar = freshVar(buf);
     emitPrimValueParse(buf, schema.meta.items[i] as Schema, `items[${i}]`, pathExpr, itemVar);

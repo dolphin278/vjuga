@@ -48,6 +48,7 @@ import {
   freshVar,
   compileFunction,
   compileHelper,
+  assertNever,
 } from "./Codegen.js";
 
 // ---------------------------------------------------------------------------
@@ -78,22 +79,24 @@ function escStr(s: string): string {
     for (let i = 0; i < len; i++) {
       const c = s.charCodeAt(i);
       if (c === 0x22) {
-        // "
         out += s.slice(last, i) + '\\"';
         last = i + 1;
       } else if (c === 0x5c) {
-        // backslash
         out += s.slice(last, i) + "\\\\";
         last = i + 1;
       } else if (c < 0x20) {
-        // control chars
         out += s.slice(last, i) + ESCAPE_TABLE[c];
+        last = i + 1;
+      } else if (c >= 0xd800 && c <= 0xdfff) {
+        // Lone surrogates must be escaped per JSON spec (RFC 8259 §8)
+        out += s.slice(last, i) + "\\u" + c.toString(16);
         last = i + 1;
       }
     }
     if (last === 0) return '"' + s + '"';
     return out + s.slice(last) + '"';
   }
+  // Long strings: delegate to JSON.stringify (V8 SIMD-accelerated, handles surrogates)
   return JSON.stringify(s);
 }
 
@@ -154,10 +157,8 @@ function walkStringify(buf: CodeBuffer, schema: Schema, accessor: string): strin
       return `(${accessor} === undefined ? "null" : ${walkStringify(buf, schema.meta.inner, accessor)})`;
     case "nullable":
       return `(${accessor} === null ? "null" : ${walkStringify(buf, schema.meta.inner, accessor)})`;
-    /* c8 ignore next 3 — exhaustive check; unreachable when all schema kinds are handled */
     default: {
-      const _exhaustive: never = schema;
-      throw new Error("Unknown schema kind: " + (_exhaustive as Schema).kind);
+      assertNever(schema);
     }
   }
 }
@@ -237,13 +238,15 @@ function walkStringifyArray(
   const helperName = freshVar(buf);
   const elemExpr = walkStringify(buf, schema.meta.items, "a[i]");
 
+  // First element handled outside loop to eliminate per-iteration branch
   const fn = compileHelper<Function>(
     buf,
     `function ${helperName}(a) {
   var n = a.length;
   if (n === 0) return "[]";
-  var s = "[";
-  for (var i = 0; i < n; i++) { if (i > 0) s += ","; s += ${elemExpr}; }
+  var i = 0;
+  var s = "[" + ${elemExpr};
+  for (i = 1; i < n; i++) s += "," + ${elemExpr};
   return s + "]";
 }`,
   );
@@ -275,15 +278,13 @@ function walkStringifyRecord(
   const helperName = freshVar(buf);
   const valExpr = walkStringify(buf, schema.meta.values, "o[k]");
 
+  // for...in avoids Object.keys() array allocation on the hot path
   const fn = compileHelper<Function>(
     buf,
     `function ${helperName}(o) {
-  var keys = Object.keys(o);
-  var n = keys.length;
-  if (n === 0) return "{}";
-  var s = "{";
-  for (var i = 0; i < n; i++) { var k = keys[i]; if (i > 0) s += ","; s += _esc(k) + ":" + ${valExpr}; }
-  return s + "}";
+  var s = "{", first = 1;
+  for (var k in o) { if (first) first = 0; else s += ","; s += _esc(k) + ":" + ${valExpr}; }
+  return s === "{" ? "{}" : s + "}";
 }`,
   );
   emitRef(buf, helperName, fn);

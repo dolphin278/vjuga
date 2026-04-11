@@ -738,7 +738,8 @@ export function findDiscriminant(variants: readonly Schema[]): string | null {
   for (let i = 0; i < variants.length; i++) {
     if (variants[i].kind !== "object") return null;
   }
-  const first = variants[0] as Schema & { kind: "object" };
+  const first = variants[0];
+  if (first.kind !== "object") return null; // guaranteed by loop above, satisfies TS
   const keys = Object.keys(first.meta.properties);
   // Reuse a single Set across candidate keys — clear per iteration to avoid
   // allocating a new Set for each key.
@@ -747,8 +748,9 @@ export function findDiscriminant(variants: readonly Schema[]): string | null {
     const key = keys[k];
     seen.clear();
     for (let i = 0; i < variants.length; i++) {
-      const obj = variants[i] as Schema & { kind: "object" };
-      const prop = obj.meta.properties[key] as Schema | undefined;
+      const obj = variants[i];
+      if (obj.kind !== "object") continue outer; // guaranteed by loop above, satisfies TS
+      const prop = obj.meta.properties[key];
       if (prop === undefined || prop.kind !== "literal") continue outer;
       const val = prop.meta.value;
       if (seen.has(val)) continue outer;

@@ -33,6 +33,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "fast-json-stringify": "^6.3.0",
     "mitata": "^0.1.0",
     "oxfmt": "^0.43.0",
     "oxlint": "^1.58.0",

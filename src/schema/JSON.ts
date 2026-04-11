@@ -176,7 +176,28 @@ function walkStringifyObject(
 
   const hasOptional = keys.some((k) => props[k].kind === "optional");
 
-  // Walk children first to collect any refs they add
+  // All-required path: return a pure expression — no helper function needed.
+  // This is critical for inlining into array loops: the expression is spliced
+  // directly into the loop body, eliminating per-element function dispatch.
+  if (!hasOptional) {
+    let expr = '"{" + ';
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i];
+      const childAccessor = `${accessor}[${JSON.stringify(key)}]`;
+      const valExpr = walkStringify(buf, props[key], childAccessor);
+      const keyFrag = JSON.stringify(JSON.stringify(key) + ":");
+      if (i === 0) {
+        expr += `${keyFrag} + ${valExpr}`;
+      } else {
+        expr += ` + "," + ${keyFrag} + ${valExpr}`;
+      }
+    }
+    expr += ' + "}"';
+    return `(${expr})`;
+  }
+
+  // Optional fields require conditional inclusion — use a helper function
+  // because the logic can't be expressed as a single expression.
   const childExprs: { key: string; expr: string; optional: boolean }[] = [];
   for (let i = 0; i < keys.length; i++) {
     const key = keys[i];
@@ -195,36 +216,22 @@ function walkStringifyObject(
 
   const helperName = freshVar(buf);
   let body = `function ${helperName}(o) {\n`;
-
-  if (hasOptional) {
-    body += '  var s = "{";\n';
-    body += "  var first = true;\n";
-    for (let i = 0; i < childExprs.length; i++) {
-      const { key, expr, optional } = childExprs[i];
-      const keyFragment = JSON.stringify(key) + ":";
-      if (optional) {
-        body += `  if (o[${JSON.stringify(key)}] !== undefined) {\n`;
-        body += `    s += (first ? "" : ",") + ${JSON.stringify(keyFragment)} + ${expr};\n`;
-        body += "    first = false;\n";
-        body += "  }\n";
-      } else {
-        body += `  s += (first ? "" : ",") + ${JSON.stringify(keyFragment)} + ${expr};\n`;
-        body += "  first = false;\n";
-      }
+  body += '  var s = "{";\n';
+  body += "  var first = true;\n";
+  for (let i = 0; i < childExprs.length; i++) {
+    const { key, expr, optional } = childExprs[i];
+    const keyFragment = JSON.stringify(key) + ":";
+    if (optional) {
+      body += `  if (o[${JSON.stringify(key)}] !== undefined) {\n`;
+      body += `    s += (first ? "" : ",") + ${JSON.stringify(keyFragment)} + ${expr};\n`;
+      body += "    first = false;\n";
+      body += "  }\n";
+    } else {
+      body += `  s += (first ? "" : ",") + ${JSON.stringify(keyFragment)} + ${expr};\n`;
+      body += "  first = false;\n";
     }
-    body += '  return s + "}";\n';
-  } else {
-    body += "  return ";
-    for (let i = 0; i < childExprs.length; i++) {
-      const { key, expr } = childExprs[i];
-      if (i === 0) {
-        body += `"{" + ${JSON.stringify(JSON.stringify(key) + ":")} + ${expr}`;
-      } else {
-        body += ` + "," + ${JSON.stringify(JSON.stringify(key) + ":")} + ${expr}`;
-      }
-    }
-    body += ' + "}";\n';
   }
+  body += '  return s + "}";\n';
   body += "}";
 
   const fn = compileHelper<Function>(buf, body);

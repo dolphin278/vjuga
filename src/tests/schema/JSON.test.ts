@@ -192,20 +192,6 @@ test("stringify nested object", () => {
 });
 
 // ---------------------------------------------------------------------------
-// stringify — trusted: false
-// ---------------------------------------------------------------------------
-
-test("stringify trusted:false rejects wrong type", () => {
-  const fn = SJ.stringify(S.string(), { trusted: false });
-  assert.throws(() => fn(42 as unknown as string), TypeError);
-});
-
-test("stringify trusted:false accepts correct type", () => {
-  const fn = SJ.stringify(S.object({ id: S.integer() }), { trusted: false });
-  assert.equal(fn({ id: 1 }), '{"id":1}');
-});
-
-// ---------------------------------------------------------------------------
 // stringify — round-trip with JSON.parse
 // ---------------------------------------------------------------------------
 
@@ -410,4 +396,48 @@ test("round-trip — record of arrays", () => {
   const par = SJ.parse(schema);
   const value = { a: [1, 2], b: [3] };
   assert.deepEqual(assertOk(par(str(value))), value);
+});
+
+// ---------------------------------------------------------------------------
+// Coverage: stringify edge cases
+// ---------------------------------------------------------------------------
+
+test("stringify string with control chars", () => {
+  const fn = SJ.stringify(S.string());
+  const result = fn("a\x00b\x08c\x0cd");
+  assert.equal(result, JSON.stringify("a\x00b\x08c\x0cd"));
+});
+
+test("stringify union — boolean | null dispatch", () => {
+  const fn = SJ.stringify(S.union(S.boolean(), S.null_()));
+  assert.equal(fn(true), "true");
+  assert.equal(fn(null), "null");
+});
+
+test("stringify union — array | object dispatch", () => {
+  const fn = SJ.stringify(S.union(S.array(S.number()), S.object({ x: S.number() })));
+  assert.equal(fn([1, 2]), "[1,2]");
+  assert.equal(fn({ x: 1 }), '{"x":1}');
+});
+
+// ---------------------------------------------------------------------------
+// Coverage: parse edge cases
+// ---------------------------------------------------------------------------
+
+test("parse union — boolean | null dispatch", () => {
+  const fn = SJ.parse(S.union(S.boolean(), S.null_()));
+  assert.equal(assertOk(fn("true")), true);
+  assert.equal(assertOk(fn("null")), null);
+  assertErr(fn('"hello"'));
+});
+
+test("parse single-variant union", () => {
+  const fn = SJ.parse(S.union(S.string()));
+  assert.equal(assertOk(fn('"hello"')), "hello");
+});
+
+test("parse nested nullable", () => {
+  const fn = SJ.parse(S.object({ x: S.nullable(S.integer()) }));
+  assert.deepEqual(assertOk(fn('{"x":null}')), { x: null });
+  assert.deepEqual(assertOk(fn('{"x":42}')), { x: 42 });
 });

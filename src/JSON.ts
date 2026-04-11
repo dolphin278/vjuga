@@ -67,7 +67,7 @@ export const parse = (json: string): JSONValue | undefined => {
  * Inspired by Matteo Collina's `secure-json-parse` — prototype pollution
  * via `__proto__` in parsed JSON is a well-known attack vector (OWASP).
  */
-function stripDangerousKeys(value: JSONValue): boolean {
+export function stripDangerousKeys(value: JSONValue): boolean {
   let found = false;
   // Explicit stack avoids recursion — no closure per frame, no stack overflow
   // on deeply nested inputs.

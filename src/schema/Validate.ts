@@ -125,16 +125,25 @@ export function emitValidation(
       break;
     case "number":
       // v !== v is the NaN check — single ucomisd instruction in V8
-      emit(buf, `if (typeof ${accessor} !== "number" || ${accessor} !== ${accessor}) return _err(_me(${pathExpr}, "number", ${accessor}));`);
+      emit(
+        buf,
+        `if (typeof ${accessor} !== "number" || ${accessor} !== ${accessor}) return _err(_me(${pathExpr}, "number", ${accessor}));`,
+      );
       emitNumericConstraints(buf, schema.meta, accessor, pathExpr, "number");
       break;
     case "integer":
       // Number.isSafeInteger covers ±2^53. Avoids (v|0)!==v which truncates to ±2^31.
-      emit(buf, `if (typeof ${accessor} !== "number" || !_isSafe(${accessor})) return _err(_me(${pathExpr}, "integer", ${accessor}));`);
+      emit(
+        buf,
+        `if (typeof ${accessor} !== "number" || !_isSafe(${accessor})) return _err(_me(${pathExpr}, "integer", ${accessor}));`,
+      );
       emitNumericConstraints(buf, schema.meta, accessor, pathExpr, "integer");
       break;
     case "boolean":
-      emit(buf, `if (typeof ${accessor} !== "boolean") return _err(_me(${pathExpr}, "boolean", ${accessor}));`);
+      emit(
+        buf,
+        `if (typeof ${accessor} !== "boolean") return _err(_me(${pathExpr}, "boolean", ${accessor}));`,
+      );
       break;
     case "null":
       emit(buf, `if (${accessor} !== null) return _err(_me(${pathExpr}, "null", ${accessor}));`);
@@ -142,7 +151,10 @@ export function emitValidation(
     case "literal": {
       const ref = freshVar(buf);
       emitRef(buf, ref, schema.meta.value);
-      emit(buf, `if (${accessor} !== ${ref}) return _err(_me(${pathExpr}, ${JSON.stringify("literal(" + JSON.stringify(schema.meta.value) + ")")}, ${accessor}));`);
+      emit(
+        buf,
+        `if (${accessor} !== ${ref}) return _err(_me(${pathExpr}, ${JSON.stringify("literal(" + JSON.stringify(schema.meta.value) + ")")}, ${accessor}));`,
+      );
       break;
     }
     case "enum":
@@ -177,6 +189,7 @@ export function emitValidation(
       buf.indent--;
       emit(buf, "}");
       break;
+    /* c8 ignore next 3 — exhaustive check; unreachable when all schema kinds are handled */
     default: {
       const _exhaustive: never = schema;
       throw new Error("Unknown schema kind: " + (_exhaustive as Schema).kind);
@@ -190,48 +203,85 @@ export function emitValidation(
 
 function emitStringCheck(
   buf: CodeBuffer,
-  meta: { readonly minLength?: number; readonly maxLength?: number; readonly pattern?: string } | undefined,
+  meta:
+    | { readonly minLength?: number; readonly maxLength?: number; readonly pattern?: string }
+    | undefined,
   accessor: string,
   pathExpr: string,
 ): void {
-  emit(buf, `if (typeof ${accessor} !== "string") return _err(_me(${pathExpr}, "string", ${accessor}));`);
+  emit(
+    buf,
+    `if (typeof ${accessor} !== "string") return _err(_me(${pathExpr}, "string", ${accessor}));`,
+  );
   if (meta !== undefined) {
     if (meta.minLength !== undefined) {
-      emit(buf, `if (${accessor}.length < ${meta.minLength}) return _err(_me(${pathExpr}, "string(minLength=${meta.minLength})", ${accessor}));`);
+      emit(
+        buf,
+        `if (${accessor}.length < ${meta.minLength}) return _err(_me(${pathExpr}, "string(minLength=${meta.minLength})", ${accessor}));`,
+      );
     }
     if (meta.maxLength !== undefined) {
-      emit(buf, `if (${accessor}.length > ${meta.maxLength}) return _err(_me(${pathExpr}, "string(maxLength=${meta.maxLength})", ${accessor}));`);
+      emit(
+        buf,
+        `if (${accessor}.length > ${meta.maxLength}) return _err(_me(${pathExpr}, "string(maxLength=${meta.maxLength})", ${accessor}));`,
+      );
     }
     if (meta.pattern !== undefined) {
       const ref = freshVar(buf);
       emitRef(buf, ref, new RegExp(meta.pattern));
-      emit(buf, `if (!${ref}.test(${accessor})) return _err(_me(${pathExpr}, "string(pattern=${meta.pattern})", ${accessor}));`);
+      emit(
+        buf,
+        `if (!${ref}.test(${accessor})) return _err(_me(${pathExpr}, "string(pattern=${meta.pattern})", ${accessor}));`,
+      );
     }
   }
 }
 
 function emitNumericConstraints(
   buf: CodeBuffer,
-  meta: { readonly minimum?: number; readonly maximum?: number; readonly exclusiveMinimum?: number; readonly exclusiveMaximum?: number; readonly multipleOf?: number } | undefined,
+  meta:
+    | {
+        readonly minimum?: number;
+        readonly maximum?: number;
+        readonly exclusiveMinimum?: number;
+        readonly exclusiveMaximum?: number;
+        readonly multipleOf?: number;
+      }
+    | undefined,
   accessor: string,
   pathExpr: string,
   label: string,
 ): void {
   if (meta === undefined) return;
   if (meta.minimum !== undefined) {
-    emit(buf, `if (${accessor} < ${meta.minimum}) return _err(_me(${pathExpr}, "${label}(>=${meta.minimum})", ${accessor}));`);
+    emit(
+      buf,
+      `if (${accessor} < ${meta.minimum}) return _err(_me(${pathExpr}, "${label}(>=${meta.minimum})", ${accessor}));`,
+    );
   }
   if (meta.maximum !== undefined) {
-    emit(buf, `if (${accessor} > ${meta.maximum}) return _err(_me(${pathExpr}, "${label}(<=${meta.maximum})", ${accessor}));`);
+    emit(
+      buf,
+      `if (${accessor} > ${meta.maximum}) return _err(_me(${pathExpr}, "${label}(<=${meta.maximum})", ${accessor}));`,
+    );
   }
   if (meta.exclusiveMinimum !== undefined) {
-    emit(buf, `if (${accessor} <= ${meta.exclusiveMinimum}) return _err(_me(${pathExpr}, "${label}(>${meta.exclusiveMinimum})", ${accessor}));`);
+    emit(
+      buf,
+      `if (${accessor} <= ${meta.exclusiveMinimum}) return _err(_me(${pathExpr}, "${label}(>${meta.exclusiveMinimum})", ${accessor}));`,
+    );
   }
   if (meta.exclusiveMaximum !== undefined) {
-    emit(buf, `if (${accessor} >= ${meta.exclusiveMaximum}) return _err(_me(${pathExpr}, "${label}(<${meta.exclusiveMaximum})", ${accessor}));`);
+    emit(
+      buf,
+      `if (${accessor} >= ${meta.exclusiveMaximum}) return _err(_me(${pathExpr}, "${label}(<${meta.exclusiveMaximum})", ${accessor}));`,
+    );
   }
   if (meta.multipleOf !== undefined) {
-    emit(buf, `if (${accessor} % ${meta.multipleOf} !== 0) return _err(_me(${pathExpr}, "${label}(%${meta.multipleOf})", ${accessor}));`);
+    emit(
+      buf,
+      `if (${accessor} % ${meta.multipleOf} !== 0) return _err(_me(${pathExpr}, "${label}(%${meta.multipleOf})", ${accessor}));`,
+    );
   }
 }
 
@@ -250,7 +300,10 @@ function emitEnumCheck(
   } else {
     const ref = freshVar(buf);
     emitRef(buf, ref, new Set(values));
-    emit(buf, `if (!${ref}.has(${accessor})) return _err(_me(${pathExpr}, ${labelRef}, ${accessor}));`);
+    emit(
+      buf,
+      `if (!${ref}.has(${accessor})) return _err(_me(${pathExpr}, ${labelRef}, ${accessor}));`,
+    );
   }
 }
 
@@ -260,7 +313,10 @@ function emitObjectValidation(
   accessor: string,
   pathExpr: string,
 ): void {
-  emit(buf, `if (${accessor} === null || typeof ${accessor} !== "object") return _err(_me(${pathExpr}, "object", ${accessor}));`);
+  emit(
+    buf,
+    `if (${accessor} === null || typeof ${accessor} !== "object") return _err(_me(${pathExpr}, "object", ${accessor}));`,
+  );
   const keys = Object.keys(schema.meta.properties);
   for (let i = 0; i < keys.length; i++) {
     const key = keys[i];
@@ -279,10 +335,16 @@ function emitArrayValidation(
 ): void {
   emit(buf, `if (!_isArr(${accessor})) return _err(_me(${pathExpr}, "array", ${accessor}));`);
   if (schema.meta.minItems !== undefined) {
-    emit(buf, `if (${accessor}.length < ${schema.meta.minItems}) return _err(_me(${pathExpr}, "array(minItems=${schema.meta.minItems})", ${accessor}));`);
+    emit(
+      buf,
+      `if (${accessor}.length < ${schema.meta.minItems}) return _err(_me(${pathExpr}, "array(minItems=${schema.meta.minItems})", ${accessor}));`,
+    );
   }
   if (schema.meta.maxItems !== undefined) {
-    emit(buf, `if (${accessor}.length > ${schema.meta.maxItems}) return _err(_me(${pathExpr}, "array(maxItems=${schema.meta.maxItems})", ${accessor}));`);
+    emit(
+      buf,
+      `if (${accessor}.length > ${schema.meta.maxItems}) return _err(_me(${pathExpr}, "array(maxItems=${schema.meta.maxItems})", ${accessor}));`,
+    );
   }
   const idx = freshVar(buf);
   const len = freshVar(buf);
@@ -302,7 +364,10 @@ function emitTupleValidation(
   pathExpr: string,
 ): void {
   const items = schema.meta.items;
-  emit(buf, `if (!_isArr(${accessor}) || ${accessor}.length !== ${items.length}) return _err(_me(${pathExpr}, "tuple[${items.length}]", ${accessor}));`);
+  emit(
+    buf,
+    `if (!_isArr(${accessor}) || ${accessor}.length !== ${items.length}) return _err(_me(${pathExpr}, "tuple[${items.length}]", ${accessor}));`,
+  );
   for (let i = 0; i < items.length; i++) {
     const childAccessor = `${accessor}[${i}]`;
     const childPathExpr = childPath(pathExpr, String(i));
@@ -316,7 +381,10 @@ function emitRecordValidation(
   accessor: string,
   pathExpr: string,
 ): void {
-  emit(buf, `if (${accessor} === null || typeof ${accessor} !== "object" || _isArr(${accessor})) return _err(_me(${pathExpr}, "object", ${accessor}));`);
+  emit(
+    buf,
+    `if (${accessor} === null || typeof ${accessor} !== "object" || _isArr(${accessor})) return _err(_me(${pathExpr}, "object", ${accessor}));`,
+  );
   const key = freshVar(buf);
   emit(buf, `for (var ${key} in ${accessor}) {`);
   buf.indent++;
@@ -367,7 +435,10 @@ function emitDiscriminatedValidation(
   accessor: string,
   pathExpr: string,
 ): void {
-  emit(buf, `if (${accessor} === null || typeof ${accessor} !== "object") return _err(_me(${pathExpr}, "object", ${accessor}));`);
+  emit(
+    buf,
+    `if (${accessor} === null || typeof ${accessor} !== "object") return _err(_me(${pathExpr}, "object", ${accessor}));`,
+  );
   const discAccessor = `${accessor}[${JSON.stringify(discriminant)}]`;
   emit(buf, `switch (${discAccessor}) {`);
   buf.indent++;
@@ -390,9 +461,13 @@ function emitDiscriminatedValidation(
     emit(buf, "}");
   }
   const discLabelRef = freshVar(buf);
-  const discLabel = "one of: " + variants.map((v) =>
-    JSON.stringify((v as Schema & { kind: "object" }).meta.properties[discriminant].meta.value),
-  ).join(", ");
+  const discLabel =
+    "one of: " +
+    variants
+      .map((v) =>
+        JSON.stringify((v as Schema & { kind: "object" }).meta.properties[discriminant].meta.value),
+      )
+      .join(", ");
   emitRef(buf, discLabelRef, discLabel);
   const discPathExpr = childPath(pathExpr, discriminant);
   emit(buf, `default: return _err(_me(${discPathExpr}, ${discLabelRef}, ${discAccessor}));`);
@@ -465,9 +540,11 @@ export function quickTypeCheck(schema: Schema, accessor: string): string | null 
       }
       return checks.length > 0 ? checks.join(" || ") : null;
     }
-    case "array": case "tuple":
+    case "array":
+    case "tuple":
       return `_isArr(${accessor})`;
-    case "object": case "record":
+    case "object":
+    case "record":
       return `typeof ${accessor} === "object" && ${accessor} !== null && !_isArr(${accessor})`;
     case "optional":
       return `${accessor} === undefined || (${quickTypeCheck(schema.meta.inner, accessor) ?? "true"})`;

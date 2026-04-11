@@ -103,10 +103,7 @@ export interface ArrayMeta<I extends Schema> {
 }
 export type ArraySchema<I extends Schema> = SchemaBase<"array", ArrayMeta<I>>;
 
-export type TupleSchema<I extends readonly Schema[]> = SchemaBase<
-  "tuple",
-  { readonly items: I }
->;
+export type TupleSchema<I extends readonly Schema[]> = SchemaBase<"tuple", { readonly items: I }>;
 export type RecordSchema<V extends Schema> = SchemaBase<"record", { readonly values: V }>;
 export type UnionSchema<V extends readonly Schema[]> = SchemaBase<
   "union",
@@ -150,22 +147,35 @@ export type Schema =
  * Required-by-default: all object properties are required unless wrapped in
  * `optional()`. OptionalSchema keys become `?:` in the inferred object type.
  */
-export type Infer<S extends Schema> =
-  S extends StringSchema ? string
-  : S extends NumberSchema ? number
-  : S extends IntegerSchema ? number
-  : S extends BooleanSchema ? boolean
-  : S extends NullSchema ? null
-  : S extends LiteralSchema<infer V> ? V
-  : S extends EnumSchema<infer V> ? V[number]
-  : S extends ObjectSchema<infer P> ? InferObject<P>
-  : S extends ArraySchema<infer I> ? Infer<I>[]
-  : S extends TupleSchema<infer I> ? InferTuple<I>
-  : S extends RecordSchema<infer V> ? Record<string, Infer<V>>
-  : S extends UnionSchema<infer V> ? InferUnion<V>
-  : S extends OptionalSchema<infer I> ? Infer<I> | undefined
-  : S extends NullableSchema<infer I> ? Infer<I> | null
-  : never;
+export type Infer<S extends Schema> = S extends StringSchema
+  ? string
+  : S extends NumberSchema
+    ? number
+    : S extends IntegerSchema
+      ? number
+      : S extends BooleanSchema
+        ? boolean
+        : S extends NullSchema
+          ? null
+          : S extends LiteralSchema<infer V>
+            ? V
+            : S extends EnumSchema<infer V>
+              ? V[number]
+              : S extends ObjectSchema<infer P>
+                ? InferObject<P>
+                : S extends ArraySchema<infer I>
+                  ? Infer<I>[]
+                  : S extends TupleSchema<infer I>
+                    ? InferTuple<I>
+                    : S extends RecordSchema<infer V>
+                      ? Record<string, Infer<V>>
+                      : S extends UnionSchema<infer V>
+                        ? InferUnion<V>
+                        : S extends OptionalSchema<infer I>
+                          ? Infer<I> | undefined
+                          : S extends NullableSchema<infer I>
+                            ? Infer<I> | null
+                            : never;
 
 /** Required keys + optional keys merged via intersection. */
 type InferObject<P extends Record<string, Schema>> = Simplify<
@@ -181,16 +191,13 @@ type OptionalKeys<P extends Record<string, Schema>> = {
 }[keyof P];
 
 /** Unwrap OptionalSchema to get the inner type (without the `| undefined` that Infer adds). */
-type InferOptionalValue<S extends Schema> =
-  S extends OptionalSchema<infer I> ? Infer<I> : Infer<S>;
+type InferOptionalValue<S extends Schema> = S extends OptionalSchema<infer I> ? Infer<I> : Infer<S>;
 
 type InferTuple<I extends readonly Schema[]> = {
   [K in keyof I]: I[K] extends Schema ? Infer<I[K]> : never;
 };
 
-type InferUnion<V extends readonly Schema[]> = V[number] extends Schema
-  ? Infer<V[number]>
-  : never;
+type InferUnion<V extends readonly Schema[]> = V[number] extends Schema ? Infer<V[number]> : never;
 
 /**
  * Collapses `{ a: X } & { b?: Y }` into `{ a: X; b?: Y }` for readable
@@ -235,9 +242,7 @@ export function literal<const V extends string | number | boolean | null>(
 }
 
 /** Validates that value is one of the given string/number enum members. */
-export function enum_<const V extends readonly (string | number)[]>(
-  ...values: V
-): EnumSchema<V> {
+export function enum_<const V extends readonly (string | number)[]>(...values: V): EnumSchema<V> {
   return { kind: "enum", meta: { values } };
 }
 
@@ -352,7 +357,10 @@ export function toJsonSchema(schema: Schema): JsonSchemaObject {
       return out;
     }
     case "array": {
-      const out: Record<string, unknown> = { type: "array", items: toJsonSchema(schema.meta.items) };
+      const out: Record<string, unknown> = {
+        type: "array",
+        items: toJsonSchema(schema.meta.items),
+      };
       if (schema.meta.minItems !== undefined) out.minItems = schema.meta.minItems;
       if (schema.meta.maxItems !== undefined) out.maxItems = schema.meta.maxItems;
       return out;
@@ -373,9 +381,8 @@ export function toJsonSchema(schema: Schema): JsonSchemaObject {
       return toJsonSchema(schema.meta.inner);
     case "nullable":
       return { anyOf: [toJsonSchema(schema.meta.inner), { type: "null" }] };
+    /* c8 ignore next 3 — exhaustive check; unreachable when all schema kinds are handled */
     default: {
-      // Exhaustive check — if TypeScript narrows schema to `never` here,
-      // all cases are covered. If a new kind is added, this will error.
       const _exhaustive: never = schema;
       throw new Error("Unknown schema kind: " + (_exhaustive as Schema).kind);
     }
@@ -464,10 +471,22 @@ export function fromJsonSchema(js: JsonSchemaObject): Result<Schema, string> {
   if (type === "string") {
     const c: Record<string, unknown> = {};
     let hasConstraints = false;
-    if ("minLength" in js) { c.minLength = js.minLength as number; hasConstraints = true; }
-    if ("maxLength" in js) { c.maxLength = js.maxLength as number; hasConstraints = true; }
-    if ("pattern" in js) { c.pattern = js.pattern as string; hasConstraints = true; }
-    if ("format" in js) { c.format = js.format as string; hasConstraints = true; }
+    if ("minLength" in js) {
+      c.minLength = js.minLength as number;
+      hasConstraints = true;
+    }
+    if ("maxLength" in js) {
+      c.maxLength = js.maxLength as number;
+      hasConstraints = true;
+    }
+    if ("pattern" in js) {
+      c.pattern = js.pattern as string;
+      hasConstraints = true;
+    }
+    if ("format" in js) {
+      c.format = js.format as string;
+      hasConstraints = true;
+    }
     return ok(string(hasConstraints ? (c as StringConstraints) : undefined));
   }
 
@@ -495,9 +514,7 @@ export function fromJsonSchema(js: JsonSchemaObject): Result<Schema, string> {
 
     // Object with properties
     const props = (js.properties ?? {}) as Record<string, JsonSchemaObject>;
-    const requiredSet = new Set(
-      Array.isArray(js.required) ? (js.required as string[]) : [],
-    );
+    const requiredSet = new Set(Array.isArray(js.required) ? (js.required as string[]) : []);
     const result: Record<string, Schema> = {};
     const keys = Object.keys(props);
     for (let i = 0; i < keys.length; i++) {
@@ -551,10 +568,16 @@ export function fromJsonSchema(js: JsonSchemaObject): Result<Schema, string> {
 /** True if the schema describes a leaf value (no nesting). */
 export function isPrimitive(schema: Schema): boolean {
   switch (schema.kind) {
-    case "string": case "number": case "integer": case "boolean":
-    case "null": case "literal": case "enum":
+    case "string":
+    case "number":
+    case "integer":
+    case "boolean":
+    case "null":
+    case "literal":
+    case "enum":
       return true;
-    case "optional": case "nullable":
+    case "optional":
+    case "nullable":
       return isPrimitive(schema.meta.inner);
     default:
       return false;
@@ -597,10 +620,25 @@ export function findDiscriminant(variants: readonly Schema[]): string | null {
 function extractNumberConstraints(js: JsonSchemaObject): NumberConstraints | undefined {
   const c: Record<string, unknown> = {};
   let has = false;
-  if ("minimum" in js) { c.minimum = js.minimum as number; has = true; }
-  if ("maximum" in js) { c.maximum = js.maximum as number; has = true; }
-  if ("exclusiveMinimum" in js) { c.exclusiveMinimum = js.exclusiveMinimum as number; has = true; }
-  if ("exclusiveMaximum" in js) { c.exclusiveMaximum = js.exclusiveMaximum as number; has = true; }
-  if ("multipleOf" in js) { c.multipleOf = js.multipleOf as number; has = true; }
+  if ("minimum" in js) {
+    c.minimum = js.minimum as number;
+    has = true;
+  }
+  if ("maximum" in js) {
+    c.maximum = js.maximum as number;
+    has = true;
+  }
+  if ("exclusiveMinimum" in js) {
+    c.exclusiveMinimum = js.exclusiveMinimum as number;
+    has = true;
+  }
+  if ("exclusiveMaximum" in js) {
+    c.exclusiveMaximum = js.exclusiveMaximum as number;
+    has = true;
+  }
+  if ("multipleOf" in js) {
+    c.multipleOf = js.multipleOf as number;
+    has = true;
+  }
   return has ? (c as NumberConstraints) : undefined;
 }

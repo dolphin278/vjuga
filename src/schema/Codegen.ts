@@ -71,13 +71,12 @@ export function freshVar(buf: CodeBuffer): string {
  * a `return function ...` statement — the returned value is that function.
  */
 export function compileFunction<T>(buf: CodeBuffer): T {
-  const paramNames = Array.from(buf.refs.keys());
-  const paramValues = Array.from(buf.refs.values());
+  const [names, values] = extractRefs(buf);
   // new Function creates a function in global scope — no access to local
   // variables except via the named parameters. This is predictable for V8
   // and avoids eval's scope chain issues.
-  const factory = new Function(...paramNames, buf.code);
-  return Reflect.apply(factory, undefined, paramValues) as T;
+  const factory = new Function(...names, buf.code);
+  return Reflect.apply(factory, undefined, values) as T;
 }
 
 /**
@@ -87,10 +86,20 @@ export function compileFunction<T>(buf: CodeBuffer): T {
  * and records. The helper gets all current refs as closure-captured params.
  */
 export function compileHelper<T>(buf: CodeBuffer, source: string): T {
-  const paramNames = Array.from(buf.refs.keys());
-  const paramValues = Array.from(buf.refs.values());
-  const factory = new Function(...paramNames, "return " + source);
-  return Reflect.apply(factory, undefined, paramValues) as T;
+  const [names, values] = extractRefs(buf);
+  const factory = new Function(...names, "return " + source);
+  return Reflect.apply(factory, undefined, values) as T;
+}
+
+/** Build param name and value arrays in a single pass over the refs map. */
+function extractRefs(buf: CodeBuffer): [string[], unknown[]] {
+  const names: string[] = [];
+  const values: unknown[] = [];
+  for (const [k, v] of buf.refs) {
+    names.push(k);
+    values.push(v);
+  }
+  return [names, values];
 }
 
 // ---------------------------------------------------------------------------

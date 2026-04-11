@@ -528,3 +528,75 @@ test("record of arrays", () => {
   assertOk(v({ a: [1, 2], b: [3] }));
   assertErr(v({ a: [1, "two"] }));
 });
+
+// ---------------------------------------------------------------------------
+// Coverage: quickTypeCheck branches
+// ---------------------------------------------------------------------------
+
+test("union — integer | boolean | null dispatch", () => {
+  // Exercises quickTypeCheck for integer, boolean, null cases
+  const v = validate(S.union(S.integer(), S.boolean(), S.null_()));
+  assertOk(v(42));
+  assertOk(v(true));
+  assertOk(v(null));
+  assertErr(v("hello"));
+});
+
+test("union — large enum as last variant", () => {
+  // enum > 4 values as last variant exercises full emitValidation path
+  const v = validate(S.union(S.number(), S.enum_("a", "b", "c", "d", "e")));
+  assertOk(v(42));
+  assertOk(v("a"));
+  assertOk(v("e"));
+  assertErr(v(true));
+});
+
+test("union — array | tuple dispatch", () => {
+  // Exercises quickTypeCheck for array/tuple kinds
+  const v = validate(S.union(S.array(S.number()), S.string()));
+  assertOk(v([1, 2]));
+  assertOk(v("hello"));
+  assertErr(v(42));
+});
+
+test("union — object | string dispatch (non-discriminated)", () => {
+  // Exercises emitObjectVariantTest path for non-discriminated object unions
+  const v = validate(
+    S.union(
+      S.object({ x: S.number(), y: S.number() }),
+      S.string(),
+    ),
+  );
+  assertOk(v({ x: 1, y: 2 }));
+  assertOk(v("hello"));
+  assertErr(v(42));
+});
+
+test("union — non-discriminated objects fall through on property mismatch", () => {
+  // When object variant's properties don't match, falls through to next variant
+  const v = validate(
+    S.union(
+      S.object({ x: S.string() }),
+      S.object({ y: S.number() }),
+    ),
+  );
+  assertOk(v({ x: "hello" }));
+  assertOk(v({ y: 42 }));
+});
+
+test("union — nested union in quickTypeCheck", () => {
+  // Exercises the union case in quickTypeCheck (recursive)
+  const inner = S.union(S.string(), S.number());
+  const v = validate(S.union(inner, S.boolean()));
+  assertOk(v("hello"));
+  assertOk(v(42));
+  assertOk(v(true));
+  assertErr(v(null));
+});
+
+test("enum — large set (>8 values)", () => {
+  const v = validate(S.enum_(1, 2, 3, 4, 5, 6, 7, 8, 9, 10));
+  assertOk(v(1));
+  assertOk(v(10));
+  assertErr(v(11));
+});

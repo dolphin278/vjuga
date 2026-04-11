@@ -45,51 +45,62 @@ import {
 const NEEDS_QUOTE_RE =
   /^$|^\s|\s$|^(true|false|null)$|^-?\d+(\.\d+)?(e[+-]?\d+)?$|^0\d|[:"\\[\]{}]|[\u0000-\u001f]|^-$/;
 
+/**
+ * Quote a TOON string value. Single-pass charCode scan avoids the 5x
+ * .replace() chain that would scan the full string per escape character.
+ */
 function toonQuote(s: string, delim: string): string {
-  if (NEEDS_QUOTE_RE.test(s) || s.indexOf(delim) !== -1) {
-    return (
-      '"' +
-      s
-        .replace(/\\/g, "\\\\")
-        .replace(/"/g, '\\"')
-        .replace(/\n/g, "\\n")
-        .replace(/\r/g, "\\r")
-        .replace(/\t/g, "\\t") +
-      '"'
-    );
+  if (!NEEDS_QUOTE_RE.test(s) && s.indexOf(delim) === -1) return s;
+  let out = '"';
+  let last = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    // charCode switch — V8 compiles to a jump table for dense integer ranges
+    if (c === 0x5c) {
+      out += s.slice(last, i) + "\\\\";
+      last = i + 1;
+    } else if (c === 0x22) {
+      out += s.slice(last, i) + '\\"';
+      last = i + 1;
+    } else if (c === 0x0a) {
+      out += s.slice(last, i) + "\\n";
+      last = i + 1;
+    } else if (c === 0x0d) {
+      out += s.slice(last, i) + "\\r";
+      last = i + 1;
+    } else if (c === 0x09) {
+      out += s.slice(last, i) + "\\t";
+      last = i + 1;
+    }
   }
-  return s;
+  return out + s.slice(last) + '"';
 }
 
 function toonUnquote(s: string): string {
   if (s.length < 2 || s.charCodeAt(0) !== 0x22 || s.charCodeAt(s.length - 1) !== 0x22) return s;
+  // Fast path: no escape sequences → slice without scanning char-by-char
+  if (s.indexOf("\\") === -1) return s.slice(1, -1);
   let out = "";
+  let last = 1;
   for (let i = 1; i < s.length - 1; i++) {
     if (s.charCodeAt(i) === 0x5c && i + 1 < s.length - 1) {
+      out += s.slice(last, i);
       const next = s.charCodeAt(i + 1);
-      if (next === 0x5c) {
-        out += "\\";
-        i++;
-      } else if (next === 0x22) {
-        out += '"';
-        i++;
-      } else if (next === 0x6e) {
-        out += "\n";
-        i++;
-      } else if (next === 0x72) {
-        out += "\r";
-        i++;
-      } else if (next === 0x74) {
-        out += "\t";
-        i++;
-      } else {
+      if (next === 0x5c) out += "\\";
+      else if (next === 0x22) out += '"';
+      else if (next === 0x6e) out += "\n";
+      else if (next === 0x72) out += "\r";
+      else if (next === 0x74) out += "\t";
+      else {
         out += s[i];
+        last = i + 1;
+        continue;
       }
-    } else {
-      out += s[i];
+      i++;
+      last = i + 1;
     }
   }
-  return out;
+  return out + s.slice(last, s.length - 1);
 }
 
 /** Canonicalize number per TOON spec. NaN/Infinity → null. */
@@ -100,31 +111,27 @@ function canonicalNumber(n: number): string {
   return n.toFixed(20).replace(/\.?0+$/, "");
 }
 
-/** Split inline values by delimiter, respecting quoted strings. */
+/**
+ * Split inline values by delimiter, respecting quoted strings.
+ * Uses slice-based accumulation to avoid per-character string allocation.
+ */
 function splitByDelimiter(s: string, delim: string): string[] {
   const result: string[] = [];
-  let current = "";
+  let start = 0;
   let inQuote = false;
   for (let i = 0; i < s.length; i++) {
-    const c = s[i];
     if (inQuote) {
-      current += c;
-      if (c === "\\" && i + 1 < s.length) {
-        current += s[++i];
-      } else if (c === '"') {
-        inQuote = false;
-      }
-    } else if (c === '"') {
+      if (s.charCodeAt(i) === 0x5c)
+        i++; // skip escaped char
+      else if (s.charCodeAt(i) === 0x22) inQuote = false;
+    } else if (s.charCodeAt(i) === 0x22) {
       inQuote = true;
-      current += c;
-    } else if (c === delim) {
-      result.push(current);
-      current = "";
-    } else {
-      current += c;
+    } else if (s[i] === delim) {
+      result.push(s.slice(start, i));
+      start = i + 1;
     }
   }
-  result.push(current);
+  result.push(s.slice(start));
   return result;
 }
 
@@ -372,7 +379,7 @@ function emitArrayStringify(
   depth: number,
 ): void {
   const pad = JSON.stringify(" ".repeat(depth * ctx.indent));
-  const header = key !== "" ? key : "";
+  const header = key;
 
   if (isTabular(schema)) {
     emitTabularStringify(ctx, schema, accessor, header, depth);
@@ -460,7 +467,7 @@ function emitTupleStringify(
 ): void {
   const items = schema.meta.items;
   const pad = JSON.stringify(" ".repeat(depth * ctx.indent));
-  const header = key !== "" ? key : "";
+  const header = key;
   const parts: string[] = [];
   for (let i = 0; i < items.length; i++) {
     parts.push(inlineExpr(items[i] as Schema, `${accessor}[${i}]`));
@@ -625,6 +632,9 @@ function emitParseBody(
       emitRecordParse(buf, schema, depth, pathExpr, indent);
       break;
     case "union": {
+      // Limitation: TOON parse currently only attempts the first variant.
+      // Full union dispatch would require save/restore of line index (li)
+      // with backtracking on parse failure — deferred to a future iteration.
       const variants = schema.meta.variants as readonly Schema[];
       if (variants.length > 0)
         emitParseBody(buf, variants[0], depth, pathExpr, indent, delim, flexible);

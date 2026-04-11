@@ -388,6 +388,8 @@ function emitRecordValidation(
   const key = freshVar(buf);
   emit(buf, `for (var ${key} in ${accessor}) {`);
   buf.indent++;
+  // Skip inherited properties — only validate own properties
+  emit(buf, `if (!Object.hasOwn(${accessor}, ${key})) continue;`);
   const elemAccessor = `${accessor}[${key}]`;
   const elemPathExpr = dynamicChildPath(pathExpr, key);
   emitValidation(buf, schema.meta.values, elemAccessor, elemPathExpr);

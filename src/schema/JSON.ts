@@ -35,7 +35,7 @@
 
 import type { Result } from "../Result.js";
 import { ok, err } from "../Result.js";
-import { stripDangerousKeys } from "../JSON.js";
+import { parse as jsonParse, stripDangerousKeys, escapeJsonString } from "../JSON.js";
 import type { Schema, Infer } from "./Schema.js";
 import type { SchemaError } from "./Validate.js";
 import { emitStandardRefs, emitValidation } from "./Validate.js";
@@ -52,55 +52,6 @@ import {
 } from "./Codegen.js";
 
 // ---------------------------------------------------------------------------
-// String escaping
-// ---------------------------------------------------------------------------
-
-// Pre-computed escape table for control characters (0x00-0x1f)
-const ESCAPE_TABLE: string[] = [];
-for (let i = 0; i < 32; i++) {
-  ESCAPE_TABLE[i] = "\\u" + i.toString(16).padStart(4, "0");
-}
-ESCAPE_TABLE[0x08] = "\\b";
-ESCAPE_TABLE[0x09] = "\\t";
-ESCAPE_TABLE[0x0a] = "\\n";
-ESCAPE_TABLE[0x0c] = "\\f";
-ESCAPE_TABLE[0x0d] = "\\r";
-
-/**
- * Escape a string for JSON output. Adds surrounding quotes.
- * Short strings (<128 chars): manual charCode scan (avoids JSON.stringify overhead).
- * Long strings: delegate to JSON.stringify (V8 SIMD-accelerated).
- */
-function escStr(s: string): string {
-  const len = s.length;
-  if (len < 128) {
-    let out = '"';
-    let last = 0;
-    for (let i = 0; i < len; i++) {
-      const c = s.charCodeAt(i);
-      if (c === 0x22) {
-        out += s.slice(last, i) + '\\"';
-        last = i + 1;
-      } else if (c === 0x5c) {
-        out += s.slice(last, i) + "\\\\";
-        last = i + 1;
-      } else if (c < 0x20) {
-        out += s.slice(last, i) + ESCAPE_TABLE[c];
-        last = i + 1;
-      } else if (c >= 0xd800 && c <= 0xdfff) {
-        // Lone surrogates must be escaped per JSON spec (RFC 8259 §8)
-        out += s.slice(last, i) + "\\u" + c.toString(16);
-        last = i + 1;
-      }
-    }
-    if (last === 0) return '"' + s + '"';
-    return out + s.slice(last) + '"';
-  }
-  // Long strings: delegate to JSON.stringify (V8 SIMD-accelerated, handles surrogates)
-  return JSON.stringify(s);
-}
-
-// ---------------------------------------------------------------------------
 // stringify
 // ---------------------------------------------------------------------------
 
@@ -113,7 +64,7 @@ function escStr(s: string): string {
  */
 export function stringify<S extends Schema>(schema: S): (value: Infer<S>) => string {
   const buf = createBuffer();
-  emitRef(buf, "_esc", escStr);
+  emitRef(buf, "_esc", escapeJsonString);
 
   emit(buf, "return function stringify(v) {");
   buf.indent++;
@@ -144,7 +95,7 @@ function walkStringify(buf: CodeBuffer, schema: Schema, accessor: string): strin
     case "enum":
       return `(typeof ${accessor} === "string" ? _esc(${accessor}) : "" + ${accessor})`;
     case "object":
-      return walkStringifyObject(buf, schema, accessor);
+      return walkStringifyObject(buf, schema.meta.properties, accessor);
     case "array":
       return walkStringifyArray(buf, schema, accessor);
     case "tuple":
@@ -167,10 +118,9 @@ function walkStringify(buf: CodeBuffer, schema: Schema, accessor: string): strin
 
 function walkStringifyObject(
   buf: CodeBuffer,
-  schema: Schema & { readonly kind: "object" },
+  props: Record<string, Schema>,
   accessor: string,
 ): string {
-  const props = schema.meta.properties as Record<string, Schema>;
   const keys = Object.keys(props);
   if (keys.length === 0) return `"{}"`;
 
@@ -234,7 +184,7 @@ function walkStringifyObject(
   body += '  return s + "}";\n';
   body += "}";
 
-  const fn = compileHelper<Function>(buf, body);
+  const fn = compileHelper(buf, body);
   emitRef(buf, helperName, fn);
   return `${helperName}(${accessor})`;
 }
@@ -284,7 +234,7 @@ function walkStringifyTuple(
   const parts: string[] = [];
   for (let i = 0; i < items.length; i++) {
     const prefix = i === 0 ? '"[" + ' : ' + "," + ';
-    parts.push(prefix + walkStringify(buf, items[i] as Schema, `${accessor}[${i}]`));
+    parts.push(prefix + walkStringify(buf, items[i], `${accessor}[${i}]`));
   }
   return "(" + parts.join("") + ' + "]")';
 }
@@ -315,15 +265,16 @@ function walkStringifyUnion(
   schema: Schema & { readonly kind: "union" },
   accessor: string,
 ): string {
-  const variants = schema.meta.variants as readonly Schema[];
+  const variants = schema.meta.variants;
   const discriminant = findDiscriminant(variants);
 
   if (discriminant !== null) {
     const helperName = freshVar(buf);
     let body = `function ${helperName}(v) {\n  switch (v[${JSON.stringify(discriminant)}]) {\n`;
     for (let i = 0; i < variants.length; i++) {
-      const obj = variants[i] as Schema & { kind: "object" };
-      const litSchema = obj.meta.properties[discriminant] as Schema & { kind: "literal" };
+      const obj = variants[i];
+      if (obj.kind !== "object") continue; // guaranteed by findDiscriminant
+      const litSchema = obj.meta.properties[discriminant];
       body += `    case ${JSON.stringify(litSchema.meta.value)}: return ${walkStringify(buf, obj, "v")};\n`;
     }
     body += '    default: return "{}";\n  }\n}';
@@ -376,23 +327,22 @@ function getTypeCheck(schema: Schema, accessor: string): string | null {
 /**
  * Compiles a schema into a JSON parse function.
  *
- * Uses native `JSON.parse` (C++ in V8) for raw parsing, then validates the
- * result inline. Returns `Result<T, SchemaError>` — never throws.
+ * Uses the safe `parse` from JSON module (returns undefined on invalid JSON,
+ * never throws). Validates the result inline. Returns `Result<T, SchemaError>`.
  */
 export function parse<S extends Schema>(
   schema: S,
 ): (json: string) => Result<Infer<S>, SchemaError> {
   const buf = createBuffer();
   emitStandardRefs(buf, ok, err);
+  emitRef(buf, "_jp", jsonParse);
   emitRef(buf, "_strip", stripDangerousKeys);
 
   emit(buf, "return function parse(json) {");
   buf.indent++;
-  emit(buf, "var v;");
-  emit(
-    buf,
-    'try { v = JSON.parse(json); } catch (_) { return _err(_me("", "valid JSON", json)); }',
-  );
+  // jsonParse returns undefined on invalid JSON — no try/catch needed
+  emit(buf, "var v = _jp(json);");
+  emit(buf, 'if (v === undefined) return _err(_me("", "valid JSON", json));');
   emit(
     buf,
     'if (json.indexOf("__proto__") !== -1 || json.indexOf("constructor") !== -1) _strip(v);',

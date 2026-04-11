@@ -312,79 +312,131 @@ export interface JsonSchemaObject {
  * OptionalSchema is expressed via the parent object's `required` array — the
  * inner schema is emitted directly.
  */
-export function toJsonSchema(schema: Schema): JsonSchemaObject {
+export function toJsonSchema(root: Schema): JsonSchemaObject {
+  // Two-phase iterative traversal avoids recursion.
+  // Phase 1: collect all schema nodes in pre-order (DFS).
+  const nodes: Schema[] = [];
+  const stack: Schema[] = [root];
+  while (stack.length > 0) {
+    const s = stack.pop()!;
+    nodes.push(s);
+    collectSchemaChildren(s, stack);
+  }
+  // Phase 2: build JSON Schema objects bottom-up. Processing in reverse
+  // guarantees all children are built before their parent.
+  const built = new Map<Schema, JsonSchemaObject>();
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    built.set(nodes[i], buildJsonSchemaNode(nodes[i], built));
+  }
+  return built.get(root)!;
+}
+
+/** Push child schemas onto the stack in reverse order (left-to-right processing). */
+function collectSchemaChildren(schema: Schema, stack: Schema[]): void {
   switch (schema.kind) {
+    case "object": {
+      const keys = Object.keys(schema.meta.properties);
+      for (let i = keys.length - 1; i >= 0; i--) stack.push(schema.meta.properties[keys[i]]);
+      break;
+    }
+    case "array":
+      stack.push(schema.meta.items);
+      break;
+    case "tuple": {
+      const items = schema.meta.items;
+      for (let i = items.length - 1; i >= 0; i--) stack.push(items[i]);
+      break;
+    }
+    case "record":
+      stack.push(schema.meta.values);
+      break;
+    case "union": {
+      const vs = schema.meta.variants;
+      for (let i = vs.length - 1; i >= 0; i--) stack.push(vs[i]);
+      break;
+    }
+    case "optional":
+    case "nullable":
+      stack.push(schema.meta.inner);
+      break;
+  }
+}
+
+/** Build a single JSON Schema node, looking up children in the results map. */
+function buildJsonSchemaNode(s: Schema, built: Map<Schema, JsonSchemaObject>): JsonSchemaObject {
+  switch (s.kind) {
     case "string": {
       const out: Record<string, unknown> = { type: "string" };
-      if (schema.meta !== undefined) {
-        if (schema.meta.minLength !== undefined) out.minLength = schema.meta.minLength;
-        if (schema.meta.maxLength !== undefined) out.maxLength = schema.meta.maxLength;
-        if (schema.meta.pattern !== undefined) out.pattern = schema.meta.pattern;
-        if (schema.meta.format !== undefined) out.format = schema.meta.format;
+      if (s.meta !== undefined) {
+        if (s.meta.minLength !== undefined) out.minLength = s.meta.minLength;
+        if (s.meta.maxLength !== undefined) out.maxLength = s.meta.maxLength;
+        if (s.meta.pattern !== undefined) out.pattern = s.meta.pattern;
+        if (s.meta.format !== undefined) out.format = s.meta.format;
       }
       return out;
     }
     case "number":
-      return numberSchemaToJson("number", schema.meta);
+      return numberSchemaToJson("number", s.meta);
     case "integer":
-      return numberSchemaToJson("integer", schema.meta);
+      return numberSchemaToJson("integer", s.meta);
     case "boolean":
       return { type: "boolean" };
     case "null":
       return { type: "null" };
     case "literal":
-      return { const: schema.meta.value };
+      return { const: s.meta.value };
     case "enum":
-      return { enum: schema.meta.values };
+      return { enum: s.meta.values };
     case "object": {
       const properties: Record<string, JsonSchemaObject> = {};
       const required: string[] = [];
-      const keys = Object.keys(schema.meta.properties);
+      const keys = Object.keys(s.meta.properties);
       for (let i = 0; i < keys.length; i++) {
         const key = keys[i];
-        const child = schema.meta.properties[key];
-        if (child.kind === "optional") {
-          // Unwrap optional — omit from required
-          properties[key] = toJsonSchema(child.meta.inner);
-        } else {
-          properties[key] = toJsonSchema(child);
-          required.push(key);
-        }
+        const child = s.meta.properties[key];
+        // For optional children, built.get(child) returns the unwrapped inner's
+        // JSON Schema (see "optional" case below). Required/optional is tracked
+        // via the required array, not the JSON Schema itself.
+        properties[key] = built.get(child)!;
+        if (child.kind !== "optional") required.push(key);
       }
       const out: Record<string, unknown> = { type: "object", properties };
       if (required.length > 0) out.required = required;
-      out.additionalProperties = schema.meta.additionalProperties;
+      out.additionalProperties = s.meta.additionalProperties;
       return out;
     }
     case "array": {
       const out: Record<string, unknown> = {
         type: "array",
-        items: toJsonSchema(schema.meta.items),
+        items: built.get(s.meta.items)!,
       };
-      if (schema.meta.minItems !== undefined) out.minItems = schema.meta.minItems;
-      if (schema.meta.maxItems !== undefined) out.maxItems = schema.meta.maxItems;
+      if (s.meta.minItems !== undefined) out.minItems = s.meta.minItems;
+      if (s.meta.maxItems !== undefined) out.maxItems = s.meta.maxItems;
       return out;
     }
-    case "tuple":
-      return {
-        type: "array",
-        prefixItems: schema.meta.items.map(toJsonSchema),
-        items: false,
-      };
+    case "tuple": {
+      const items = s.meta.items;
+      const prefixItems: JsonSchemaObject[] = new Array(items.length);
+      for (let i = 0; i < items.length; i++) prefixItems[i] = built.get(items[i])!;
+      return { type: "array", prefixItems, items: false };
+    }
     case "record":
-      return { type: "object", additionalProperties: toJsonSchema(schema.meta.values) };
-    case "union":
-      return { anyOf: schema.meta.variants.map(toJsonSchema) };
+      return { type: "object", additionalProperties: built.get(s.meta.values)! };
+    case "union": {
+      const variants = s.meta.variants;
+      const anyOf: JsonSchemaObject[] = new Array(variants.length);
+      for (let i = 0; i < variants.length; i++) anyOf[i] = built.get(variants[i])!;
+      return { anyOf };
+    }
     case "optional":
       // At top level, optional just means the inner type or undefined.
       // JSON Schema doesn't have a direct "optional" concept outside objects.
-      return toJsonSchema(schema.meta.inner);
+      return built.get(s.meta.inner)!;
     case "nullable":
-      return { anyOf: [toJsonSchema(schema.meta.inner), { type: "null" }] };
+      return { anyOf: [built.get(s.meta.inner)!, { type: "null" }] };
     default: {
-      // exhaustive — unreachable when all schema kinds are handled
       /* node:coverage ignore next */
-      unreachable(schema);
+      unreachable(s);
     }
   }
 }
@@ -413,152 +465,241 @@ function numberSchemaToJson(
  *
  * Returns `Err` for unsupported features (`$ref`, `allOf`, `if/then/else`,
  * `dependencies`, `patternProperties`, etc.).
+ *
+ * Uses an explicit work stack + result stack to avoid recursion. "Visit" items
+ * classify a JSON Schema node and push child visits + a "build" marker. "Build"
+ * items pop child results and construct the parent Schema.
  */
-export function fromJsonSchema(js: JsonSchemaObject): Result<Schema, string> {
-  // const
-  if ("const" in js) {
-    const v = js.const;
-    if (v === null || typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
-      return ok(literal(v as string | number | boolean | null));
-    }
-    return err("unsupported const type: " + typeof v);
-  }
+export function fromJsonSchema(root: JsonSchemaObject): Result<Schema, string> {
+  // Work stack uses _v=1 for "visit" (classify a JSON Schema node) and _v=0
+  // for "build" (pop child results and construct the parent Schema).
+  type VisitItem = { readonly _v: 1; readonly js: JsonSchemaObject };
+  type BuildNullable = { readonly _v: 0; readonly tag: 1 };
+  type BuildRecord = { readonly _v: 0; readonly tag: 2 };
+  type BuildUnion = { readonly _v: 0; readonly tag: 3; readonly count: number };
+  type BuildTuple = { readonly _v: 0; readonly tag: 4; readonly count: number };
+  type BuildArray = {
+    readonly _v: 0;
+    readonly min: number | undefined;
+    readonly max: number | undefined;
+  };
+  type BuildObject = {
+    readonly _v: 0;
+    readonly tag: 6;
+    readonly keys: string[];
+    readonly requiredSet: Set<string>;
+    readonly addlProps: boolean;
+  };
+  type WorkItem =
+    | VisitItem
+    | BuildNullable
+    | BuildRecord
+    | BuildUnion
+    | BuildTuple
+    | BuildArray
+    | BuildObject;
 
-  // enum
-  if ("enum" in js && Array.isArray(js.enum)) {
-    const values = js.enum as (string | number)[];
-    for (let i = 0; i < values.length; i++) {
-      const t = typeof values[i];
-      if (t !== "string" && t !== "number") {
-        return err("enum values must be string or number, got " + t);
+  const workStack: WorkItem[] = [{ _v: 1, js: root }];
+  const results: Schema[] = [];
+
+  while (workStack.length > 0) {
+    const item = workStack.pop()!;
+
+    // Build step — pop children from results and construct parent
+    if (item._v === 0) {
+      if ("tag" in item) {
+        switch (item.tag) {
+          case 1: // nullable
+            results.push(nullable(results.pop()!));
+            break;
+          case 2: // record
+            results.push(record(results.pop()!));
+            break;
+          case 3: {
+            // union
+            const schemas: Schema[] = new Array(item.count);
+            for (let i = item.count - 1; i >= 0; i--) schemas[i] = results.pop()!;
+            results.push(union(...schemas));
+            break;
+          }
+          case 4: {
+            // tuple
+            const schemas: Schema[] = new Array(item.count);
+            for (let i = item.count - 1; i >= 0; i--) schemas[i] = results.pop()!;
+            results.push(tuple(...schemas));
+            break;
+          }
+          case 6: {
+            // object
+            const { keys, requiredSet, addlProps } = item;
+            const objProps: Record<string, Schema> = {};
+            for (let i = keys.length - 1; i >= 0; i--) {
+              const s = results.pop()!;
+              objProps[keys[i]] = requiredSet.has(keys[i]) ? s : optional(s);
+            }
+            results.push(object(objProps, { additionalProperties: addlProps }));
+            break;
+          }
+        }
+      } else {
+        // BuildArray
+        const itemSchema = results.pop()!;
+        const hasOpts = item.min !== undefined || item.max !== undefined;
+        results.push(
+          array(itemSchema, hasOpts ? { minItems: item.min, maxItems: item.max } : undefined),
+        );
       }
-    }
-    return ok(enum_(...values));
-  }
-
-  // anyOf → union or nullable
-  if ("anyOf" in js && Array.isArray(js.anyOf)) {
-    const variants = js.anyOf as JsonSchemaObject[];
-    // Detect nullable pattern: { anyOf: [inner, { type: "null" }] }
-    if (
-      variants.length === 2 &&
-      typeof variants[1] === "object" &&
-      variants[1] !== null &&
-      (variants[1] as Record<string, unknown>).type === "null"
-    ) {
-      const innerResult = fromJsonSchema(variants[0]);
-      if (!innerResult[0]) return innerResult;
-      return ok(nullable(innerResult[1]));
-    }
-    const schemas: Schema[] = [];
-    for (let i = 0; i < variants.length; i++) {
-      const r = fromJsonSchema(variants[i]);
-      if (!r[0]) return r;
-      schemas.push(r[1]);
-    }
-    return ok(union(...schemas));
-  }
-
-  // Unsupported combinators
-  if ("$ref" in js) return err("$ref is not supported");
-  if ("allOf" in js) return err("allOf is not supported");
-  if ("oneOf" in js) return err("oneOf is not supported — use anyOf");
-  if ("not" in js) return err("not is not supported");
-  if ("if" in js) return err("if/then/else is not supported");
-
-  const type = js.type;
-
-  if (type === "string") {
-    const c: Record<string, unknown> = {};
-    let hasConstraints = false;
-    if ("minLength" in js) {
-      c.minLength = js.minLength as number;
-      hasConstraints = true;
-    }
-    if ("maxLength" in js) {
-      c.maxLength = js.maxLength as number;
-      hasConstraints = true;
-    }
-    if ("pattern" in js) {
-      c.pattern = js.pattern as string;
-      hasConstraints = true;
-    }
-    if ("format" in js) {
-      c.format = js.format as string;
-      hasConstraints = true;
-    }
-    return ok(string(hasConstraints ? (c as StringConstraints) : undefined));
-  }
-
-  if (type === "number" || type === "integer") {
-    const c = extractNumberConstraints(js);
-    const s = type === "integer" ? integer(c) : number(c);
-    return ok(s);
-  }
-
-  if (type === "boolean") return ok(boolean());
-  if (type === "null") return ok(null_());
-
-  if (type === "object") {
-    // Record pattern: additionalProperties is a schema object
-    if (
-      !("properties" in js) &&
-      "additionalProperties" in js &&
-      typeof js.additionalProperties === "object" &&
-      js.additionalProperties !== null
-    ) {
-      const vr = fromJsonSchema(js.additionalProperties as JsonSchemaObject);
-      if (!vr[0]) return vr;
-      return ok(record(vr[1]));
+      continue;
     }
 
-    // Object with properties
-    const props = (js.properties ?? {}) as Record<string, JsonSchemaObject>;
-    const requiredSet = new Set(Array.isArray(js.required) ? (js.required as string[]) : []);
-    const result: Record<string, Schema> = {};
-    const keys = Object.keys(props);
-    for (let i = 0; i < keys.length; i++) {
-      const key = keys[i];
-      const r = fromJsonSchema(props[key]);
-      if (!r[0]) return r;
-      result[key] = requiredSet.has(key) ? r[1] : optional(r[1]);
-    }
-    return ok(
-      object(result, {
-        additionalProperties:
-          js.additionalProperties === true || js.additionalProperties === undefined,
-      }),
-    );
-  }
+    // Visit step — classify the JSON Schema node
+    const js = item.js;
 
-  if (type === "array") {
-    // Tuple pattern: prefixItems + items: false
-    if ("prefixItems" in js && Array.isArray(js.prefixItems)) {
-      const schemas: Schema[] = [];
-      const items = js.prefixItems as JsonSchemaObject[];
-      for (let i = 0; i < items.length; i++) {
-        const r = fromJsonSchema(items[i]);
-        if (!r[0]) return r;
-        schemas.push(r[1]);
+    // const
+    if ("const" in js) {
+      const v = js.const;
+      if (v === null || typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
+        results.push(literal(v as string | number | boolean | null));
+        continue;
       }
-      return ok(tuple(...schemas));
+      return err("unsupported const type: " + typeof v);
     }
 
-    // Array with items
-    if ("items" in js && typeof js.items === "object" && js.items !== null) {
-      const r = fromJsonSchema(js.items as JsonSchemaObject);
-      if (!r[0]) return r;
-      const opts: { minItems?: number; maxItems?: number } = {};
-      if ("minItems" in js) opts.minItems = js.minItems as number;
-      if ("maxItems" in js) opts.maxItems = js.maxItems as number;
-      return ok(array(r[1], Object.keys(opts).length > 0 ? opts : undefined));
+    // enum
+    if ("enum" in js && Array.isArray(js.enum)) {
+      const values = js.enum as (string | number)[];
+      for (let i = 0; i < values.length; i++) {
+        const t = typeof values[i];
+        if (t !== "string" && t !== "number") {
+          return err("enum values must be string or number, got " + t);
+        }
+      }
+      results.push(enum_(...values));
+      continue;
     }
 
-    // Array with no items schema → array(unknown) — not representable, error
-    return err("array schema without items is not supported");
+    // anyOf → union or nullable
+    if ("anyOf" in js && Array.isArray(js.anyOf)) {
+      const variants = js.anyOf as JsonSchemaObject[];
+      if (
+        variants.length === 2 &&
+        typeof variants[1] === "object" &&
+        variants[1] !== null &&
+        (variants[1] as Record<string, unknown>).type === "null"
+      ) {
+        // Nullable pattern: push build-nullable, then visit inner
+        workStack.push({ _v: 0, tag: 1 });
+        workStack.push({ _v: 1, js: variants[0] });
+        continue;
+      }
+      // Union: push build-union, then visit all variants (reverse order for LIFO)
+      workStack.push({ _v: 0, tag: 3, count: variants.length });
+      for (let i = variants.length - 1; i >= 0; i--) {
+        workStack.push({ _v: 1, js: variants[i] });
+      }
+      continue;
+    }
+
+    // Unsupported combinators
+    if ("$ref" in js) return err("$ref is not supported");
+    if ("allOf" in js) return err("allOf is not supported");
+    if ("oneOf" in js) return err("oneOf is not supported — use anyOf");
+    if ("not" in js) return err("not is not supported");
+    if ("if" in js) return err("if/then/else is not supported");
+
+    const type = js.type;
+
+    if (type === "string") {
+      const c: Record<string, unknown> = {};
+      let hasConstraints = false;
+      if ("minLength" in js) {
+        c.minLength = js.minLength as number;
+        hasConstraints = true;
+      }
+      if ("maxLength" in js) {
+        c.maxLength = js.maxLength as number;
+        hasConstraints = true;
+      }
+      if ("pattern" in js) {
+        c.pattern = js.pattern as string;
+        hasConstraints = true;
+      }
+      if ("format" in js) {
+        c.format = js.format as string;
+        hasConstraints = true;
+      }
+      results.push(string(hasConstraints ? (c as StringConstraints) : undefined));
+      continue;
+    }
+
+    if (type === "number" || type === "integer") {
+      const c = extractNumberConstraints(js);
+      results.push(type === "integer" ? integer(c) : number(c));
+      continue;
+    }
+
+    if (type === "boolean") {
+      results.push(boolean());
+      continue;
+    }
+    if (type === "null") {
+      results.push(null_());
+      continue;
+    }
+
+    if (type === "object") {
+      // Record pattern: additionalProperties is a schema object
+      if (
+        !("properties" in js) &&
+        "additionalProperties" in js &&
+        typeof js.additionalProperties === "object" &&
+        js.additionalProperties !== null
+      ) {
+        workStack.push({ _v: 0, tag: 2 });
+        workStack.push({ _v: 1, js: js.additionalProperties as JsonSchemaObject });
+        continue;
+      }
+
+      // Object with properties
+      const props = (js.properties ?? {}) as Record<string, JsonSchemaObject>;
+      const requiredSet = new Set(Array.isArray(js.required) ? (js.required as string[]) : []);
+      const keys = Object.keys(props);
+      const addlProps = js.additionalProperties === true || js.additionalProperties === undefined;
+      // Push build-object first (processed after children), then children in reverse
+      workStack.push({ _v: 0, tag: 6, keys, requiredSet, addlProps });
+      for (let i = keys.length - 1; i >= 0; i--) {
+        workStack.push({ _v: 1, js: props[keys[i]] });
+      }
+      continue;
+    }
+
+    if (type === "array") {
+      // Tuple pattern: prefixItems + items: false
+      if ("prefixItems" in js && Array.isArray(js.prefixItems)) {
+        const items = js.prefixItems as JsonSchemaObject[];
+        workStack.push({ _v: 0, tag: 4, count: items.length });
+        for (let i = items.length - 1; i >= 0; i--) {
+          workStack.push({ _v: 1, js: items[i] });
+        }
+        continue;
+      }
+
+      // Array with items
+      if ("items" in js && typeof js.items === "object" && js.items !== null) {
+        const min = "minItems" in js ? (js.minItems as number) : undefined;
+        const max = "maxItems" in js ? (js.maxItems as number) : undefined;
+        workStack.push({ _v: 0, min, max });
+        workStack.push({ _v: 1, js: js.items as JsonSchemaObject });
+        continue;
+      }
+
+      return err("array schema without items is not supported");
+    }
+
+    return err("unsupported JSON Schema: " + JSON.stringify(js).slice(0, 100));
   }
 
-  return err("unsupported JSON Schema: " + JSON.stringify(js).slice(0, 100));
+  return ok(results[0]);
 }
 
 // ---------------------------------------------------------------------------
@@ -567,7 +708,12 @@ export function fromJsonSchema(js: JsonSchemaObject): Result<Schema, string> {
 
 /** True if the schema describes a leaf value (no nesting). */
 export function isPrimitive(schema: Schema): boolean {
-  switch (schema.kind) {
+  // Iterative unwrap of optional/nullable wrappers — avoids recursion
+  let s = schema;
+  while (s.kind === "optional" || s.kind === "nullable") {
+    s = s.meta.inner;
+  }
+  switch (s.kind) {
     case "string":
     case "number":
     case "integer":
@@ -576,9 +722,6 @@ export function isPrimitive(schema: Schema): boolean {
     case "literal":
     case "enum":
       return true;
-    case "optional":
-    case "nullable":
-      return isPrimitive(schema.meta.inner);
     default:
       return false;
   }
@@ -597,9 +740,12 @@ export function findDiscriminant(variants: readonly Schema[]): string | null {
   }
   const first = variants[0] as Schema & { kind: "object" };
   const keys = Object.keys(first.meta.properties);
+  // Reuse a single Set across candidate keys — clear per iteration to avoid
+  // allocating a new Set for each key.
+  const seen = new Set<string | number | boolean | null>();
   outer: for (let k = 0; k < keys.length; k++) {
     const key = keys[k];
-    const seen = new Set<string | number | boolean | null>();
+    seen.clear();
     for (let i = 0; i < variants.length; i++) {
       const obj = variants[i] as Schema & { kind: "object" };
       const prop = obj.meta.properties[key] as Schema | undefined;

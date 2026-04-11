@@ -91,13 +91,16 @@ export function compileHelper<T>(buf: CodeBuffer, source: string): T {
   return Reflect.apply(factory, undefined, values) as T;
 }
 
-/** Build param name and value arrays in a single pass over the refs map. */
+/** Build param name and value arrays in a single pass with pre-allocated length. */
 function extractRefs(buf: CodeBuffer): [string[], unknown[]] {
-  const names: string[] = [];
-  const values: unknown[] = [];
+  const size = buf.refs.size;
+  const names = new Array<string>(size);
+  const values = new Array<unknown>(size);
+  let i = 0;
   for (const [k, v] of buf.refs) {
-    names.push(k);
-    values.push(v);
+    names[i] = k;
+    values[i] = v;
+    i++;
   }
   return [names, values];
 }

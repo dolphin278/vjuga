@@ -24,6 +24,7 @@
 
 import type { Result } from "../Result.js";
 import { ok, err } from "../Result.js";
+import { escapeJsonString } from "../JSON.js";
 import type { Schema, Infer } from "./Schema.js";
 import { type SchemaError, emitStandardRefs } from "./Validate.js";
 import { isPrimitive } from "./Schema.js";
@@ -139,12 +140,11 @@ function splitByDelimiter(s: string, delim: string): string[] {
 /** True if array(object({all primitives})) — qualifies for tabular format. */
 function isTabular(schema: Schema): boolean {
   if (schema.kind !== "array") return false;
-  const items = schema.meta.items as Schema;
+  const items = schema.meta.items;
   if (items.kind !== "object") return false;
-  const props = items.meta.properties as Record<string, Schema>;
-  const keys = Object.keys(props);
+  const keys = Object.keys(items.meta.properties);
   for (let i = 0; i < keys.length; i++) {
-    if (!isPrimitive(props[keys[i]])) return false;
+    if (!isPrimitive(items.meta.properties[keys[i]])) return false;
   }
   return keys.length > 0;
 }
@@ -304,8 +304,8 @@ function emitPrimLine(
   if (isRoot && key === "") {
     emit(ctx.buf, `return ${valueExpr};`);
   } else {
-    const pad = JSON.stringify(" ".repeat(depth * ctx.indent));
-    emit(ctx.buf, `s += ${pad} + ${JSON.stringify(key + ": ")} + ${valueExpr} + "\\n";`);
+    const pad = escapeJsonString(" ".repeat(depth * ctx.indent));
+    emit(ctx.buf, `s += ${pad} + ${escapeJsonString(key + ": ")} + ${valueExpr} + "\\n";`);
   }
 }
 
@@ -317,17 +317,17 @@ function emitObjectStringify(
   depth: number,
   isRoot: boolean,
 ): void {
-  const props = schema.meta.properties as Record<string, Schema>;
+  const props = schema.meta.properties;
   const keys = Object.keys(props);
 
   if (!isRoot || key !== "") {
-    const pad = JSON.stringify(" ".repeat(depth * ctx.indent));
-    emit(ctx.buf, `s += ${pad} + ${JSON.stringify(key + ":\n")};`);
+    const pad = escapeJsonString(" ".repeat(depth * ctx.indent));
+    emit(ctx.buf, `s += ${pad} + ${escapeJsonString(key + ":\n")};`);
     for (let i = 0; i < keys.length; i++) {
       emitStringifyBody(
         ctx,
         props[keys[i]],
-        `${accessor}[${JSON.stringify(keys[i])}]`,
+        `${accessor}[${escapeJsonString(keys[i])}]`,
         keys[i],
         depth + 1,
         false,
@@ -339,7 +339,7 @@ function emitObjectStringify(
       emitStringifyBody(
         ctx,
         props[keys[i]],
-        `${accessor}[${JSON.stringify(keys[i])}]`,
+        `${accessor}[${escapeJsonString(keys[i])}]`,
         keys[i],
         depth,
         false,
@@ -356,7 +356,7 @@ function emitArrayStringify(
   key: string,
   depth: number,
 ): void {
-  const pad = JSON.stringify(" ".repeat(depth * ctx.indent));
+  const pad = escapeJsonString(" ".repeat(depth * ctx.indent));
   const header = key;
 
   if (isTabular(schema)) {
@@ -364,9 +364,9 @@ function emitArrayStringify(
     return;
   }
 
-  if (isPrimitive(schema.meta.items as Schema)) {
+  if (isPrimitive(schema.meta.items)) {
     const helperName = freshVar(ctx.buf);
-    const elemExpr = inlineExpr(schema.meta.items as Schema, "a[i]");
+    const elemExpr = inlineExpr(schema.meta.items, "a[i]");
     const fn = compileHelper<Function>(
       ctx.buf,
       `function ${helperName}(a) {
@@ -378,20 +378,20 @@ function emitArrayStringify(
     emitRef(ctx.buf, helperName, fn);
     emit(
       ctx.buf,
-      `s += ${pad} + ${JSON.stringify(header)} + "[" + ${accessor}.length + "]: " + ${helperName}(${accessor}) + "\\n";`,
+      `s += ${pad} + ${escapeJsonString(header)} + "[" + ${accessor}.length + "]: " + ${helperName}(${accessor}) + "\\n";`,
     );
     return;
   }
 
   // Expanded format
-  emit(ctx.buf, `s += ${pad} + ${JSON.stringify(header)} + "[" + ${accessor}.length + "]:\\n";`);
+  emit(ctx.buf, `s += ${pad} + ${escapeJsonString(header)} + "[" + ${accessor}.length + "]:\\n";`);
   const idx = freshVar(ctx.buf);
   emit(ctx.buf, `for (var ${idx} = 0; ${idx} < ${accessor}.length; ${idx}++) {`);
   ctx.buf.indent++;
-  const itemPad = JSON.stringify(" ".repeat((depth + 1) * ctx.indent));
+  const itemPad = escapeJsonString(" ".repeat((depth + 1) * ctx.indent));
   emit(
     ctx.buf,
-    `s += ${itemPad} + "- " + ${inlineExpr(schema.meta.items as Schema, `${accessor}[${idx}]`)} + "\\n";`,
+    `s += ${itemPad} + "- " + ${inlineExpr(schema.meta.items, `${accessor}[${idx}]`)} + "\\n";`,
   );
   ctx.buf.indent--;
   emit(ctx.buf, "}");
@@ -404,23 +404,23 @@ function emitTabularStringify(
   header: string,
   depth: number,
 ): void {
-  const objSchema = schema.meta.items as Schema & { kind: "object" };
+  const objSchema = schema.meta.items;
   const fields = Object.keys(objSchema.meta.properties);
-  const pad = JSON.stringify(" ".repeat(depth * ctx.indent));
-  const childPad = JSON.stringify(" ".repeat((depth + 1) * ctx.indent));
+  const pad = escapeJsonString(" ".repeat(depth * ctx.indent));
+  const childPad = escapeJsonString(" ".repeat((depth + 1) * ctx.indent));
   const fieldHeader = "{" + fields.join(ctx.delim) + "}";
 
   emit(
     ctx.buf,
-    `s += ${pad} + ${JSON.stringify(header)} + "[" + ${accessor}.length + "]${fieldHeader}:\\n";`,
+    `s += ${pad} + ${escapeJsonString(header)} + "[" + ${accessor}.length + "]${fieldHeader}:\\n";`,
   );
 
   // Row serializer helper
   const helperName = freshVar(ctx.buf);
   const cellExprs = fields.map((f) => {
-    const child = objSchema.meta.properties[f] as Schema;
+    const child = objSchema.meta.properties[f];
     const inner = child.kind === "optional" ? child.meta.inner : child;
-    return inlineExpr(inner, `o[${JSON.stringify(f)}]`);
+    return inlineExpr(inner, `o[${escapeJsonString(f)}]`);
   });
   const fn = compileHelper<Function>(
     ctx.buf,
@@ -444,16 +444,16 @@ function emitTupleStringify(
   depth: number,
 ): void {
   const items = schema.meta.items;
-  const pad = JSON.stringify(" ".repeat(depth * ctx.indent));
+  const pad = escapeJsonString(" ".repeat(depth * ctx.indent));
   const header = key;
   const parts: string[] = [];
   for (let i = 0; i < items.length; i++) {
-    parts.push(inlineExpr(items[i] as Schema, `${accessor}[${i}]`));
+    parts.push(inlineExpr(items[i], `${accessor}[${i}]`));
   }
   const joined = parts.length > 0 ? parts.join(" + _delim + ") : '""';
   emit(
     ctx.buf,
-    `s += ${pad} + ${JSON.stringify(header)} + "[${items.length}]: " + ${joined} + "\\n";`,
+    `s += ${pad} + ${escapeJsonString(header)} + "[${items.length}]: " + ${joined} + "\\n";`,
   );
 }
 
@@ -465,15 +465,15 @@ function emitRecordStringify(
   depth: number,
   isRoot: boolean,
 ): void {
-  const pad = JSON.stringify(" ".repeat(depth * ctx.indent));
+  const pad = escapeJsonString(" ".repeat(depth * ctx.indent));
 
   if (!isRoot || key !== "") {
-    emit(ctx.buf, `s += ${pad} + ${JSON.stringify(key + ":\n")};`);
+    emit(ctx.buf, `s += ${pad} + ${escapeJsonString(key + ":\n")};`);
   } else {
     emit(ctx.buf, 'var s = "";');
   }
 
-  const innerPad = JSON.stringify(
+  const innerPad = escapeJsonString(
     " ".repeat((isRoot && key === "" ? depth : depth + 1) * ctx.indent),
   );
   const ks = freshVar(ctx.buf);
@@ -499,7 +499,7 @@ function emitUnionStringify(
   depth: number,
   isRoot: boolean,
 ): void {
-  const variants = schema.meta.variants as readonly Schema[];
+  const variants = schema.meta.variants;
   for (let i = 0; i < variants.length; i++) {
     const check = simpleTypeCheck(variants[i], accessor);
     if (check !== null && i < variants.length - 1) {
@@ -614,7 +614,7 @@ function emitParseBody(
       // Limitation: TOON parse currently only attempts the first variant.
       // Full union dispatch would require save/restore of line index (li)
       // with backtracking on parse failure — deferred to a future iteration.
-      const variants = schema.meta.variants as readonly Schema[];
+      const variants = schema.meta.variants;
       if (variants.length > 0)
         emitParseBody(buf, variants[0], depth, pathExpr, indent, delim, flexible);
       break;
@@ -713,7 +713,7 @@ function emitLiteralParse(
 ): void {
   const ref = freshVar(buf);
   emitRef(buf, ref, schema.meta.value);
-  const label = JSON.stringify("literal(" + JSON.stringify(schema.meta.value) + ")");
+  const label = escapeJsonString("literal(" + JSON.stringify(schema.meta.value) + ")");
   if (typeof schema.meta.value === "string") {
     emit(buf, `var ${resultVar} = _uq(${rawVar});`);
     emit(buf, `if (${resultVar} !== ${ref}) return _err(_me(${pathExpr}, ${label}, ${rawVar}));`);
@@ -738,7 +738,7 @@ function emitEnumParse(
 ): void {
   // Use Set for O(1) lookup instead of indexOf O(n) on the hot path
   const setRef = freshVar(buf);
-  emitRef(buf, setRef, new Set(schema.meta.values as readonly (string | number)[]));
+  emitRef(buf, setRef, new Set(schema.meta.values));
   emit(buf, `var ${resultVar} = _uq(${rawVar});`);
   emit(buf, `var ${resultVar}_n = +${rawVar};`);
   emit(
@@ -764,7 +764,7 @@ function emitObjectParse(
   delim: string,
   flexible: boolean,
 ): void {
-  const props = schema.meta.properties as Record<string, Schema>;
+  const props = schema.meta.properties;
   const keys = Object.keys(props);
   const resultVar = freshVar(buf);
   emit(buf, `var ${resultVar} = {};`);
@@ -780,7 +780,9 @@ function emitObjectParse(
       const padStr = depth === 0 ? "" : " ".repeat(depth * indent);
       const keyPrefix = padStr + key;
       const childPath =
-        pathExpr === '""' ? JSON.stringify(key) : JSON.stringify(JSON.parse(pathExpr) + "." + key);
+        pathExpr === '""'
+          ? escapeJsonString(key)
+          : escapeJsonString(JSON.parse(pathExpr) + "." + key);
 
       if (isCompound(inner)) {
         emitCompoundFieldParse(
@@ -818,7 +820,7 @@ function emitPrimFieldParse(
   if (isOptional) {
     emit(
       buf,
-      `if (li < lines.length && lines[li].startsWith(${JSON.stringify(expectedPrefix)})) {`,
+      `if (li < lines.length && lines[li].startsWith(${escapeJsonString(expectedPrefix)})) {`,
     );
     buf.indent++;
   } else {
@@ -828,7 +830,7 @@ function emitPrimFieldParse(
     );
     emit(
       buf,
-      `if (!lines[li].startsWith(${JSON.stringify(expectedPrefix)})) return _err(_me(${pathExpr}, "key '${key}'", lines[li]));`,
+      `if (!lines[li].startsWith(${escapeJsonString(expectedPrefix)})) return _err(_me(${pathExpr}, "key '${key}'", lines[li]));`,
     );
   }
 
@@ -837,7 +839,7 @@ function emitPrimFieldParse(
   emit(buf, "li++;");
   const valVar = freshVar(buf);
   emitPrimValueParse(buf, schema, rawVar, pathExpr, valVar);
-  emit(buf, `${resultVar}[${JSON.stringify(key)}] = ${valVar};`);
+  emit(buf, `${resultVar}[${escapeJsonString(key)}] = ${valVar};`);
 
   if (isOptional) {
     buf.indent--;
@@ -862,7 +864,7 @@ function emitCompoundFieldParse(
     if (isOptional) {
       emit(
         buf,
-        `if (li < lines.length && lines[li].startsWith(${JSON.stringify(headerPrefix)})) {`,
+        `if (li < lines.length && lines[li].startsWith(${escapeJsonString(headerPrefix)})) {`,
       );
       buf.indent++;
     }
@@ -874,18 +876,18 @@ function emitCompoundFieldParse(
   } else if (schema.kind === "object") {
     const nestedLine = keyPrefix + ":";
     if (isOptional) {
-      emit(buf, `if (li < lines.length && lines[li] === ${JSON.stringify(nestedLine)}) {`);
+      emit(buf, `if (li < lines.length && lines[li] === ${escapeJsonString(nestedLine)}) {`);
       buf.indent++;
     } else {
       emit(
         buf,
-        `if (li >= lines.length || lines[li] !== ${JSON.stringify(nestedLine)}) return _err(_me(${pathExpr}, "key '${key}'", li < lines.length ? lines[li] : "end of input"));`,
+        `if (li >= lines.length || lines[li] !== ${escapeJsonString(nestedLine)}) return _err(_me(${pathExpr}, "key '${key}'", li < lines.length ? lines[li] : "end of input"));`,
       );
     }
     emit(buf, "li++;");
     const innerVar = freshVar(buf);
     emit(buf, `var ${innerVar} = {};`);
-    const innerProps = schema.meta.properties as Record<string, Schema>;
+    const innerProps = schema.meta.properties;
     const innerKeys = Object.keys(innerProps);
     for (let i = 0; i < innerKeys.length; i++) {
       const ik = innerKeys[i];
@@ -895,7 +897,9 @@ function emitCompoundFieldParse(
       const innerPad = " ".repeat((depth + 1) * indent);
       const iKeyPrefix = innerPad + ik;
       const iPath =
-        pathExpr === '""' ? JSON.stringify(ik) : JSON.stringify(JSON.parse(pathExpr) + "." + ik);
+        pathExpr === '""'
+          ? escapeJsonString(ik)
+          : escapeJsonString(JSON.parse(pathExpr) + "." + ik);
       if (isCompound(iInner)) {
         emitCompoundFieldParse(
           buf,
@@ -913,16 +917,16 @@ function emitCompoundFieldParse(
         emitPrimFieldParse(buf, iInner, ik, iKeyPrefix, iPath, innerVar, iOpt);
       }
     }
-    emit(buf, `${resultVar}[${JSON.stringify(key)}] = ${innerVar};`);
+    emit(buf, `${resultVar}[${escapeJsonString(key)}] = ${innerVar};`);
     if (isOptional) {
       buf.indent--;
       emit(buf, "}");
     }
   } else if (schema.kind === "record") {
     const nestedLine = keyPrefix + ":";
-    emit(buf, `if (li < lines.length && lines[li] === ${JSON.stringify(nestedLine)}) { li++; }`);
+    emit(buf, `if (li < lines.length && lines[li] === ${escapeJsonString(nestedLine)}) { li++; }`);
     const recVar = emitRecordParse(buf, schema, depth + 1, pathExpr, indent);
-    emit(buf, `${resultVar}[${JSON.stringify(key)}] = ${recVar};`);
+    emit(buf, `${resultVar}[${escapeJsonString(key)}] = ${recVar};`);
   }
 }
 
@@ -952,13 +956,13 @@ function emitArrayHeaderParse(
 
   if (schema.kind === "array" && isTabular(schema)) {
     emitTabularParse(buf, schema, arrVar, mv, depth, pathExpr, indent, delim);
-  } else if (schema.kind === "array" && isPrimitive(schema.meta.items as Schema)) {
+  } else if (schema.kind === "array" && isPrimitive(schema.meta.items)) {
     emitInlineArrayParse(buf, schema, arrVar, mv, pathExpr);
   } else if (schema.kind === "tuple") {
     emitInlineTupleParse(buf, schema, arrVar, mv, pathExpr);
   }
 
-  emit(buf, `${resultVar}[${JSON.stringify(key)}] = ${arrVar};`);
+  emit(buf, `${resultVar}[${escapeJsonString(key)}] = ${arrVar};`);
 }
 
 function emitTabularParse(
@@ -971,7 +975,7 @@ function emitTabularParse(
   indent: number,
   _delim: string,
 ): void {
-  const objSchema = schema.meta.items as Schema & { kind: "object" };
+  const objSchema = schema.meta.items;
   const fields = Object.keys(objSchema.meta.properties);
   const childPad = " ".repeat((depth + 1) * indent);
   const idx = freshVar(buf);
@@ -981,18 +985,18 @@ function emitTabularParse(
   emit(buf, `var row = lines[li++];`);
   emit(
     buf,
-    `var cells = _split(row.startsWith(${JSON.stringify(childPad)}) ? row.slice(${childPad.length}) : row.trim(), _delim);`,
+    `var cells = _split(row.startsWith(${escapeJsonString(childPad)}) ? row.slice(${childPad.length}) : row.trim(), _delim);`,
   );
   emit(buf, `var obj = {};`);
   for (let j = 0; j < fields.length; j++) {
     const f = fields[j];
-    const fc = objSchema.meta.properties[f] as Schema;
+    const fc = objSchema.meta.properties[f];
     const inner = fc.kind === "optional" ? fc.meta.inner : fc;
     const cellVar = freshVar(buf);
     emit(buf, `if (${j} < cells.length) {`);
     buf.indent++;
     emitPrimValueParse(buf, inner, `cells[${j}]`, `${pathExpr} + ".${f}"`, cellVar);
-    emit(buf, `obj[${JSON.stringify(f)}] = ${cellVar};`);
+    emit(buf, `obj[${escapeJsonString(f)}] = ${cellVar};`);
     buf.indent--;
     emit(buf, "}");
   }
@@ -1015,7 +1019,7 @@ function emitInlineArrayParse(
   emit(buf, `for (var ${idx} = 0; ${idx} < items.length; ${idx}++) {`);
   buf.indent++;
   const itemVar = freshVar(buf);
-  emitPrimValueParse(buf, schema.meta.items as Schema, `items[${idx}]`, pathExpr, itemVar);
+  emitPrimValueParse(buf, schema.meta.items, `items[${idx}]`, pathExpr, itemVar);
   emit(buf, `${arrVar}.push(${itemVar});`);
   buf.indent--;
   emit(buf, "}");
@@ -1033,7 +1037,7 @@ function emitInlineTupleParse(
   emit(buf, `var items = _split(${matchVar}_d, _delim);`);
   for (let i = 0; i < schema.meta.items.length; i++) {
     const itemVar = freshVar(buf);
-    emitPrimValueParse(buf, schema.meta.items[i] as Schema, `items[${i}]`, pathExpr, itemVar);
+    emitPrimValueParse(buf, schema.meta.items[i], `items[${i}]`, pathExpr, itemVar);
     emit(buf, `${arrVar}.push(${itemVar});`);
   }
 }
@@ -1056,7 +1060,7 @@ function emitRecordParse(
   if (depth === 0) {
     emit(buf, `var ${cv} = lines[li];`);
   } else {
-    emit(buf, `if (!lines[li].startsWith(${JSON.stringify(padStr)})) break;`);
+    emit(buf, `if (!lines[li].startsWith(${escapeJsonString(padStr)})) break;`);
     emit(buf, `var ${cv} = lines[li].slice(${padStr.length});`);
   }
   emit(buf, `if (${cv}.startsWith(" ")) break;`);
@@ -1111,7 +1115,7 @@ function emitFlexibleObjectParse(
   if (depth === 0) {
     emit(buf, `var ${cv} = lines[li];`);
   } else {
-    emit(buf, `if (!lines[li].startsWith(${JSON.stringify(padStr)})) break;`);
+    emit(buf, `if (!lines[li].startsWith(${escapeJsonString(padStr)})) break;`);
     emit(buf, `var ${cv} = lines[li].slice(${padStr.length});`);
   }
   emit(buf, `if (${cv}.startsWith(" ")) break;`);
@@ -1122,7 +1126,7 @@ function emitFlexibleObjectParse(
   buf.indent--;
   emit(buf, "}");
 
-  const props = schema.meta.properties as Record<string, Schema>;
+  const props = schema.meta.properties;
   const keys = Object.keys(props);
   for (let i = 0; i < keys.length; i++) {
     const key = keys[i];
@@ -1130,21 +1134,23 @@ function emitFlexibleObjectParse(
     const inner = child.kind === "optional" ? child.meta.inner : child;
     const isOpt = child.kind === "optional";
     const childPath =
-      pathExpr === '""' ? JSON.stringify(key) : JSON.stringify(JSON.parse(pathExpr) + "." + key);
+      pathExpr === '""'
+        ? escapeJsonString(key)
+        : escapeJsonString(JSON.parse(pathExpr) + "." + key);
 
     if (isOpt) {
-      emit(buf, `if (${JSON.stringify(key)} in ${mapVar}) {`);
+      emit(buf, `if (${escapeJsonString(key)} in ${mapVar}) {`);
       buf.indent++;
     } else {
       emit(
         buf,
-        `if (!(${JSON.stringify(key)} in ${mapVar})) return _err(_me(${childPath}, "key '${key}'", "not found"));`,
+        `if (!(${escapeJsonString(key)} in ${mapVar})) return _err(_me(${childPath}, "key '${key}'", "not found"));`,
       );
     }
 
     const valVar = freshVar(buf);
-    emitPrimValueParse(buf, inner, `${mapVar}[${JSON.stringify(key)}]`, childPath, valVar);
-    emit(buf, `${resultVar}[${JSON.stringify(key)}] = ${valVar};`);
+    emitPrimValueParse(buf, inner, `${mapVar}[${escapeJsonString(key)}]`, childPath, valVar);
+    emit(buf, `${resultVar}[${escapeJsonString(key)}] = ${valVar};`);
 
     if (isOpt) {
       buf.indent--;

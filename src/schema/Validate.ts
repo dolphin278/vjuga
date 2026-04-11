@@ -321,7 +321,7 @@ function emitObjectValidation(
   const keys = Object.keys(schema.meta.properties);
   for (let i = 0; i < keys.length; i++) {
     const key = keys[i];
-    const child = schema.meta.properties[key] as Schema;
+    const child = schema.meta.properties[key];
     const childAccessor = `${accessor}[${JSON.stringify(key)}]`;
     const childPathExpr = childPath(pathExpr, key);
     emitValidation(buf, child, childAccessor, childPathExpr);
@@ -372,7 +372,7 @@ function emitTupleValidation(
   for (let i = 0; i < items.length; i++) {
     const childAccessor = `${accessor}[${i}]`;
     const childPathExpr = childPath(pathExpr, String(i));
-    emitValidation(buf, items[i] as Schema, childAccessor, childPathExpr);
+    emitValidation(buf, items[i], childAccessor, childPathExpr);
   }
 }
 
@@ -404,7 +404,7 @@ function emitUnionValidation(
   accessor: string,
   pathExpr: string,
 ): void {
-  const variants = schema.meta.variants as readonly Schema[];
+  const variants = schema.meta.variants;
 
   const discriminant = findDiscriminant(variants);
   if (discriminant !== null) {
@@ -416,15 +416,16 @@ function emitUnionValidation(
   emit(buf, `${label}: {`);
   buf.indent++;
   for (let i = 0; i < variants.length; i++) {
+    const variant = variants[i];
     if (i < variants.length - 1) {
-      const check = quickTypeCheck(variants[i], accessor);
+      const check = quickTypeCheck(variant, accessor);
       if (check !== null) {
         emit(buf, `if (${check}) break ${label};`);
-      } else if (variants[i].kind === "object") {
-        emitObjectVariantTest(buf, variants[i] as Schema & { kind: "object" }, accessor, label);
+      } else if (variant.kind === "object") {
+        emitObjectVariantTest(buf, variant, accessor, label);
       }
     } else {
-      emitValidation(buf, variants[i], accessor, pathExpr);
+      emitValidation(buf, variant, accessor, pathExpr);
     }
   }
   buf.indent--;
@@ -446,15 +447,16 @@ function emitDiscriminatedValidation(
   emit(buf, `switch (${discAccessor}) {`);
   buf.indent++;
   for (let i = 0; i < variants.length; i++) {
-    const obj = variants[i] as Schema & { kind: "object" };
-    const litSchema = obj.meta.properties[discriminant] as Schema & { kind: "literal" };
+    const obj = variants[i];
+    if (obj.kind !== "object") continue; // guaranteed by findDiscriminant
+    const litSchema = obj.meta.properties[discriminant];
     emit(buf, `case ${JSON.stringify(litSchema.meta.value)}: {`);
     buf.indent++;
     const keys = Object.keys(obj.meta.properties);
     for (let j = 0; j < keys.length; j++) {
       const key = keys[j];
       if (key === discriminant) continue;
-      const child = obj.meta.properties[key] as Schema;
+      const child = obj.meta.properties[key];
       const childAccessor = `${accessor}[${JSON.stringify(key)}]`;
       const childPathExpr = childPath(pathExpr, key);
       emitValidation(buf, child, childAccessor, childPathExpr);
@@ -464,13 +466,13 @@ function emitDiscriminatedValidation(
     emit(buf, "}");
   }
   const discLabelRef = freshVar(buf);
-  const discLabel =
-    "one of: " +
-    variants
-      .map((v) =>
-        JSON.stringify((v as Schema & { kind: "object" }).meta.properties[discriminant].meta.value),
-      )
-      .join(", ");
+  const discLabels: string[] = [];
+  for (let i = 0; i < variants.length; i++) {
+    const v = variants[i];
+    if (v.kind !== "object") continue;
+    discLabels.push(JSON.stringify(v.meta.properties[discriminant].meta.value));
+  }
+  const discLabel = "one of: " + discLabels.join(", ");
   emitRef(buf, discLabelRef, discLabel);
   const discPathExpr = childPath(pathExpr, discriminant);
   emit(buf, `default: return _err(_me(${discPathExpr}, ${discLabelRef}, ${discAccessor}));`);
@@ -491,7 +493,7 @@ function emitObjectVariantTest(
   buf.indent++;
   const keys = Object.keys(schema.meta.properties);
   for (let i = 0; i < keys.length; i++) {
-    const child = schema.meta.properties[keys[i]] as Schema;
+    const child = schema.meta.properties[keys[i]];
     const childAccessor = `${accessor}[${JSON.stringify(keys[i])}]`;
     const check = quickTypeCheck(child, childAccessor);
     if (check !== null) {
@@ -537,7 +539,7 @@ export function quickTypeCheck(schema: Schema, accessor: string): string | null 
     }
     case "union": {
       const checks: string[] = [];
-      for (const v of schema.meta.variants as readonly Schema[]) {
+      for (const v of schema.meta.variants) {
         const c = quickTypeCheck(v, accessor);
         if (c !== null) checks.push(c);
       }

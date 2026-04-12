@@ -241,7 +241,7 @@ function splitByDelimiter(s: string, delim: string, expected?: number): string[]
     let inQuote = false;
     for (let i = 0; i < s.length; i++) {
       if (inQuote) {
-        if (s.charCodeAt(i) === 0x5c) i++;
+        if (s.charCodeAt(i) === 0x5c && i + 1 < s.length) i++;
         else if (s.charCodeAt(i) === 0x22) inQuote = false;
       } else if (s.charCodeAt(i) === 0x22) {
         inQuote = true;
@@ -250,7 +250,10 @@ function splitByDelimiter(s: string, delim: string, expected?: number): string[]
         start = i + 1;
       }
     }
-    result[idx] = s.slice(start);
+    result[idx++] = s.slice(start);
+    // Fill remaining slots with empty string to avoid undefined holes when
+    // actual field count < expected (e.g., truncated tabular input).
+    for (; idx < expected; idx++) result[idx] = "";
     return result;
   }
   const result: string[] = [];
@@ -258,7 +261,7 @@ function splitByDelimiter(s: string, delim: string, expected?: number): string[]
   let inQuote = false;
   for (let i = 0; i < s.length; i++) {
     if (inQuote) {
-      if (s.charCodeAt(i) === 0x5c)
+      if (s.charCodeAt(i) === 0x5c && i + 1 < s.length)
         i++; // skip escaped char
       else if (s.charCodeAt(i) === 0x22) inQuote = false;
     } else if (s.charCodeAt(i) === 0x22) {
@@ -1112,6 +1115,9 @@ function emitArrayHeaderParse(
     emitInlineArrayParse(buf, schema, arrVar, mv, pathExpr);
   } else if (schema.kind === "tuple") {
     emitInlineTupleParse(buf, schema, arrVar, mv, pathExpr);
+  } else if (schema.kind === "array") {
+    // Expanded format: each item on its own line prefixed with "- "
+    emitExpandedArrayParse(buf, schema, arrVar, mv, depth, pathExpr, indent);
   }
 
   emit(buf, `${resultVar}[${escapeJsonString(key)}] = ${arrVar};`);
@@ -1134,6 +1140,10 @@ function emitTabularParse(
 
   emit(buf, `for (var ${idx} = 0; ${idx} < ${matchVar}_n; ${idx}++) {`);
   buf.indent++;
+  emit(
+    buf,
+    `if (li >= lines.length) return _err(_me(${pathExpr}, "tabular row", "end of input"));`,
+  );
   emit(buf, `var row = lines[li++];`);
   emit(
     buf,
@@ -1194,6 +1204,34 @@ function emitInlineTupleParse(
   }
 }
 
+function emitExpandedArrayParse(
+  buf: CodeBuffer,
+  schema: Schema & { readonly kind: "array" },
+  arrVar: string,
+  matchVar: string,
+  depth: number,
+  pathExpr: string,
+  indent: number,
+): void {
+  // Expanded format: items on separate lines prefixed with "  - value"
+  const itemPad = " ".repeat((depth + 1) * indent) + "- ";
+  const idx = freshVar(buf);
+  emit(buf, `for (var ${idx} = 0; ${idx} < ${matchVar}_n; ${idx}++) {`);
+  buf.indent++;
+  emit(buf, `if (li >= lines.length) return _err(_me(${pathExpr}, "array item", "end of input"));`);
+  const rawVar = freshVar(buf);
+  emit(
+    buf,
+    `var ${rawVar} = lines[li].startsWith(${escapeJsonString(itemPad)}) ? lines[li].slice(${itemPad.length}) : lines[li].trim().slice(2);`,
+  );
+  emit(buf, "li++;");
+  const valVar = freshVar(buf);
+  emitPrimValueParse(buf, schema.meta.items, rawVar, pathExpr, valVar);
+  emit(buf, `${arrVar}.push(${valVar});`);
+  buf.indent--;
+  emit(buf, "}");
+}
+
 /** Emits a record parse block. Returns the generated variable name. */
 function emitRecordParse(
   buf: CodeBuffer,
@@ -1219,6 +1257,8 @@ function emitRecordParse(
   emit(buf, `var ci = ${cv}.indexOf(": ");`);
   emit(buf, "if (ci === -1) break;");
   emit(buf, `var rk = ${cv}.slice(0, ci);`);
+  // Prototype pollution guard — skip dangerous keys from untrusted input
+  emit(buf, 'if (rk === "__proto__" || rk === "constructor") { li++; continue; }');
   emit(buf, `var rv = ${cv}.slice(ci + 2);`);
   emit(buf, "li++;");
   const valVar = freshVar(buf);

@@ -140,7 +140,10 @@ export function childPath(parentExpr: string, key: string): string {
     const child = parent === "" ? key : parent + "." + key;
     return JSON.stringify(child);
   }
-  return parentExpr + ' + ".' + key + '"';
+  // Escape key for embedding in JS string literal — keys with " or \ would
+  // break the generated code without escaping.
+  const escaped = key.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  return parentExpr + ' + ".' + escaped + '"';
 }
 
 /**

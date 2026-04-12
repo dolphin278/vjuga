@@ -645,15 +645,66 @@ test("validate throws on unknown schema kind", () => {
   assert.throws(() => validate(bad), /unreachable/i);
 });
 
-test("union — quickTypeCheck default returns null for unknown kind", () => {
-  // A variant with an unknown kind causes quickTypeCheck to return null,
-  // falling through to emit the last variant's full validation
+test("union — unknown kind variant throws at compile time", () => {
+  // A variant with an unknown kind causes emitValidation to throw unreachable
+  // during sub-validator compilation — detected at compile time, not runtime.
   const unknown = { kind: "CUSTOM", meta: undefined } as unknown as S.Schema;
   const u = {
     kind: "union",
     meta: { variants: [unknown, S.string()] },
   } as unknown as S.StringSchema;
-  const v = validate(u);
-  // The unknown variant has no type check, so it's skipped — string is tried last
-  assert.equal(v("hello")[0], true);
+  assert.throws(() => validate(u), /unreachable/i);
+});
+
+// ---------------------------------------------------------------------------
+// Coverage: multipleOf with floating-point values
+// ---------------------------------------------------------------------------
+
+test("number — multipleOf with float (0.1)", () => {
+  const v = validate(S.number({ multipleOf: 0.1 }));
+  assertOk(v(0.3));
+  assertOk(v(0.1));
+  assertOk(v(1.0));
+  assertErr(v(0.15));
+});
+
+test("integer — exclusiveMinimum and exclusiveMaximum", () => {
+  const v = validate(S.integer({ exclusiveMinimum: 0, exclusiveMaximum: 10 }));
+  assertErr(v(0));
+  assertOk(v(1));
+  assertOk(v(9));
+  assertErr(v(10));
+});
+
+test("integer — multipleOf", () => {
+  const v = validate(S.integer({ multipleOf: 3 }));
+  assertOk(v(0));
+  assertOk(v(9));
+  assertErr(v(10));
+});
+
+test("number — Infinity rejected by maximum constraint", () => {
+  const v = validate(S.number({ maximum: 100 }));
+  assertErr(v(Infinity));
+  assertOk(v(100));
+});
+
+// ---------------------------------------------------------------------------
+// Coverage: union with large enum (quickTypeCheck null) — Bug 1 fix
+// ---------------------------------------------------------------------------
+
+test("union — large enum + integer (enum quickTypeCheck null)", () => {
+  const v = validate(S.union(S.enum_("a", "b", "c", "d", "e"), S.integer()));
+  assertOk(v("a"));
+  assertOk(v("e"));
+  assertOk(v(42));
+  assertErr(v(true));
+});
+
+test("union — error includes path info", () => {
+  const v = validate(S.object({ x: S.union(S.string(), S.integer()) }));
+  const r = v({ x: true });
+  assert.equal(r[0], false);
+  const e = r[1] as SchemaError;
+  assert.equal(e.path, "x");
 });

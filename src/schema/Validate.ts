@@ -319,10 +319,21 @@ function emitNumericConstraints(
     );
   }
   if (meta.multipleOf !== undefined) {
-    emit(
-      buf,
-      `if (${accessor} % ${meta.multipleOf} !== 0) return _err(_me(${pathExpr}, "${label}(%${meta.multipleOf})", ${accessor}));`,
-    );
+    const m = meta.multipleOf;
+    if (Number.isInteger(m)) {
+      // Integer multipleOf: exact modulo is safe
+      emit(
+        buf,
+        `if (${accessor} % ${m} !== 0) return _err(_me(${pathExpr}, "${label}(%${m})", ${accessor}));`,
+      );
+    } else {
+      // Non-integer multipleOf: floating-point % is unreliable (0.3 % 0.1 !== 0).
+      // Use tolerance: check that remainder is near 0 or near the divisor.
+      emit(
+        buf,
+        `{ var _rem = Math.abs(${accessor} % ${m}); if (_rem > 1e-9 && Math.abs(_rem - ${m}) > 1e-9) return _err(_me(${pathExpr}, "${label}(%${m})", ${accessor})); }`,
+      );
+    }
   }
 }
 
@@ -461,6 +472,22 @@ function emitUnionValidation(
       const check = quickTypeCheck(variant, accessor);
       if (check !== null) {
         emit(buf, `if (${check}) break ${label};`);
+      } else {
+        // quickTypeCheck returned null (e.g., large enum, nested union) —
+        // can't use a simple type-of guard. Compile a sub-validator for this
+        // variant and call it: if it returns Ok, break out of the union block.
+        const subBuf = createBuffer();
+        emitStandardRefs(subBuf, ok, err);
+        emit(subBuf, "return function(v) {");
+        subBuf.indent++;
+        emitValidation(subBuf, variant, "v", '""');
+        emit(subBuf, "return _ok(v);");
+        subBuf.indent--;
+        emit(subBuf, "}");
+        const subValidator = compileFunction(subBuf);
+        const ref = freshVar(buf);
+        emitRef(buf, ref, subValidator);
+        emit(buf, `if (${ref}(${accessor})[0]) break ${label};`);
       }
     } else {
       emitValidation(buf, variant, accessor, pathExpr);

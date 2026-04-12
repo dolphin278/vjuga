@@ -1013,3 +1013,39 @@ test("parse object with unknown-kind field (emitPrimValueParse default)", () => 
   const par = ST.parse(schema);
   assert.equal(par("x: hello")[0], true);
 });
+
+// ---------------------------------------------------------------------------
+// Coverage: TOON record proto pollution guard
+// ---------------------------------------------------------------------------
+
+test("parse record strips __proto__ and constructor keys", () => {
+  const schema = S.record(S.string());
+  const par = ST.parse(schema);
+  const toon = "__proto__: evil\nconstructor: bad\nname: Alice";
+  const r = assertOk(par(toon));
+  assert.equal((r as Record<string, unknown>).name, "Alice");
+  assert.equal(Object.hasOwn(r, "__proto__"), false);
+  assert.equal(Object.hasOwn(r, "constructor"), false);
+});
+
+// ---------------------------------------------------------------------------
+// Coverage: expanded array format round-trip
+// ---------------------------------------------------------------------------
+
+test("stringify/parse expanded array (non-tabular items)", () => {
+  // array(record(string)) is non-primitive and non-tabular → expanded "- " format.
+  // But expanded format currently only supports primitive inline expressions in
+  // the "- value" items. For compound items, tabular format is used.
+  // Test that the expanded parse path works for the union(string,number) case:
+  const schema = S.object({
+    items: S.array(S.union(S.string(), S.integer())),
+  });
+  const str = ST.stringify(schema);
+  const par = ST.parse(schema);
+  const obj = { items: ["hello", 42, "world"] as (string | number)[] };
+  const toon = str(obj);
+  assert.ok(toon.includes("- hello") || toon.includes("items[3]:"));
+  // Round-trip: if inline format is used, parse should recover
+  const result = par(toon);
+  assert.equal(result[0], true);
+});

@@ -341,7 +341,9 @@ test("parse strips __proto__ keys", () => {
   const fn = SJ.parse(S.object({ name: S.string() }));
   const r = assertOk(fn('{"name":"Alice","__proto__":{"admin":true}}'));
   assert.equal(r.name, "Alice");
-  assert.equal((r as Record<string, unknown>).__proto__?.constructor, Object);
+  // Verify the __proto__ payload didn't pollute the prototype chain
+  assert.equal((r as Record<string, unknown>).admin, undefined);
+  assert.equal(Object.hasOwn(r, "__proto__"), false);
 });
 
 test("parse strips constructor keys", () => {

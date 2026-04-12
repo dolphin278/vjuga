@@ -519,6 +519,7 @@ export function fromJsonSchema(root: JsonSchemaObject): Result<Schema, string> {
   type BuildTuple = { readonly _v: 0; readonly tag: 4; readonly count: number };
   type BuildArray = {
     readonly _v: 0;
+    readonly tag: 5;
     readonly min: number | undefined;
     readonly max: number | undefined;
   };
@@ -546,47 +547,47 @@ export function fromJsonSchema(root: JsonSchemaObject): Result<Schema, string> {
 
     // Build step — pop children from results and construct parent
     if (item._v === 0) {
-      if ("tag" in item) {
-        switch (item.tag) {
-          case 1: // nullable
-            results.push(nullable(results.pop()!));
-            break;
-          case 2: // record
-            results.push(record(results.pop()!));
-            break;
-          case 3: {
-            // union
-            const schemas: Schema[] = new Array(item.count);
-            for (let i = item.count - 1; i >= 0; i--) schemas[i] = results.pop()!;
-            results.push(union(...schemas));
-            break;
-          }
-          case 4: {
-            // tuple
-            const schemas: Schema[] = new Array(item.count);
-            for (let i = item.count - 1; i >= 0; i--) schemas[i] = results.pop()!;
-            results.push(tuple(...schemas));
-            break;
-          }
-          case 6: {
-            // object
-            const { keys, requiredSet, addlProps } = item;
-            const objProps: Record<string, Schema> = {};
-            for (let i = keys.length - 1; i >= 0; i--) {
-              const s = results.pop()!;
-              objProps[keys[i]] = requiredSet.has(keys[i]) ? s : optional(s);
-            }
-            results.push(object(objProps, { additionalProperties: addlProps }));
-            break;
-          }
+      switch (item.tag) {
+        case 1: // nullable
+          results.push(nullable(results.pop()!));
+          break;
+        case 2: // record
+          results.push(record(results.pop()!));
+          break;
+        case 3: {
+          // union
+          const schemas: Schema[] = new Array(item.count);
+          for (let i = item.count - 1; i >= 0; i--) schemas[i] = results.pop()!;
+          results.push(union(...schemas));
+          break;
         }
-      } else {
-        // BuildArray
-        const itemSchema = results.pop()!;
-        const hasOpts = item.min !== undefined || item.max !== undefined;
-        results.push(
-          array(itemSchema, hasOpts ? { minItems: item.min, maxItems: item.max } : undefined),
-        );
+        case 4: {
+          // tuple
+          const schemas: Schema[] = new Array(item.count);
+          for (let i = item.count - 1; i >= 0; i--) schemas[i] = results.pop()!;
+          results.push(tuple(...schemas));
+          break;
+        }
+        case 5: {
+          // array
+          const itemSchema = results.pop()!;
+          const hasOpts = item.min !== undefined || item.max !== undefined;
+          results.push(
+            array(itemSchema, hasOpts ? { minItems: item.min, maxItems: item.max } : undefined),
+          );
+          break;
+        }
+        case 6: {
+          // object
+          const { keys, requiredSet, addlProps } = item;
+          const objProps: Record<string, Schema> = {};
+          for (let i = keys.length - 1; i >= 0; i--) {
+            const s = results.pop()!;
+            objProps[keys[i]] = requiredSet.has(keys[i]) ? s : optional(s);
+          }
+          results.push(object(objProps, { additionalProperties: addlProps }));
+          break;
+        }
       }
       continue;
     }
@@ -620,16 +621,20 @@ export function fromJsonSchema(root: JsonSchemaObject): Result<Schema, string> {
     // anyOf → union or nullable
     if ("anyOf" in js && Array.isArray(js.anyOf)) {
       const variants = js.anyOf as JsonSchemaObject[];
-      if (
-        variants.length === 2 &&
-        typeof variants[1] === "object" &&
-        variants[1] !== null &&
-        (variants[1] as Record<string, unknown>).type === "null"
-      ) {
-        // Nullable pattern: push build-nullable, then visit inner
-        workStack.push({ _v: 0, tag: 1 });
-        workStack.push({ _v: 1, js: variants[0] });
-        continue;
+      // Detect nullable pattern: { anyOf: [T, {type:"null"}] } or { anyOf: [{type:"null"}, T] }
+      if (variants.length === 2) {
+        const isNull = (v: JsonSchemaObject) =>
+          typeof v === "object" && v !== null && (v as Record<string, unknown>).type === "null";
+        if (isNull(variants[1])) {
+          workStack.push({ _v: 0, tag: 1 });
+          workStack.push({ _v: 1, js: variants[0] });
+          continue;
+        }
+        if (isNull(variants[0])) {
+          workStack.push({ _v: 0, tag: 1 });
+          workStack.push({ _v: 1, js: variants[1] });
+          continue;
+        }
       }
       // Union: push build-union, then visit all variants (reverse order for LIFO)
       workStack.push({ _v: 0, tag: 3, count: variants.length });
@@ -727,7 +732,7 @@ export function fromJsonSchema(root: JsonSchemaObject): Result<Schema, string> {
       if ("items" in js && typeof js.items === "object" && js.items !== null) {
         const min = "minItems" in js ? (js.minItems as number) : undefined;
         const max = "maxItems" in js ? (js.maxItems as number) : undefined;
-        workStack.push({ _v: 0, min, max });
+        workStack.push({ _v: 0, tag: 5, min, max });
         workStack.push({ _v: 1, js: js.items as JsonSchemaObject });
         continue;
       }
@@ -738,6 +743,7 @@ export function fromJsonSchema(root: JsonSchemaObject): Result<Schema, string> {
     return err("unsupported JSON Schema: " + JSON.stringify(js).slice(0, 100));
   }
 
+  if (results.length !== 1) return err("malformed JSON Schema: unexpected structure");
   return ok(results[0]);
 }
 

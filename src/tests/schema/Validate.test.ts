@@ -529,6 +529,20 @@ test("record of arrays", () => {
   assertErr(v({ a: [1, "two"] }));
 });
 
+test("object — key containing + in error path", () => {
+  const v = validate(S.object({ "a+b": S.string() }));
+  const e = assertErr(v({ "a+b": 42 }));
+  assert.equal(e.path, "a+b");
+  assert.equal(e.expected, "string");
+});
+
+test("object — special chars in key error path", () => {
+  const v = validate(S.object({ 'key"with"quotes': S.number() }));
+  const e = assertErr(v({ 'key"with"quotes': "wrong" }));
+  assert.equal(e.path, 'key"with"quotes');
+  assert.equal(e.expected, "number");
+});
+
 // ---------------------------------------------------------------------------
 // Coverage: quickTypeCheck branches
 // ---------------------------------------------------------------------------

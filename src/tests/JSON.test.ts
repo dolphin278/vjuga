@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
-import { parseExn, stringify, parse, safeParse } from "../JSON.js";
+import { parseExn, stringify, parse, safeParse, escapeJsonString } from "../JSON.js";
 
 describe("JSON", () => {
   describe("stringify", () => {
@@ -99,6 +99,29 @@ describe("JSON", () => {
 
     it("should return undefined on invalid JSON", () => {
       assert.equal(parse("asdf"), undefined);
+    });
+  });
+
+  describe("escapeJsonString — lone surrogate handling", () => {
+    it("should escape a lone high surrogate", () => {
+      const s = String.fromCharCode(0xd800);
+      assert.equal(escapeJsonString(s), '"\\ud800"');
+    });
+
+    it("should escape a lone low surrogate", () => {
+      const s = String.fromCharCode(0xdc00);
+      assert.equal(escapeJsonString(s), '"\\udc00"');
+    });
+
+    it("should leave a valid surrogate pair unescaped", () => {
+      // U+10000 = high surrogate D800 + low surrogate DC00
+      const s = String.fromCharCode(0xd800, 0xdc00);
+      assert.equal(escapeJsonString(s), '"' + s + '"');
+    });
+
+    it("should escape a high surrogate at the end of the string", () => {
+      const s = "abc" + String.fromCharCode(0xdbff);
+      assert.equal(escapeJsonString(s), '"abc\\udbff"');
     });
   });
 

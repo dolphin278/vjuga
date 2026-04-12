@@ -1037,6 +1037,37 @@ test("stringify/parse expanded array (non-tabular items)", () => {
   assert.equal(result[0], true);
 });
 
+test("parse expanded array — malformed indentation (trim().slice(2) fallback)", () => {
+  const schema = S.object({
+    items: S.array(S.union(S.string(), S.integer())),
+  });
+  const par = ST.parse(schema);
+
+  // Lines without the expected "  - " prefix trigger the fallback:
+  //   lines[li].trim().slice(2)
+  // which strips whitespace then removes the leading "- ".
+
+  // No leading spaces — "- value" instead of "  - value"
+  const noIndent = "items[3]:\n- hello\n- 42\n- world";
+  assert.deepEqual(assertOk(par(noIndent)), { items: ["hello", "42", "world"] });
+
+  // Mixed indentation: some correct, some wrong
+  const mixed = "items[3]:\n  - hello\n- 42\n   - world";
+  assert.deepEqual(assertOk(par(mixed)), { items: ["hello", "42", "world"] });
+
+  // Very short line: bare "-" with no space or value → trim().slice(2) yields ""
+  const bare = "items[1]:\n-";
+  assert.deepEqual(assertOk(par(bare)), { items: [""] });
+
+  // "- " (dash + space, no value) — trim() gives "-", slice(2) gives ""
+  const dashSpace = "items[1]:\n- ";
+  assert.deepEqual(assertOk(par(dashSpace)), { items: [""] });
+
+  // Tab indentation triggers fallback (doesn't match space-based prefix)
+  const tabbed = "items[2]:\n\t- hello\n\t- 42";
+  assert.deepEqual(assertOk(par(tabbed)), { items: ["hello", "42"] });
+});
+
 // ---------------------------------------------------------------------------
 // nullable compound fields
 // ---------------------------------------------------------------------------

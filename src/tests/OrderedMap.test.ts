@@ -259,6 +259,43 @@ test("keys/values/entries on empty map yield nothing", () => {
 });
 
 // ---------------------------------------------------------------------------
+// forRange — callback-based range scan
+// ---------------------------------------------------------------------------
+
+test("forRange() visits entries in [lo, hi] inclusive", () => {
+  const m = OM.make<number, string>();
+  for (let i = 1; i <= 10; i++) OM.set(m, i, String(i));
+  const keys: number[] = [];
+  const count = OM.forRange(m, 3, 7, (k) => keys.push(k));
+  assert.equal(count, 5);
+  assert.deepEqual(keys, [3, 4, 5, 6, 7]);
+});
+
+test("forRange() returns 0 and calls fn 0 times when no entries in range", () => {
+  const m = OM.make<number, string>();
+  OM.set(m, 5, "five");
+  let called = 0;
+  const count = OM.forRange(m, 10, 2, () => called++);
+  assert.equal(count, 0);
+  assert.equal(called, 0);
+});
+
+test("forRange() on empty map returns 0", () => {
+  const m = OM.make<number, string>();
+  const count = OM.forRange(m, 0, 100, () => {});
+  assert.equal(count, 0);
+});
+
+test("forRange() exact single match", () => {
+  const m = OM.make<number, string>();
+  OM.set(m, 5, "five");
+  const pairs: [number, string][] = [];
+  const count = OM.forRange(m, 5, 5, (k, v) => pairs.push([k, v]));
+  assert.equal(count, 1);
+  assert.deepEqual(pairs, [[5, "five"]]);
+});
+
+// ---------------------------------------------------------------------------
 // Large sequential insert — verify sorted order and size
 // ---------------------------------------------------------------------------
 

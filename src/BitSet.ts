@@ -132,23 +132,29 @@ export function popcount(bs: BitSet): number {
  * Returns an array of indices of all set bits, in ascending order.
  */
 export function toArray(bs: BitSet): number[] {
-  const result: number[] = [];
   const bits = bs[kBits];
   const len = bs[kLength];
+  // Pre-allocate the exact result size via popcount so V8 can use a single
+  // backed allocation without any dynamic resize during the extraction loop.
+  // This eliminates the push() overhead (length check + possible realloc)
+  // and produces a dense SMI array that V8 can store without boxing.
+  const n = popcount(bs);
+  const result = new Array<number>(n);
+  let j = 0;
   for (let w = 0; w < bits.length; w++) {
     let word = bits[w];
-    // Mask last word
+    // Mask last word to exclude excess bits above kLength.
     if (w === bits.length - 1) {
       const rem = len & 31;
       if (rem !== 0) word &= (1 << rem) - 1;
     }
     const base = w << 5;
     while (word !== 0) {
-      // Isolate lowest set bit
-      const lsb = word & -word;
-      // Compute its position via popcount trick: popcount(lsb - 1)
-      result.push(base + popcount32(lsb - 1));
-      word ^= lsb;
+      const lsb = word & -word; // isolate lowest set bit (power of 2)
+      // Math.clz32 maps to a single CLZ/LZCNT CPU instruction — much faster
+      // than the SWAR popcount32(lsb - 1) path used in popcount().
+      result[j++] = base + (31 - Math.clz32(lsb));
+      word ^= lsb; // clear lowest set bit
     }
   }
   return result;
@@ -173,9 +179,7 @@ export function and(a: BitSet, b: BitSet): BitSet {
   const ra = a[kBits];
   const rb = b[kBits];
   const rc = result[kBits];
-  for (let w = 0; w < rc.length; w++) {
-    rc[w] = ra[w] & rb[w];
-  }
+  for (let w = 0; w < rc.length; w++) rc[w] = ra[w] & rb[w];
   return result;
 }
 
@@ -186,9 +190,7 @@ export function or(a: BitSet, b: BitSet): BitSet {
   const ra = a[kBits];
   const rb = b[kBits];
   const rc = result[kBits];
-  for (let w = 0; w < rc.length; w++) {
-    rc[w] = ra[w] | rb[w];
-  }
+  for (let w = 0; w < rc.length; w++) rc[w] = ra[w] | rb[w];
   return result;
 }
 
@@ -199,9 +201,7 @@ export function xor(a: BitSet, b: BitSet): BitSet {
   const ra = a[kBits];
   const rb = b[kBits];
   const rc = result[kBits];
-  for (let w = 0; w < rc.length; w++) {
-    rc[w] = ra[w] ^ rb[w];
-  }
+  for (let w = 0; w < rc.length; w++) rc[w] = ra[w] ^ rb[w];
   return result;
 }
 
@@ -214,9 +214,7 @@ export function not(a: BitSet): BitSet {
   const ra = a[kBits];
   const rc = result[kBits];
   const last = rc.length - 1;
-  for (let w = 0; w < rc.length; w++) {
-    rc[w] = ~ra[w];
-  }
+  for (let w = 0; w < rc.length; w++) rc[w] = ~ra[w];
   // Mask excess bits in last word to preserve invariant that bits above
   // kLength are always 0.
   const rem = a[kLength] & 31;

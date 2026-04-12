@@ -18,6 +18,9 @@
 - [@dolphin278/vjuga/WeakCache.js](./src/WeakCache.ts): `WeakCache` — GC-managed cache via `WeakRef` + `FinalizationRegistry`. `make()`, `get`, `set`, `has`, `remove`, `size`. Entries are reclaimed automatically when values are garbage-collected. Values must be objects.
 - [@dolphin278/vjuga/RadixTree.js](./src/RadixTree.ts): `RadixTree` — compressed trie (patricia trie) mapping string keys to values. `insert`, `lookup`, `has`, `remove`, `prefixMatch`, `entries`, `size`. Use for URL routing, autocomplete, prefix-based lookups.
 - [@dolphin278/vjuga/SOA.js](./src/SOA.ts): `SOA` — Structure of Arrays with zero-copy element views. `createView`, `push`, `pop`, `get`, `set`, `getSlice`, `length`, `swapRemove`, `clear`. Use for cache-line-efficient iteration over many records (physics loops, ECS engines, columnar transforms).
+- [@dolphin278/vjuga/BloomFilter.js](./src/BloomFilter.ts): `BloomFilter` — probabilistic membership filter (Bloom filter). `make(capacity, fpr?)`, `add`, `mightContain`, `clear`, `count`. Never yields false negatives. Use as a fast pre-filter before expensive cache or database lookups.
+- [@dolphin278/vjuga/BitSet.js](./src/BitSet.ts): `BitSet` — compact bit array backed by `Uint32Array`. `make(capacity)`, `set`, `clear`, `toggle`, `get`, `popcount` (SWAR), `toArray`. Set algebra: `and`, `or`, `xor`, `not` (return new BitSet). Use for dense boolean vectors, graph adjacency, SOA row-level flags.
+- [@dolphin278/vjuga/OrderedMap.js](./src/OrderedMap.ts): `OrderedMap` — sorted key-value map backed by an AVL tree. `make(compare?)`, `set`, `get`, `has`, `del`, `size`, `min`, `max`, `floor`, `ceiling`, `range`, `keys`, `values`, `entries`. Use when sorted iteration or floor/ceiling/range queries are needed; for unordered lookup use plain `Map`.
 
 ## Async & Concurrency
 

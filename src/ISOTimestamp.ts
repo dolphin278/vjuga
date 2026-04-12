@@ -31,7 +31,7 @@
 
 import type { Branded } from "./FunctionUtils.js";
 import { type Result, ok, err } from "./Result.js";
-import { ValidationError, type Validator } from "./ValidationError.js";
+import { ValidationError, type Validator } from "./schema/ValidationError.js";
 
 /** Branded string guaranteed to be a valid ISO 8601 datetime. */
 export type ISOTimestamp = Branded<string, "ISOTimestamp">;
@@ -135,7 +135,7 @@ export function now(): ISOTimestamp {
   return fromEpochMs(Date.now());
 }
 
-/** Returns a `Validator<ISOTimestamp>` for use with the Validator module. */
+/** Returns a `Validator<ISOTimestamp>` that validates unknown values as ISO timestamps. */
 export function validator(): Validator<ISOTimestamp> {
   return function validateISOTimestamp(value: unknown): Result<ISOTimestamp, ValidationError> {
     if (typeof value !== "string")

@@ -1,19 +1,16 @@
 /**
  * ValidationError — structured validation failure with path tracking.
  *
- * Shared by the closure-based Validator module and branded-type modules
- * (UUID, ISOTimestamp, UnixTimestamp). Extracted to its own module so
- * consumers can depend on the error type without pulling in the full
- * Validator combinator library.
+ * Used by branded-type modules (UUID, ISOTimestamp, UnixTimestamp) that define
+ * their own validators returning `Result<T, ValidationError>`.
  *
- * When to use: building custom validators that return `Result<T, ValidationError>`
- * and need to compose with the Validator module or branded-type validators.
+ * When to use: building custom validators that return `Result<T, ValidationError>`.
  * For schema-based validation, use `schema/Validate` which has its own
  * `SchemaError` (plain object, cheaper to construct than Error subclass).
  *
  * @example Custom validator function
  * ```ts
- * import { ValidationError, type Validator } from "vjuga/ValidationError";
+ * import { ValidationError, type Validator } from "vjuga/schema/ValidationError";
  * import { ok, err } from "vjuga/Result";
  * const isEmail: Validator<string> = (value) => {
  *   if (typeof value !== "string") return err(new ValidationError("email string", value));
@@ -39,7 +36,7 @@
  *     the root value failed. Numeric indices appear as `"items.0.name"`.
  */
 
-import type { Result } from "./Result.js";
+import type { Result } from "../Result.js";
 
 /**
  * Error thrown (or returned as Err) when validation fails.

@@ -2,11 +2,10 @@
  * Deep fuzz testing — targets code paths that are hard to reach:
  * - Queue tryToShrinkList (>10,000 elements)
  * - Memoization edge cases
- * - Validator error paths and error messages
  * - RadixTree massive trees with remove/merge cascades
  * - LRUCache: rapid set/del/set cycles on same key
  * - SOA: set() with item that has extra keys
- * - Coverage-guided fuzzing on JSON and Validator
+ * - Coverage-guided fuzzing on JSON and HTML
  */
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
@@ -15,7 +14,6 @@ import * as LRU from "../LRUCache.js";
 import * as PQ from "../PriorityQueue.js";
 import * as RadixTree from "../RadixTree.js";
 import * as SOA from "../SOA.js";
-import * as V from "../Validator.js";
 import * as HTML from "../HTML.js";
 import * as VJSON from "../JSON.js";
 import * as Arb from "../Arbitrary.js";
@@ -123,7 +121,10 @@ test("LRUCache: rapid set-del-set on same key doesn't corrupt", () => {
 
 test("LRUCache: capacity-1 del then immediate set", () => {
   Prop.assert(
-    Arb.array(Arb.tuple(Arb.constantFrom("a", "b", "c"), Arb.integer(0, 100)), { minLength: 1, maxLength: 100 }),
+    Arb.array(Arb.tuple(Arb.constantFrom("a", "b", "c"), Arb.integer(0, 100)), {
+      minLength: 1,
+      maxLength: 100,
+    }),
     (ops) => {
       const cache = LRU.make<string, number>(1);
       const model = new Map<string, number>();
@@ -213,106 +214,21 @@ test("RadixTree: 500-key insert-remove-verify cycle", () => {
 });
 
 // ============================================================================
-// Validator: error path tracking
-// ============================================================================
-
-test("Validator: error paths are correct for nested failures", () => {
-  const validator = V.object({
-    users: V.array(V.object({
-      name: V.string(),
-      age: V.number(),
-    })),
-  });
-
-  // Valid input
-  const good = { users: [{ name: "Alice", age: 30 }, { name: "Bob", age: 25 }] };
-  assert.equal(validator(good)[0], true);
-
-  // Invalid: age is a string
-  const bad = { users: [{ name: "Alice", age: "thirty" }] };
-  const result = bad as unknown;
-  const validated = validator(result);
-  assert.equal(validated[0], false);
-});
-
-test("Validator: tuple rejects wrong length", () => {
-  const tupleV = V.tuple([V.string(), V.number()] as const);
-
-  // Correct length
-  assert.equal(tupleV(["hello", 42])[0], true);
-
-  // Too short
-  assert.equal(tupleV(["hello"])[0], false);
-
-  // Too long
-  assert.equal(tupleV(["hello", 42, "extra"])[0], false);
-
-  // Not an array
-  assert.equal(tupleV("not-array")[0], false);
-});
-
-test("Validator: record rejects non-object inputs", () => {
-  const recV = V.record(V.number());
-
-  assert.equal(recV(null)[0], false);
-  assert.equal(recV(undefined)[0], false);
-  assert.equal(recV(42)[0], false);
-  assert.equal(recV("string")[0], false);
-  assert.equal(recV([])[0], false);
-  assert.equal(recV({ a: 1, b: 2 })[0], true);
-  assert.equal(recV({ a: 1, b: "two" })[0], false);
-});
-
-// ============================================================================
-// Coverage-guided fuzzing on Validator
-// ============================================================================
-
-test("CoverageGuided: fuzz Validator.object with random inputs", () => {
-  const validator = V.object({
-    name: V.string(),
-    age: V.number(),
-    active: V.boolean(),
-  });
-
-  // Generate any JSON-like value and throw it at the validator
-  const { anyValue } = Arb.letrec((tie) => ({
-    anyValue: Arb.oneOf(
-      Arb.map(Arb.string({ maxLength: 8 }), (s) => s as unknown),
-      Arb.map(Arb.integer(-100, 100), (n) => n as unknown),
-      Arb.map(Arb.boolean(), (b) => b as unknown),
-      Arb.constant(null as unknown),
-      Arb.constant(undefined as unknown),
-      Arb.map(Arb.array(tie("anyValue"), { maxLength: 3 }), (a) => a as unknown),
-      Arb.map(
-        Arb.dictionary(Arb.string({ minLength: 1, maxLength: 4 }), tie("anyValue"), { maxSize: 4 }),
-        (d) => d as unknown,
-      ),
-    ),
-  }));
-
-  const result = CG.fuzz(anyValue, (input) => {
-    // Should never throw — validator returns Result, not throws
-    const res = validator(input);
-    if (res[0] !== true && res[0] !== false) {
-      throw new Error(`Validator returned invalid discriminant: ${res[0]}`);
-    }
-  }, { maxDuration: 5000 });
-
-  assert.equal(result.ok, true, `Validator crashed: ${result.error}`);
-});
-
-// ============================================================================
 // Coverage-guided fuzzing on JSON.safeParse
 // ============================================================================
 
 test("CoverageGuided: fuzz JSON.safeParse with arbitrary strings", () => {
-  const result = CG.fuzz(Arb.string({ maxLength: 200 }), (input) => {
-    // safeParse should never throw — it returns a Result
-    const res = VJSON.safeParse(input);
-    if (res[0] !== true && res[0] !== false) {
-      throw new Error(`safeParse returned invalid result`);
-    }
-  }, { maxDuration: 5000 });
+  const result = CG.fuzz(
+    Arb.string({ maxLength: 200 }),
+    (input) => {
+      // safeParse should never throw — it returns a Result
+      const res = VJSON.safeParse(input);
+      if (res[0] !== true && res[0] !== false) {
+        throw new Error(`safeParse returned invalid result`);
+      }
+    },
+    { maxDuration: 5000 },
+  );
 
   assert.equal(result.ok, true, `safeParse crashed: ${result.error}`);
 });
@@ -322,20 +238,24 @@ test("CoverageGuided: fuzz JSON.safeParse with arbitrary strings", () => {
 // ============================================================================
 
 test("CoverageGuided: fuzz HTML.escape never throws", () => {
-  const result = CG.fuzz(Arb.string({ maxLength: 500 }), (input) => {
-    const escaped = HTML.escape(input);
-    // escaped must be a string
-    if (typeof escaped !== "string") {
-      throw new Error(`escape returned ${typeof escaped}`);
-    }
-    // Must not contain raw < > " '
-    for (let i = 0; i < escaped.length; i++) {
-      const c = escaped[i];
-      if (c === "<" || c === ">" || c === '"' || c === "'") {
-        throw new Error(`Unescaped '${c}' at position ${i}`);
+  const result = CG.fuzz(
+    Arb.string({ maxLength: 500 }),
+    (input) => {
+      const escaped = HTML.escape(input);
+      // escaped must be a string
+      if (typeof escaped !== "string") {
+        throw new Error(`escape returned ${typeof escaped}`);
       }
-    }
-  }, { maxDuration: 5000 });
+      // Must not contain raw < > " '
+      for (let i = 0; i < escaped.length; i++) {
+        const c = escaped[i];
+        if (c === "<" || c === ">" || c === '"' || c === "'") {
+          throw new Error(`Unescaped '${c}' at position ${i}`);
+        }
+      }
+    },
+    { maxDuration: 5000 },
+  );
 
   assert.equal(result.ok, true, `HTML.escape failed: ${result.error}`);
 });
@@ -347,7 +267,11 @@ test("CoverageGuided: fuzz HTML.escape never throws", () => {
 test("CoverageGuided: fuzz RadixTree operations never crash", () => {
   const opArb = Arb.tuple(
     Arb.constantFrom<"insert" | "lookup" | "remove" | "prefixMatch" | "entries">(
-      "insert", "lookup", "remove", "prefixMatch", "entries",
+      "insert",
+      "lookup",
+      "remove",
+      "prefixMatch",
+      "entries",
     ),
     Arb.string({ maxLength: 20 }),
     Arb.integer(0, 10000),
@@ -355,15 +279,29 @@ test("CoverageGuided: fuzz RadixTree operations never crash", () => {
 
   const tree = RadixTree.make<number>();
 
-  const result = CG.fuzz(opArb, ([op, key, val]) => {
-    switch (op) {
-      case "insert": RadixTree.insert(tree, key, val); break;
-      case "lookup": RadixTree.lookup(tree, key); break;
-      case "remove": RadixTree.remove(tree, key); break;
-      case "prefixMatch": RadixTree.prefixMatch(tree, key); break;
-      case "entries": RadixTree.entries(tree); break;
-    }
-  }, { maxDuration: 5000 });
+  const result = CG.fuzz(
+    opArb,
+    ([op, key, val]) => {
+      switch (op) {
+        case "insert":
+          RadixTree.insert(tree, key, val);
+          break;
+        case "lookup":
+          RadixTree.lookup(tree, key);
+          break;
+        case "remove":
+          RadixTree.remove(tree, key);
+          break;
+        case "prefixMatch":
+          RadixTree.prefixMatch(tree, key);
+          break;
+        case "entries":
+          RadixTree.entries(tree);
+          break;
+      }
+    },
+    { maxDuration: 5000 },
+  );
 
   assert.equal(result.ok, true, `RadixTree crashed: ${result.error}`);
 });
@@ -377,13 +315,19 @@ test("Memoization: import and fuzz", async () => {
 
   // Test memoize basic correctness
   let callCount = 0;
-  const fn = Memo.memoize((x: number) => { callCount++; return x * 2; });
+  const fn = Memo.memoize((x: number) => {
+    callCount++;
+    return x * 2;
+  });
 
   Prop.assert(
     Arb.array(Arb.integer(0, 50), { minLength: 1, maxLength: 100 }),
     (inputs) => {
       callCount = 0;
-      const memo = Memo.memoize((x: number) => { callCount++; return x * x; });
+      const memo = Memo.memoize((x: number) => {
+        callCount++;
+        return x * x;
+      });
 
       const results: number[] = [];
       for (const x of inputs) {
@@ -410,7 +354,10 @@ test("Memoization: once() calls function exactly once", async () => {
     Arb.integer(1, 100),
     (n) => {
       let calls = 0;
-      const fn = Memo.once(() => { calls++; return 42; });
+      const fn = Memo.once(() => {
+        calls++;
+        return 42;
+      });
 
       for (let i = 0; i < n; i++) fn();
       return calls === 1 && fn() === 42;

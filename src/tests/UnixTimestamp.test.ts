@@ -2,7 +2,7 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as UnixTimestamp from "../UnixTimestamp.js";
 import * as ISOTimestamp from "../ISOTimestamp.js";
-import { ValidationError } from "../Validator.js";
+import { ValidationError } from "../schema/ValidationError.js";
 
 // --- unixTimestamp (throwing constructor) ---
 
@@ -88,10 +88,7 @@ test("fromISO/toISO roundtrip preserves second precision", () => {
   const iso = ISOTimestamp.isoTimestamp("2024-01-15T10:30:00.000Z");
   const unix = UnixTimestamp.fromISO(iso);
   const back = UnixTimestamp.toISO(unix);
-  assert.equal(
-    new Date(back as string).getTime(),
-    new Date(iso as string).getTime(),
-  );
+  assert.equal(new Date(back as string).getTime(), new Date(iso as string).getTime());
 });
 
 // --- validator ---

@@ -27,7 +27,7 @@
 
 import type { Branded } from "./FunctionUtils.js";
 import { type Result, ok, err } from "./Result.js";
-import { ValidationError, type Validator } from "./ValidationError.js";
+import { ValidationError, type Validator } from "./schema/ValidationError.js";
 import { randomUUID, getRandomValues } from "node:crypto";
 
 /** Branded string guaranteed to be a valid UUID. */
@@ -114,7 +114,7 @@ export function version(id: UUID): number {
   return parseInt(id[14], 16);
 }
 
-/** Returns a `Validator<UUID>` for use with the Validator module. */
+/** Returns a `Validator<UUID>` that validates unknown values as UUIDs. */
 export function validator(): Validator<UUID> {
   return function validateUUID(value: unknown): Result<UUID, ValidationError> {
     if (typeof value !== "string") return err(new ValidationError("UUID", value));

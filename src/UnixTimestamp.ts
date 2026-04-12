@@ -27,7 +27,7 @@
 
 import type { Branded } from "./FunctionUtils.js";
 import { type Result, ok, err } from "./Result.js";
-import { ValidationError, type Validator } from "./ValidationError.js";
+import { ValidationError, type Validator } from "./schema/ValidationError.js";
 import { type ISOTimestamp, fromEpochMs } from "./ISOTimestamp.js";
 
 /** Branded number guaranteed to be a finite Unix epoch timestamp in seconds. */
@@ -69,7 +69,7 @@ export function toISO(ts: UnixTimestamp): ISOTimestamp {
   return fromEpochMs(ts * 1000);
 }
 
-/** Returns a `Validator<UnixTimestamp>` for use with the Validator module. */
+/** Returns a `Validator<UnixTimestamp>` that validates unknown values as Unix timestamps. */
 export function validator(): Validator<UnixTimestamp> {
   return function validateUnixTimestamp(value: unknown): Result<UnixTimestamp, ValidationError> {
     if (typeof value !== "number" || !Number.isFinite(value))

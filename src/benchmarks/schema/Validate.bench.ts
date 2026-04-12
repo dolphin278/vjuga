@@ -2,7 +2,6 @@ import { bench, run } from "mitata";
 import { reportOptimizationStatus } from "../_v8.js";
 import * as S from "../../schema/Schema.js";
 import { validate } from "../../schema/Validate.js";
-import * as Validator from "../../Validator.js";
 
 // ---------------------------------------------------------------------------
 // Schema + compiled validators
@@ -33,22 +32,10 @@ const invalidUser = {
 
 const compiledValidator = validate(userSchema);
 
-// Closure-based validator (existing Validator module) for comparison
-const closureValidator = Validator.object({
-  id: Validator.number(),
-  name: Validator.string(),
-  email: Validator.string(),
-  active: Validator.boolean(),
-  tags: Validator.array(Validator.string()),
-});
-
 // Pre-compile to measure validation cost, not compilation cost
 const strValidator = validate(S.string());
 const intValidator = validate(S.integer());
 const arrValidator = validate(S.array(S.number()));
-const closureStr = Validator.string();
-const closureInt = Validator.integer();
-const closureArr = Validator.array(Validator.number());
 const tenNumbers = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
 
 // --- Warm-up ---
@@ -56,33 +43,21 @@ const tenNumbers = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
   for (let i = 0; i < 100_000; i++) {
     compiledValidator(validUser);
     compiledValidator(invalidUser);
-    closureValidator(validUser);
-    closureValidator(invalidUser);
     strValidator("hello");
     intValidator(42);
     arrValidator(tenNumbers);
   }
   reportOptimizationStatus(compiledValidator, "compiledValidator");
-  reportOptimizationStatus(closureValidator, "closureValidator");
   reportOptimizationStatus(strValidator, "strValidator");
 }
 
 // --- Benchmarks ---
 
 bench("Schema.validate — valid user (5 fields)", () => compiledValidator(validUser));
-bench("Validator.object — valid user (5 fields)", () => closureValidator(validUser));
-
 bench("Schema.validate — invalid user (first field)", () => compiledValidator(invalidUser));
-bench("Validator.object — invalid user (first field)", () => closureValidator(invalidUser));
-
 bench("Schema.validate — string", () => strValidator("hello"));
-bench("Validator.string", () => closureStr("hello"));
-
 bench("Schema.validate — integer", () => intValidator(42));
-bench("Validator.integer", () => closureInt(42));
-
 bench("Schema.validate — array(10 numbers)", () => arrValidator(tenNumbers));
-bench("Validator.array(10 numbers)", () => closureArr(tenNumbers));
 
 // Discriminated union
 const shapeSchema = S.union(

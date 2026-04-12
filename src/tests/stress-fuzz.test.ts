@@ -6,7 +6,6 @@
  * - PriorityQueue comparator edge cases (equal elements, NaN)
  * - RadixTree empty-string keys mixed with non-empty
  * - SOA pop() on empty, swapRemove last element
- * - Validator: non-object/non-array inputs to object()/array()
  * - JSON: parse edge cases (empty string, whitespace-only, nested arrays)
  */
 import { test } from "node:test";
@@ -16,7 +15,6 @@ import * as LRU from "../LRUCache.js";
 import * as PQ from "../PriorityQueue.js";
 import * as RadixTree from "../RadixTree.js";
 import * as SOA from "../SOA.js";
-import * as V from "../Validator.js";
 import * as VJSON from "../JSON.js";
 import * as Arb from "../Arbitrary.js";
 import * as Prop from "../Property.js";
@@ -37,7 +35,11 @@ test("Queue: size is exact at every power-of-2 boundary", () => {
     }
     for (let i = 0; i < boundary; i++) {
       Queue.shift(q);
-      assert.equal(Queue.size(q), boundary - i - 1, `size wrong after ${i + 1} shifts (boundary ${boundary})`);
+      assert.equal(
+        Queue.size(q),
+        boundary - i - 1,
+        `size wrong after ${i + 1} shifts (boundary ${boundary})`,
+      );
     }
   }
 });
@@ -239,50 +241,6 @@ test("RadixTree: single-char keys stress binary search", () => {
 });
 
 // ============================================================================
-// Validator: adversarial inputs
-// ============================================================================
-
-test("Validator: object() rejects arrays, null, primitives", () => {
-  const objV = V.object({ x: V.number() });
-
-  // Arrays are typeof "object" but should fail object validation
-  assert.equal(objV([])[0], false);
-  assert.equal(objV([1, 2, 3])[0], false);
-  assert.equal(objV(null)[0], false);
-  assert.equal(objV(undefined)[0], false);
-  assert.equal(objV(42)[0], false);
-  assert.equal(objV("string")[0], false);
-  assert.equal(objV(true)[0], false);
-});
-
-test("Validator: object() with missing fields returns Err", () => {
-  const validator = V.object({ a: V.string(), b: V.number() });
-
-  // Missing 'b'
-  assert.equal(validator({ a: "hello" })[0], false);
-  // Missing 'a'
-  assert.equal(validator({ b: 42 })[0], false);
-  // Empty object
-  assert.equal(validator({})[0], false);
-  // Extra field is OK (structural typing)
-  assert.equal(validator({ a: "hello", b: 42, c: true })[0], true);
-});
-
-test("Validator: map() transforms values correctly under fuzz", () => {
-  const doubleV = V.map(V.number(), (n: number) => n * 2);
-
-  Prop.assert(
-    Arb.integer(-10000, 10000),
-    (n) => {
-      const result = doubleV(n);
-      if (result[0] !== true) return false;
-      return result[1] === n * 2;
-    },
-    { numRuns: 5000 },
-  );
-});
-
-// ============================================================================
 // JSON: edge-case strings
 // ============================================================================
 
@@ -325,9 +283,11 @@ test("SOA: swapRemove last element (idx === length-1)", () => {
   assert.equal(SOA.length(soa), 2);
   // SOA.get returns null-prototype objects — compare field by field
   const p0 = SOA.get(soa, 0);
-  assert.equal(p0.x, 1); assert.equal(p0.y, 4);
+  assert.equal(p0.x, 1);
+  assert.equal(p0.y, 4);
   const p1 = SOA.get(soa, 1);
-  assert.equal(p1.x, 2); assert.equal(p1.y, 5);
+  assert.equal(p1.x, 2);
+  assert.equal(p1.y, 5);
 });
 
 test("SOA: swapRemove first element", () => {
@@ -338,9 +298,11 @@ test("SOA: swapRemove first element", () => {
   assert.equal(SOA.length(soa), 2);
   // Element 0 should now be what was element 2
   const p0 = SOA.get(soa, 0);
-  assert.equal(p0.x, 3); assert.equal(p0.y, 6);
+  assert.equal(p0.x, 3);
+  assert.equal(p0.y, 6);
   const p1 = SOA.get(soa, 1);
-  assert.equal(p1.x, 2); assert.equal(p1.y, 5);
+  assert.equal(p1.x, 2);
+  assert.equal(p1.y, 5);
 });
 
 test("SOA: swapRemove out of bounds throws", () => {
@@ -363,26 +325,48 @@ test("Queue: 10,000-run stateful test", () => {
     initialModel: () => ({ arr: [] }),
     initialReal: () => Queue.make(),
     commands: [
-      (_m) => Arb.map(Arb.integer(0, 10000), (v) => ({
-        name: `push(${v})`, check: () => true,
-        run: (m, r) => { m.arr.push(v); Queue.push(r, v); },
-      })),
-      (_m) => Arb.constant<ST.Command<Model, Real>>({
-        name: "shift", check: (m) => m.arr.length > 0,
-        run: (m, r) => { assert.equal(Queue.shift(r), m.arr.shift()); },
-      }),
-      (_m) => Arb.constant<ST.Command<Model, Real>>({
-        name: "pop", check: (m) => m.arr.length > 0,
-        run: (m, r) => { assert.equal(Queue.pop(r), m.arr.pop()); },
-      }),
-      (_m) => Arb.map(Arb.integer(0, 10000), (v) => ({
-        name: `unshift(${v})`, check: () => true,
-        run: (m, r) => { m.arr.unshift(v); Queue.unshift(r, v); },
-      })),
-      (_m) => Arb.constant<ST.Command<Model, Real>>({
-        name: "toArray", check: () => true,
-        run: (m, r) => { assert.deepEqual(Queue.toArray(r), m.arr); },
-      }),
+      (_m) =>
+        Arb.map(Arb.integer(0, 10000), (v) => ({
+          name: `push(${v})`,
+          check: () => true,
+          run: (m, r) => {
+            m.arr.push(v);
+            Queue.push(r, v);
+          },
+        })),
+      (_m) =>
+        Arb.constant<ST.Command<Model, Real>>({
+          name: "shift",
+          check: (m) => m.arr.length > 0,
+          run: (m, r) => {
+            assert.equal(Queue.shift(r), m.arr.shift());
+          },
+        }),
+      (_m) =>
+        Arb.constant<ST.Command<Model, Real>>({
+          name: "pop",
+          check: (m) => m.arr.length > 0,
+          run: (m, r) => {
+            assert.equal(Queue.pop(r), m.arr.pop());
+          },
+        }),
+      (_m) =>
+        Arb.map(Arb.integer(0, 10000), (v) => ({
+          name: `unshift(${v})`,
+          check: () => true,
+          run: (m, r) => {
+            m.arr.unshift(v);
+            Queue.unshift(r, v);
+          },
+        })),
+      (_m) =>
+        Arb.constant<ST.Command<Model, Real>>({
+          name: "toArray",
+          check: () => true,
+          run: (m, r) => {
+            assert.deepEqual(Queue.toArray(r), m.arr);
+          },
+        }),
     ],
     numRuns: 10000,
     maxCommands: 30,
@@ -390,7 +374,11 @@ test("Queue: 10,000-run stateful test", () => {
 });
 
 test("LRUCache: 5,000-run stateful test (capacity 3)", () => {
-  interface LRUModel { map: Map<string, number>; order: string[]; capacity: number; }
+  interface LRUModel {
+    map: Map<string, number>;
+    order: string[];
+    capacity: number;
+  }
   type LRUReal = LRU.LRUCache<string, number>;
   const keyArb = Arb.string({ minLength: 1, maxLength: 2 });
 
@@ -425,26 +413,44 @@ test("LRUCache: 5,000-run stateful test (capacity 3)", () => {
     initialModel: (): LRUModel => ({ map: new Map(), order: [], capacity: 3 }),
     initialReal: () => LRU.make<string, number>(3),
     commands: [
-      (model) => Arb.map(Arb.tuple(biasedKey(model), Arb.integer(0, 100)), ([k, v]) => ({
-        name: `set(${k},${v})`, check: () => true,
-        run: (m: LRUModel, r: LRUReal) => { LRU.set(r, k, v); modelSet(m, k, v); },
-      })),
-      (model) => Arb.map(biasedKey(model), (k) => ({
-        name: `get(${k})`, check: () => true,
-        run: (m: LRUModel, r: LRUReal) => { assert.equal(LRU.get(r, k), modelGet(m, k)); },
-      })),
-      (model) => Arb.map(biasedKey(model), (k) => ({
-        name: `del(${k})`, check: () => true,
-        run: (m: LRUModel, r: LRUReal) => {
-          const existed = m.map.has(k);
-          if (existed) { m.map.delete(k); m.order.splice(m.order.indexOf(k), 1); }
-          assert.equal(LRU.del(r, k), existed);
-        },
-      })),
-      (_model) => Arb.constant<ST.Command<LRUModel, LRUReal>>({
-        name: "size", check: () => true,
-        run: (m, r) => { assert.equal(LRU.size(r), m.map.size); },
-      }),
+      (model) =>
+        Arb.map(Arb.tuple(biasedKey(model), Arb.integer(0, 100)), ([k, v]) => ({
+          name: `set(${k},${v})`,
+          check: () => true,
+          run: (m: LRUModel, r: LRUReal) => {
+            LRU.set(r, k, v);
+            modelSet(m, k, v);
+          },
+        })),
+      (model) =>
+        Arb.map(biasedKey(model), (k) => ({
+          name: `get(${k})`,
+          check: () => true,
+          run: (m: LRUModel, r: LRUReal) => {
+            assert.equal(LRU.get(r, k), modelGet(m, k));
+          },
+        })),
+      (model) =>
+        Arb.map(biasedKey(model), (k) => ({
+          name: `del(${k})`,
+          check: () => true,
+          run: (m: LRUModel, r: LRUReal) => {
+            const existed = m.map.has(k);
+            if (existed) {
+              m.map.delete(k);
+              m.order.splice(m.order.indexOf(k), 1);
+            }
+            assert.equal(LRU.del(r, k), existed);
+          },
+        })),
+      (_model) =>
+        Arb.constant<ST.Command<LRUModel, LRUReal>>({
+          name: "size",
+          check: () => true,
+          run: (m, r) => {
+            assert.equal(LRU.size(r), m.map.size);
+          },
+        }),
     ],
     numRuns: 5000,
     maxCommands: 50,

@@ -242,10 +242,24 @@ export function emitValidation(
 // Per-kind validation emitters
 // ---------------------------------------------------------------------------
 
+// Pre-computed format validation regexes — compiled once at module load,
+// captured via emitRef per compiled validator that needs them.
+const FORMAT_PATTERNS: Record<string, RegExp> = {
+  email: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
+  uri: /^[a-zA-Z][a-zA-Z0-9+\-.]*:\/\/\S+$/,
+  uuid: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+  "iso-datetime": /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/,
+};
+
 function emitStringCheck(
   buf: CodeBuffer,
   meta:
-    | { readonly minLength?: number; readonly maxLength?: number; readonly pattern?: string }
+    | {
+        readonly minLength?: number;
+        readonly maxLength?: number;
+        readonly pattern?: string;
+        readonly format?: string;
+      }
     | undefined,
   accessor: string,
   pathExpr: string,
@@ -274,6 +288,17 @@ function emitStringCheck(
         buf,
         `if (!${ref}.test(${accessor})) return _err(_me(${pathExpr}, "string(pattern=${meta.pattern})", ${accessor}));`,
       );
+    }
+    if (meta.format !== undefined) {
+      const fmtRegex = FORMAT_PATTERNS[meta.format];
+      if (fmtRegex !== undefined) {
+        const ref = freshVar(buf);
+        emitRef(buf, ref, fmtRegex);
+        emit(
+          buf,
+          `if (!${ref}.test(${accessor})) return _err(_me(${pathExpr}, "string(format=${meta.format})", ${accessor}));`,
+        );
+      }
     }
   }
 }

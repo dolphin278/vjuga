@@ -1036,3 +1036,42 @@ test("stringify/parse expanded array (non-tabular items)", () => {
   const result = par(toon);
   assert.equal(result[0], true);
 });
+
+// ---------------------------------------------------------------------------
+// nullable compound fields
+// ---------------------------------------------------------------------------
+
+test("nullable object field — round-trip", () => {
+  const schema = S.object({
+    name: S.string(),
+    address: S.nullable(S.object({ city: S.string(), zip: S.string() })),
+  });
+  const str = ST.stringify(schema);
+  const par = ST.parse(schema);
+  const obj = { name: "Alice", address: { city: "NYC", zip: "10001" } };
+  const toon = str(obj);
+  const result = assertOk(par(toon));
+  assert.deepEqual(result, obj);
+});
+
+test("record with special keys — round-trip", () => {
+  const schema = S.record(S.string());
+  const str = ST.stringify(schema);
+  const par = ST.parse(schema);
+  const obj = { "key: with colon": "val1", normal: "val2" };
+  const toon = str(obj);
+  const result = assertOk(par(toon));
+  assert.deepEqual(result, obj);
+});
+
+test("toonQuote/unquote control chars — round-trip", () => {
+  const schema = S.object({ data: S.string() });
+  const str = ST.stringify(schema);
+  const par = ST.parse(schema);
+  const obj = { data: "hello\x00world\x07end" };
+  const toon = str(obj);
+  assert.ok(toon.includes("\\u0000"));
+  assert.ok(toon.includes("\\u0007"));
+  const result = assertOk(par(toon));
+  assert.deepEqual(result, obj);
+});

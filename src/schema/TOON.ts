@@ -630,7 +630,9 @@ function emitRecordStringify(
   emit(ctx.buf, `for (var ${ki} = 0; ${ki} < ${ks}.length; ${ki}++) {`);
   ctx.buf.indent++;
   const valExpr = inlineExpr(schema.meta.values, `${accessor}[${ks}[${ki}]]`);
-  emit(ctx.buf, `s += ${innerPad} + ${ks}[${ki}] + ": " + ${valExpr} + "\\n";`);
+  // Quote record keys — keys containing ": ", delimiters, or control chars
+  // would break the parse round-trip (parser splits on indexOf(": ")).
+  emit(ctx.buf, `s += ${innerPad} + _q(${ks}[${ki}], _delim) + ": " + ${valExpr} + "\\n";`);
   ctx.buf.indent--;
   emit(ctx.buf, "}");
 
@@ -692,6 +694,33 @@ function readField(
   return lines[li].slice(prefixLen);
 }
 
+/**
+ * Split a record line into [key, value] at the ": " separator.
+ * Handles quoted keys: if line starts with `"`, find the closing `"`
+ * and expect `: ` immediately after. Returns null if no valid split found.
+ */
+function splitRecordLine(line: string): [string, string] | null {
+  if (line.charCodeAt(0) === 0x22) {
+    // Quoted key — find closing quote (skip escaped quotes)
+    for (let i = 1; i < line.length; i++) {
+      if (line.charCodeAt(i) === 0x5c) {
+        i++; // skip escaped char
+      } else if (line.charCodeAt(i) === 0x22) {
+        // Expect ": " immediately after closing quote
+        if (i + 2 < line.length && line.charCodeAt(i + 1) === 0x3a && line.charCodeAt(i + 2) === 0x20) {
+          return [line.slice(0, i + 1), line.slice(i + 3)];
+        }
+        return null; // malformed
+      }
+    }
+    return null; // unclosed quote
+  }
+  // Unquoted key — simple indexOf
+  const ci = line.indexOf(": ");
+  if (ci === -1) return null;
+  return [line.slice(0, ci), line.slice(ci + 2)];
+}
+
 // ---------------------------------------------------------------------------
 // parse
 // ---------------------------------------------------------------------------
@@ -717,6 +746,7 @@ export function parse<S extends Schema>(
   emitRef(buf, "_uq", toonUnquote);
   emitRef(buf, "_rf", readField);
   emitRef(buf, "_split", splitByDelimiter);
+  emitRef(buf, "_srl", splitRecordLine);
   emitRef(buf, "_delim", delim);
   // Single shared regex for all array header parsing — avoids duplicate instances
   emitRef(buf, "_hdrRe", /^[^[]*\[(\d+)\](\{[^}]*\})?:\s*(.*)?$/);
@@ -1007,7 +1037,11 @@ function emitCompoundFieldParse(
   resultVar: string,
   isOptional: boolean,
 ): void {
-  if (schema.kind === "array" || schema.kind === "tuple") {
+  // Unwrap nullable — the compound inner type determines parse logic.
+  // For nullable compound fields, the "null" literal is handled at the value
+  // level, not the structure level (TOON represents null objects as absent lines).
+  const unwrapped = schema.kind === "nullable" ? schema.meta.inner : schema;
+  if (unwrapped.kind === "array" || unwrapped.kind === "tuple") {
     const headerPrefix = keyPrefix + "[";
     if (isOptional) {
       emit(
@@ -1016,12 +1050,12 @@ function emitCompoundFieldParse(
       );
       buf.indent++;
     }
-    emitArrayHeaderParse(buf, schema, key, depth, pathExpr, indent, delim, resultVar);
+    emitArrayHeaderParse(buf, unwrapped, key, depth, pathExpr, indent, delim, resultVar);
     if (isOptional) {
       buf.indent--;
       emit(buf, "}");
     }
-  } else if (schema.kind === "object") {
+  } else if (unwrapped.kind === "object") {
     const nestedLine = keyPrefix + ":";
     if (isOptional) {
       emit(buf, `if (li < lines.length && lines[li] === ${escapeJsonString(nestedLine)}) {`);
@@ -1035,7 +1069,7 @@ function emitCompoundFieldParse(
     emit(buf, "li++;");
     const innerVar = freshVar(buf);
     emit(buf, `var ${innerVar} = {};`);
-    const innerProps = schema.meta.properties;
+    const innerProps = unwrapped.meta.properties;
     const innerKeys = Object.keys(innerProps);
     for (let i = 0; i < innerKeys.length; i++) {
       const ik = innerKeys[i];
@@ -1070,10 +1104,10 @@ function emitCompoundFieldParse(
       buf.indent--;
       emit(buf, "}");
     }
-  } else if (schema.kind === "record") {
+  } else if (unwrapped.kind === "record") {
     const nestedLine = keyPrefix + ":";
     emit(buf, `if (li < lines.length && lines[li] === ${escapeJsonString(nestedLine)}) { li++; }`);
-    const recVar = emitRecordParse(buf, schema, depth + 1, pathExpr, indent);
+    const recVar = emitRecordParse(buf, unwrapped, depth + 1, pathExpr, indent);
     emit(buf, `${resultVar}[${escapeJsonString(key)}] = ${recVar};`);
   }
 }
@@ -1247,12 +1281,14 @@ function emitRecordParse(
     emit(buf, `var ${cv} = lines[li].slice(${padStr.length});`);
   }
   emit(buf, `if (${cv}.startsWith(" ")) break;`);
-  emit(buf, `var ci = ${cv}.indexOf(": ");`);
-  emit(buf, "if (ci === -1) break;");
-  emit(buf, `var rk = ${cv}.slice(0, ci);`);
+  // splitRecordLine handles quoted keys (containing ": " or special chars)
+  const kvVar = freshVar(buf);
+  emit(buf, `var ${kvVar} = _srl(${cv});`);
+  emit(buf, `if (${kvVar} === null) break;`);
+  emit(buf, `var rk = _uq(${kvVar}[0]);`);
   // Prototype pollution guard — skip dangerous keys from untrusted input
   emit(buf, 'if (rk === "__proto__" || rk === "constructor") { li++; continue; }');
-  emit(buf, `var rv = ${cv}.slice(ci + 2);`);
+  emit(buf, `var rv = ${kvVar}[1];`);
   emit(buf, "li++;");
   const valVar = freshVar(buf);
   emitPrimValueParse(buf, schema.meta.values, "rv", pathExpr, valVar);
@@ -1346,7 +1382,9 @@ function emitFlexibleObjectParse(
 // ---------------------------------------------------------------------------
 
 function isCompound(schema: Schema): boolean {
-  const inner = schema.kind === "optional" ? schema.meta.inner : schema;
+  let inner: Schema = schema;
+  // Unwrap optional and nullable wrappers to check if the core type is compound
+  while (inner.kind === "optional" || inner.kind === "nullable") inner = inner.meta.inner;
   return (
     inner.kind === "object" ||
     inner.kind === "array" ||

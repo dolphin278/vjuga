@@ -696,3 +696,57 @@ test("union — error includes path info", () => {
   const e = r[1] as SchemaError;
   assert.equal(e.path, "x");
 });
+
+// ---------------------------------------------------------------------------
+// String format validation
+// ---------------------------------------------------------------------------
+
+test("string format: email — accepts valid", () => {
+  const v = validate(S.string({ format: "email" }));
+  assertOk(v("user@example.com"));
+  assertOk(v("a+b@sub.domain.co"));
+});
+
+test("string format: email — rejects invalid", () => {
+  const v = validate(S.string({ format: "email" }));
+  const e = assertErr(v("not-an-email"));
+  assert.equal(e.expected, "string(format=email)");
+});
+
+test("string format: uri — accepts valid", () => {
+  const v = validate(S.string({ format: "uri" }));
+  assertOk(v("https://example.com/path?q=1"));
+  assertOk(v("ftp://files.example.com"));
+});
+
+test("string format: uri — rejects invalid", () => {
+  const v = validate(S.string({ format: "uri" }));
+  assertErr(v("not a uri"));
+});
+
+test("string format: uuid — accepts valid", () => {
+  const v = validate(S.string({ format: "uuid" }));
+  assertOk(v("550e8400-e29b-41d4-a716-446655440000"));
+});
+
+test("string format: uuid — rejects invalid", () => {
+  const v = validate(S.string({ format: "uuid" }));
+  assertErr(v("not-a-uuid"));
+});
+
+test("string format: iso-datetime — accepts valid", () => {
+  const v = validate(S.string({ format: "iso-datetime" }));
+  assertOk(v("2024-01-15T10:30:00Z"));
+  assertOk(v("2024-01-15T10:30:00.123+05:00"));
+});
+
+test("string format: iso-datetime — rejects invalid", () => {
+  const v = validate(S.string({ format: "iso-datetime" }));
+  assertErr(v("2024-01-15"));
+});
+
+test("string format: unknown format — silently skipped", () => {
+  // Unknown format strings should not cause errors
+  const v = validate(S.string({ format: "custom-thing" as "email" }));
+  assertOk(v("anything"));
+});

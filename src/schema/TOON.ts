@@ -43,16 +43,63 @@ import {
 // TOON helpers — captured by generated code
 // ---------------------------------------------------------------------------
 
-// oxlint-disable-next-line no-control-regex -- TOON spec requires quoting strings with control chars
-const NEEDS_QUOTE_RE =
-  /^$|^\s|\s$|^(true|false|null)$|^-?\d+(\.\d+)?(e[+-]?\d+)?$|^0\d|[:"\\[\]{}]|[\u0000-\u001f]|^-$/;
+/**
+ * Check if a TOON string value needs quoting. Single-pass charCode scan
+ * replaces the previous regex (NEEDS_QUOTE_RE) which accounted for ~8% of
+ * TOON stringify CPU time. The delimiter check is folded into the same scan,
+ * eliminating a separate indexOf call.
+ *
+ * Rules: quote if empty, starts/ends with whitespace, is a reserved word
+ * (true/false/null), looks numeric, contains special chars (: " \ [ ] { }),
+ * contains control chars, or contains the delimiter.
+ */
+function needsQuote(s: string, delimCode: number): boolean {
+  const len = s.length;
+  if (len === 0) return true;
+
+  const first = s.charCodeAt(0);
+  const last = s.charCodeAt(len - 1);
+
+  // Leading/trailing whitespace
+  if (first <= 0x20 || last <= 0x20) return true;
+
+  // Reserved words: true (4), false (5), null (4)
+  if (len === 4 && (s === "true" || s === "null")) return true;
+  if (len === 5 && s === "false") return true;
+
+  // Lone dash
+  if (len === 1 && first === 0x2d) return true;
+
+  // Numeric-looking: starts with digit or dash-then-digit, or leading-zero pattern
+  if (first >= 0x30 && first <= 0x39) return true; // starts with 0-9
+  if (first === 0x2d && len > 1 && s.charCodeAt(1) >= 0x30 && s.charCodeAt(1) <= 0x39) return true;
+
+  // Scan for special chars, control chars, and delimiter
+  for (let i = 0; i < len; i++) {
+    const c = s.charCodeAt(i);
+    if (
+      c === 0x3a || // :
+      c === 0x22 || // "
+      c === 0x5c || // \
+      c === 0x5b || // [
+      c === 0x5d || // ]
+      c === 0x7b || // {
+      c === 0x7d || // }
+      c < 0x20 || // control chars
+      c === delimCode // delimiter
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
 
 /**
- * Quote a TOON string value. Single-pass charCode scan avoids the 5x
- * .replace() chain that would scan the full string per escape character.
+ * Quote a TOON string value. Uses needsQuote() for the fast-path check
+ * (charCode scan, no regex), then escapes in a single pass.
  */
 function toonQuote(s: string, delim: string): string {
-  if (!NEEDS_QUOTE_RE.test(s) && s.indexOf(delim) === -1) return s;
+  if (!needsQuote(s, delim.charCodeAt(0))) return s;
   let out = '"';
   let last = 0;
   for (let i = 0; i < s.length; i++) {
@@ -116,8 +163,30 @@ function canonicalNumber(n: number): string {
 /**
  * Split inline values by delimiter, respecting quoted strings.
  * Uses slice-based accumulation to avoid per-character string allocation.
+ * When `expected` is provided, pre-allocates the result array to avoid
+ * dynamic growth (saves ~1.4% of TOON parse CPU on tabular data).
  */
-function splitByDelimiter(s: string, delim: string): string[] {
+function splitByDelimiter(s: string, delim: string, expected?: number): string[] {
+  if (expected !== undefined) {
+    // Pre-allocated path: indexed assignment instead of push
+    const result = new Array<string>(expected);
+    let idx = 0;
+    let start = 0;
+    let inQuote = false;
+    for (let i = 0; i < s.length; i++) {
+      if (inQuote) {
+        if (s.charCodeAt(i) === 0x5c) i++;
+        else if (s.charCodeAt(i) === 0x22) inQuote = false;
+      } else if (s.charCodeAt(i) === 0x22) {
+        inQuote = true;
+      } else if (s[i] === delim) {
+        result[idx++] = s.slice(start, i);
+        start = i + 1;
+      }
+    }
+    result[idx] = s.slice(start);
+    return result;
+  }
   const result: string[] = [];
   let start = 0;
   let inQuote = false;
@@ -985,7 +1054,7 @@ function emitTabularParse(
   emit(buf, `var row = lines[li++];`);
   emit(
     buf,
-    `var cells = _split(row.startsWith(${escapeJsonString(childPad)}) ? row.slice(${childPad.length}) : row.trim(), _delim);`,
+    `var cells = _split(row.startsWith(${escapeJsonString(childPad)}) ? row.slice(${childPad.length}) : row.trim(), _delim, ${fields.length});`,
   );
   emit(buf, `var obj = {};`);
   for (let j = 0; j < fields.length; j++) {

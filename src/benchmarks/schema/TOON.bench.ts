@@ -37,11 +37,16 @@ const simpleToon = toonStr(simpleObj);
 const tabularToon = toonTabStr(tabularObj);
 
 // --- Warm-up ---
+// 200K iterations to ensure V8 promotes all functions to Turbofan. Complex
+// generated functions (toonPar, toonTabStr) need more warmup than simple ones
+// because their bytecode is larger, requiring more invocations before V8's
+// heuristics trigger Turbofan compilation.
 {
-  for (let i = 0; i < 100_000; i++) {
+  for (let i = 0; i < 200_000; i++) {
     toonStr(simpleObj);
     toonPar(simpleToon);
     toonTabStr(tabularObj);
+    toonTabPar(tabularToon);
   }
   reportOptimizationStatus(toonStr, "toonStr");
   reportOptimizationStatus(toonPar, "toonPar");

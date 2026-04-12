@@ -101,13 +101,23 @@ import {
   emitRef,
   freshVar,
   compileFunction,
-  compileHelper,
   typeCheckExpr,
 } from "./Codegen.js";
 
 // ---------------------------------------------------------------------------
 // TOON helpers — captured by generated code
 // ---------------------------------------------------------------------------
+
+// Pre-computed escape table for control characters (0x00-0x1f) in TOON strings.
+// Same pattern as JSON.ts ESCAPE_TABLE. Eliminates toString(16)+padStart(4,"0")
+// allocation per control char on the hot path.
+const TOON_ESCAPE_TABLE: string[] = [];
+for (let i = 0; i < 32; i++) {
+  TOON_ESCAPE_TABLE[i] = "\\u" + i.toString(16).padStart(4, "0");
+}
+TOON_ESCAPE_TABLE[0x09] = "\\t";
+TOON_ESCAPE_TABLE[0x0a] = "\\n";
+TOON_ESCAPE_TABLE[0x0d] = "\\r";
 
 /**
  * Check if a TOON string value needs quoting. Single-pass charCode scan
@@ -188,8 +198,8 @@ function toonQuote(s: string, delim: string): string {
       last = i + 1;
     } else if (c < 0x20) {
       // Remaining control chars (0x00-0x08, 0x0b, 0x0c, 0x0e-0x1f) — escape
-      // as \uXXXX so the TOON output contains no raw control characters.
-      out += s.slice(last, i) + "\\u" + c.toString(16).padStart(4, "0");
+      // via pre-computed table. Avoids toString(16)+padStart allocation per char.
+      out += s.slice(last, i) + TOON_ESCAPE_TABLE[c];
       last = i + 1;
     }
   }
@@ -251,6 +261,9 @@ function canonicalNumber(n: number): string {
  * dynamic growth (saves ~1.4% of TOON parse CPU on tabular data).
  */
 function splitByDelimiter(s: string, delim: string, expected?: number): string[] {
+  // Pre-compute delimiter charCode once — avoids per-iteration string comparison.
+  // V8 compiles charCodeAt comparisons to a single integer cmp instruction.
+  const dc = delim.charCodeAt(0);
   if (expected !== undefined) {
     // Pre-allocated path: indexed assignment instead of push
     const result = new Array<string>(expected);
@@ -258,12 +271,13 @@ function splitByDelimiter(s: string, delim: string, expected?: number): string[]
     let start = 0;
     let inQuote = false;
     for (let i = 0; i < s.length; i++) {
+      const c = s.charCodeAt(i);
       if (inQuote) {
-        if (s.charCodeAt(i) === 0x5c && i + 1 < s.length) i++;
-        else if (s.charCodeAt(i) === 0x22) inQuote = false;
-      } else if (s.charCodeAt(i) === 0x22) {
+        if (c === 0x5c && i + 1 < s.length) i++;
+        else if (c === 0x22) inQuote = false;
+      } else if (c === 0x22) {
         inQuote = true;
-      } else if (s[i] === delim) {
+      } else if (c === dc) {
         result[idx++] = s.slice(start, i);
         start = i + 1;
       }
@@ -279,13 +293,14 @@ function splitByDelimiter(s: string, delim: string, expected?: number): string[]
   let start = 0;
   let inQuote = false;
   for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
     if (inQuote) {
-      if (s.charCodeAt(i) === 0x5c && i + 1 < s.length)
+      if (c === 0x5c && i + 1 < s.length)
         i++; // skip escaped char
-      else if (s.charCodeAt(i) === 0x22) inQuote = false;
-    } else if (s.charCodeAt(i) === 0x22) {
+      else if (c === 0x22) inQuote = false;
+    } else if (c === 0x22) {
       inQuote = true;
-    } else if (s[i] === delim) {
+    } else if (c === dc) {
       result.push(s.slice(start, i));
       start = i + 1;
     }
@@ -507,26 +522,22 @@ function emitArrayStringify(
   }
 
   if (isPrimitive(schema.meta.items)) {
-    const helperName = freshVar(ctx.buf);
-    const elemExpr = inlineExpr(schema.meta.items, "a[i]");
-    // Use += cons-string concat (matches JSON array stringify pattern) —
-    // avoids per-call array allocation and join overhead.
-    const fn = compileHelper<Function>(
-      ctx.buf,
-      `function ${helperName}(a) {
-  var n = a.length;
-  if (n === 0) return "";
-  var i = 0;
-  var s = ${elemExpr};
-  for (i = 1; i < n; i++) s += _delim + ${elemExpr};
-  return s;
-}`,
-    );
-    emitRef(ctx.buf, helperName, fn);
+    // Inline the array serialization loop directly — eliminates a compiled
+    // helper function call, keeping everything in one function for Turbofan.
     emit(
       ctx.buf,
-      `s += ${pad} + ${escapeJsonString(header)} + "[" + ${accessor}.length + "]: " + ${helperName}(${accessor}) + "\\n";`,
+      `s += ${pad} + ${escapeJsonString(header)} + "[" + ${accessor}.length + "]: ";`,
     );
+    const idx = freshVar(ctx.buf);
+    const elemExpr0 = inlineExpr(schema.meta.items, `${accessor}[0]`);
+    const elemExprI = inlineExpr(schema.meta.items, `${accessor}[${idx}]`);
+    emit(ctx.buf, `if (${accessor}.length > 0) {`);
+    ctx.buf.indent++;
+    emit(ctx.buf, `s += ${elemExpr0};`);
+    emit(ctx.buf, `for (var ${idx} = 1; ${idx} < ${accessor}.length; ${idx}++) s += _delim + ${elemExprI};`);
+    ctx.buf.indent--;
+    emit(ctx.buf, "}");
+    emit(ctx.buf, `s += "\\n";`);
     return;
   }
 
@@ -562,24 +573,17 @@ function emitTabularStringify(
     `s += ${pad} + ${escapeJsonString(header)} + "[" + ${accessor}.length + "]${fieldHeader}:\\n";`,
   );
 
-  // Row serializer helper
-  const helperName = freshVar(ctx.buf);
-  const cellExprs = fields.map((f) => {
-    const child = objSchema.meta.properties[f];
-    // Use the full child (including optional wrapper) so inlineExpr emits
-    // the undefined guard: `(accessor === undefined ? "" : inner_expr)`
-    return inlineExpr(child, `o[${escapeJsonString(f)}]`);
-  });
-  const fn = compileHelper<Function>(
-    ctx.buf,
-    `function ${helperName}(o) { return ${cellExprs.join(" + _delim + ")}; }`,
-  );
-  emitRef(ctx.buf, helperName, fn);
-
+  // Inline cell expressions directly in the loop body — eliminates one level
+  // of function call indirection. V8 can now inline _q/_cn calls directly
+  // instead of going through a helper, reducing Turbofan's inlining budget.
   const idx = freshVar(ctx.buf);
   emit(ctx.buf, `for (var ${idx} = 0; ${idx} < ${accessor}.length; ${idx}++) {`);
   ctx.buf.indent++;
-  emit(ctx.buf, `s += ${childPad} + ${helperName}(${accessor}[${idx}]) + "\\n";`);
+  const cellExprs = fields.map((f) => {
+    const child = objSchema.meta.properties[f];
+    return inlineExpr(child, `${accessor}[${idx}][${escapeJsonString(f)}]`);
+  });
+  emit(ctx.buf, `s += ${childPad} + ${cellExprs.join(" + _delim + ")} + "\\n";`);
   ctx.buf.indent--;
   emit(ctx.buf, "}");
 }
@@ -680,6 +684,17 @@ function emitUnionStringify(
 // ---------------------------------------------------------------------------
 
 /**
+ * Get error context from current parse position. Returns the current line
+ * or "end of input" if past the end. Extracted as a helper to reduce
+ * generated bytecode — this expression appeared inline per field (~30 chars
+ * each), inflating generated parse functions beyond Turbofan's promotion
+ * threshold.
+ */
+function getErrorCtx(lines: readonly string[], li: number): string {
+  return li < lines.length ? lines[li] : "end of input";
+}
+
+/**
  * Read a field line: check that lines[li] starts with `prefix`, return the
  * value portion (after slicing the prefix). Returns null on mismatch.
  * Monomorphic: always receives (string[], number, string, number).
@@ -745,6 +760,7 @@ export function parse<S extends Schema>(
   emitStandardRefs(buf, ok, err);
   emitRef(buf, "_uq", toonUnquote);
   emitRef(buf, "_rf", readField);
+  emitRef(buf, "_ge", getErrorCtx);
   emitRef(buf, "_split", splitByDelimiter);
   emitRef(buf, "_srl", splitRecordLine);
   emitRef(buf, "_delim", delim);
@@ -754,7 +770,9 @@ export function parse<S extends Schema>(
   emit(buf, "return function toonParse(input) {");
   buf.indent++;
   emit(buf, 'var lines = input.split("\\n");');
-  emit(buf, "while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop();");
+  // No trailing empty line trim needed — parsers break/return before reaching
+  // trailing empty lines. Removing the while/pop loop eliminates array mutation
+  // and .trim() calls, reducing bytecode for faster Turbofan promotion.
   emit(buf, "var li = 0;");
   emitParseBody(buf, schema, 0, '""', indent, delim, flexible);
   buf.indent--;
@@ -1010,7 +1028,7 @@ function emitPrimFieldParse(
   } else {
     emit(
       buf,
-      `if (${rawVar} === null) return _err(_me(${pathExpr}, ${escapeJsonString("key '" + key + "'")}, li < lines.length ? lines[li] : "end of input"));`,
+      `if (${rawVar} === null) return _err(_me(${pathExpr}, ${escapeJsonString("key '" + key + "'")}, _ge(lines, li)));`,
     );
   }
 
@@ -1063,7 +1081,7 @@ function emitCompoundFieldParse(
     } else {
       emit(
         buf,
-        `if (li >= lines.length || lines[li] !== ${escapeJsonString(nestedLine)}) return _err(_me(${pathExpr}, ${escapeJsonString("key '" + key + "'")}, li < lines.length ? lines[li] : "end of input"));`,
+        `if (li >= lines.length || lines[li] !== ${escapeJsonString(nestedLine)}) return _err(_me(${pathExpr}, ${escapeJsonString("key '" + key + "'")}, _ge(lines, li)));`,
       );
     }
     emit(buf, "li++;");

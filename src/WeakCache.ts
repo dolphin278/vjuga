@@ -23,6 +23,13 @@
  * All private state uses module-scope unique symbols so every WeakCache
  * instance shares the same hidden class — keeping call sites monomorphic
  * across all instances.
+ *
+ * When to use: caching large objects (parsed ASTs, compiled schemas, decoded
+ * images) where you want the GC to reclaim entries automatically when they
+ * are no longer referenced elsewhere. Do not rely on WeakCache for guaranteed
+ * cache hits — entries can disappear at any GC cycle once all external
+ * references are dropped. For deterministic capacity-bounded caching, use
+ * `LRUCache`. Values must be objects; primitives are rejected by `WeakRef`.
  */
 
 const kEntries: unique symbol = Symbol("entries");

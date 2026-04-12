@@ -1,3 +1,23 @@
+/**
+ * BatchExecutor — dataloader-style batching with per-item promise results.
+ *
+ * When to use: N concurrent callers each need an individual async result, but
+ * the underlying work (DB query, HTTP call, RPC) is more efficient when
+ * executed as a single batch. Unlike `BufferizedFunction`, each caller gets a
+ * `Promise<R>` that resolves or rejects independently. Use `BufferizedFunction`
+ * when callers do not need return values (fire-and-forget).
+ *
+ * Unlike the original dataloader pattern, BatchExecutor does not deduplicate
+ * requests with identical arguments — intentional side effects are supported.
+ *
+ * The `schedule` parameter controls batch timing:
+ *   - `"macrotask"` (default): fires via `setTimeout(0)` on next macrotask.
+ *   - `"io"`: fires via `setImmediate` after the I/O poll phase (lower latency).
+ *
+ * Contract: the batch function must return exactly as many `PromiseSettledResult`
+ * items as it received — a length mismatch throws at runtime.
+ */
+
 import { make as makeBufferizedFn, type ScheduleMode } from "./BufferizedFunction.js";
 import * as MemoryPool from "./MemoryPool.js";
 import type { Fn1 } from "./FunctionUtils.js";

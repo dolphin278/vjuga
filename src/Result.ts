@@ -14,6 +14,13 @@
  *   - Pairs naturally with destructuring: `const [ok, value] = result`.
  *
  * No symbols, no string literals as enum values (per Style Guide).
+ *
+ * When to use: any function that can fail in an expected, recoverable way —
+ * HTTP responses, parsing, I/O, validation. Return `Result` instead of
+ * throwing so callers are forced by the type system to handle failure. Use
+ * `fromThrowable` / `fromPromise` to wrap third-party APIs that throw. For
+ * 3+ variants or when exhaustive pattern matching is more readable, use
+ * `TaggedUnion` instead.
  */
 
 export type Ok<T> = readonly [true, T];

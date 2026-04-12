@@ -25,6 +25,14 @@
  * detach() and insertAfterSentinel() are module-level free functions (not per-
  * instance closures) so V8 ICs for those call sites remain monomorphic across
  * all LRUCache instances — every instance has the same struct shape.
+ *
+ * When to use: bounded caches where recency proxies usefulness — memoized
+ * computations, DNS results, rendered templates, parsed queries. Always set
+ * `capacity` explicitly; an unbounded `Map` is simpler when the key space is
+ * known to be small. If cached values are large objects that should be
+ * released under memory pressure, prefer `WeakCache`. To memoize with a
+ * bounded LRU cache, pass an LRUCache-backed `Map` to `Memoization.memoize`
+ * via `opts.cache`.
  */
 
 const kPrev: unique symbol = Symbol("prev");

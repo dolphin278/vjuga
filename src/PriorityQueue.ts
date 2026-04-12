@@ -11,6 +11,12 @@
  * A comparator function determines priority. The heap is a *min-heap*: the
  * element for which `comparator(a, b) < 0` is "less than" b is considered
  * higher priority and will be returned first by `pop`.
+ *
+ * When to use: any scenario requiring repeated extraction of the
+ * minimum-priority element — task scheduling, Dijkstra's algorithm, timer
+ * heaps, rate-limited queues. For simple FIFO/LIFO, use `Queue` (lower
+ * overhead). For top-k extraction from a large set, `heapify` + k pops is
+ * O(n + k log n) — faster than sorting the full array.
  */
 
 const kItems: unique symbol = Symbol("items");

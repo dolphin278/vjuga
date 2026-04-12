@@ -26,6 +26,13 @@
  *
  * All fields use module-scope unique symbols so V8 compiles property access
  * to integer slot offsets — no string-keyed dictionary lookup.
+ *
+ * When to use: key spaces with shared string prefixes where prefix-based
+ * retrieval is needed alongside exact lookup — URL routing, file-path
+ * indexing, autocomplete, IP prefix matching. For exact-match-only
+ * dictionaries without prefix queries, a plain `Map` is simpler and faster.
+ * RadixTree outperforms `Map` for `prefixMatch` because it walks only the
+ * relevant subtree rather than iterating all entries.
  */
 
 const kPrefix: unique symbol = Symbol("prefix");

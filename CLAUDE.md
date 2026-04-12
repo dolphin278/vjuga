@@ -54,3 +54,16 @@ Then follow the `dolphin278-craft` skill. vjuga-specific additions on top of tha
      that export a public API consumers call directly).
   Keep module docstrings under 40 lines. Per-function JSDoc stays as-is; the
   module docstring covers cross-cutting concerns.
+- **Keep AI-facing docs in sync when adding or removing modules.** The repo
+  ships two files consumed by AI coding tools:
+  - `llms.txt` — machine-readable module index. The `npm run lint:docs` script
+    (part of the `prepare` gate) will fail if a module in `src/*.ts` or
+    `src/schema/*.ts` is missing from `llms.txt`. When adding a new module,
+    add an entry to the correct category section in `llms.txt` following the
+    format of existing entries: a Markdown link to the source file and a
+    one-line description covering the module's purpose and key exports.
+  - `AGENTS.md` — use-case–driven quick reference. `lint:docs` does not check
+    prose content, so manually add a row to the relevant "I need to…" table in
+    `AGENTS.md` when adding a new module. When removing a module, delete its
+    entries from both files.
+  Both files must be updated in the same PR as the new module.

@@ -1,0 +1,78 @@
+# @dolphin278/vjuga
+
+> Zero-dependency, ESM-only TypeScript utility library. Node >=22.
+> Install: `npm install @dolphin278/vjuga`
+> Import: `import * as LRUCache from "@dolphin278/vjuga/LRUCache.js"`
+> All modules are standalone ESM files — import only what you need.
+
+## Error Handling
+
+- [@dolphin278/vjuga/Result.js](./src/Result.ts): `Result<T,E>` — tuple-encoded discriminated union `[boolean, T|E]` for fallible operations. `ok(v)` / `err(e)` constructors; `isOk`, `isErr`, `map`, `flatMap`, `unwrapOr`, `fromThrowable`, `fromPromise`. Return errors as values instead of throwing. For 3+ variants use `TaggedUnion`.
+- [@dolphin278/vjuga/ErrorChain.js](./src/ErrorChain.ts): `ErrorChain` — traverse ES2022 `Error.cause` chains. `chain(e)` → iterator, `toArray(e)`, `find(e, predicate)`. Use when inspecting or searching a wrapped error chain.
+
+## Data Structures
+
+- [@dolphin278/vjuga/Queue.js](./src/Queue.ts): `Queue` — circular-buffer deque with power-of-2 capacity. O(1) `push`, `pop`, `shift`, `unshift`, `peekFront`, `peekBack`, `get`, `set`. Auto-grows and shrinks. Use for FIFO/LIFO queues larger than ~16 items where `Array.shift()` O(n) cost matters.
+- [@dolphin278/vjuga/PriorityQueue.js](./src/PriorityQueue.ts): `PriorityQueue` — binary min-heap. O(log n) `push` and `pop`; O(1) `peek`; O(n) `heapify` for bulk init. Supply a comparator at construction. Use for repeated min-element extraction (task scheduling, Dijkstra, timer heaps).
+- [@dolphin278/vjuga/LRUCache.js](./src/LRUCache.ts): `LRUCache` — bounded cache with Least-Recently-Used eviction backed by doubly-linked list + Map. `make(capacity)`, `get`, `set`, `has`, `del`, `size`. Use when you want to cap memory while keeping the hottest items fast.
+- [@dolphin278/vjuga/WeakCache.js](./src/WeakCache.ts): `WeakCache` — GC-managed cache via `WeakRef` + `FinalizationRegistry`. `make()`, `get`, `set`, `has`, `remove`, `size`. Entries are reclaimed automatically when values are garbage-collected. Values must be objects.
+- [@dolphin278/vjuga/RadixTree.js](./src/RadixTree.ts): `RadixTree` — compressed trie (patricia trie) mapping string keys to values. `insert`, `lookup`, `has`, `remove`, `prefixMatch`, `entries`, `size`. Use for URL routing, autocomplete, prefix-based lookups.
+- [@dolphin278/vjuga/SOA.js](./src/SOA.ts): `SOA` — Structure of Arrays with zero-copy element views. `createView`, `push`, `pop`, `get`, `set`, `getSlice`, `length`, `swapRemove`, `clear`. Use for cache-line-efficient iteration over many records (physics loops, ECS engines, columnar transforms).
+
+## Async & Concurrency
+
+- [@dolphin278/vjuga/BatchExecutor.js](./src/BatchExecutor.ts): `BatchExecutor` — dataloader-style batching with per-item promise results. `make(batchFn, schedule?)` returns `(item) => Promise<R>`. N concurrent callers get individual results; underlying work is batched. Batch fn must return exactly as many `PromiseSettledResult` items as received. For fire-and-forget batching use `BufferizedFunction`.
+- [@dolphin278/vjuga/BufferizedFunction.js](./src/BufferizedFunction.ts): `BufferizedFunction` — fire-and-forget call batching. `make(fn, schedule?)` collects args then calls `fn(batch)` on next tick. Use for logging, analytics, telemetry where callers do not need per-item results. Schedule: `"macrotask"` (default) or `"io"`.
+- [@dolphin278/vjuga/TimedFunction.js](./src/TimedFunction.ts): `TimedFunction` — `throttle(fn, ms)` leading-edge (fires immediately, drops calls within window — scroll/resize) and `debounce(fn, ms)` trailing-edge (fires after silence — search input, resize-end).
+- [@dolphin278/vjuga/PromiseUtils.js](./src/PromiseUtils.ts): `PromiseUtils` — parallel resolution of named promise records. `props({ a: pa, b: pb })` → `{ a, b }`; `propsMap(map)` → `Map`. Use instead of positional `Promise.all` when named results are clearer.
+- [@dolphin278/vjuga/WorkerPool.js](./src/WorkerPool.ts): `WorkerPool` — thread pool via `node:worker_threads`. `make(config)`, `run(pool, data, opts?)`, `drain(pool)`, `destroy(pool)`. Priority dispatch, `AbortSignal` support, idle-thread timeout. Worker module must export a `default` function. Use for CPU-bound tasks that would block the event loop.
+
+## Type Safety / Branded Types
+
+- [@dolphin278/vjuga/TaggedUnion.js](./src/TaggedUnion.ts): `TaggedUnion` — `{ tag, value }` discriminated unions with exhaustive match. `variant(tag, value)`, `match(union, handlers)`, `is(union, tag)`. Use for 3+ variant sum types; for ok/err prefer `Result`.
+- [@dolphin278/vjuga/ISOTimestamp.js](./src/ISOTimestamp.ts): `ISOTimestamp` — branded string for ISO 8601 datetimes. `isoTimestamp(str)`, `fromDate`, `toDate`, `fromEpochMs`, `now` (~40% faster than `Date.toISOString`). Use at API string boundaries; use `Date` internally for arithmetic.
+- [@dolphin278/vjuga/UnixTimestamp.js](./src/UnixTimestamp.ts): `UnixTimestamp` — branded number for Unix epoch seconds. `unixTimestamp(n)`, `fromDate`, `toDate`, `now`, `fromISO`, `toISO`. Use when your API serializes timestamps as integer seconds.
+- [@dolphin278/vjuga/UUID.js](./src/UUID.ts): `UUID` — branded string for RFC 9562 UUIDs. `uuid(str)` validates + brands; `v4()` random; `v7()` timestamp-sortable; `version(id)`. Prevents passing arbitrary strings where IDs are required.
+- [@dolphin278/vjuga/Immutable.js](./src/Immutable.ts): `Immutable` — deep `readonly` type wrapper. `make(value)` is a zero-cost identity cast. Use at API boundaries where callers must not mutate returned data. Type-only; no runtime enforcement.
+- [@dolphin278/vjuga/Ref.js](./src/Ref.ts): `Ref` — mutable reference cell `{ contents: T }`. `make(initial)`, `get(ref)`, `set(ref, value)`. Use when passing mutable primitives into closures or across module boundaries.
+
+## Functional Utilities
+
+- [@dolphin278/vjuga/FunctionUtils.js](./src/FunctionUtils.ts): `FunctionUtils` — function types, branded-number constructors, and composition. `Fn`, `Fn1`, `Fn2`, `Predicate`, `Lazy` (all bind `this: void`). `pipe(f,g,h)` left-to-right (up to 5, or variadic). `partial`, `partialNamed`, `tuple`, `tupled`, `spread`, `unreachable`. Branded constructors: `positiveInteger`, `nonNegativeInteger`, `integer`, `positiveNumber`.
+- [@dolphin278/vjuga/FunctionReference.js](./src/FunctionReference.ts): `FunctionReference` — serializable function pointers for cross-context dispatch. `resolve("./file.ts#exportName")` → function via dynamic `import()`. Use for cross-thread or cross-process dispatch where closures cannot be serialized.
+- [@dolphin278/vjuga/Memoization.js](./src/Memoization.ts): `Memoization` — function memoization with pluggable cache and key strategy. `memoize(fn, opts?)` caches results keyed by `JSON.stringify(args)` by default; supply a bounded `Map` via `opts.cache` for large key spaces. `once(fn)` for one-shot lazy init.
+- [@dolphin278/vjuga/MemoryPool.js](./src/MemoryPool.ts): `MemoryPool` — LIFO object pool for allocation-free hot paths. `make({ factory, reset?, maxSize?, minSize? })`, `acquire(pool)`, `release(pool, obj)`, `withAcquire(pool, fn)`. Use in hot loops creating and discarding thousands of same-shape objects per tick.
+
+## Schema & Validation
+
+- [@dolphin278/vjuga/schema/Schema.js](./src/schema/Schema.ts): `Schema` — data-first type schema with TypeScript type inference. 14 kinds: `string`, `number`, `integer`, `boolean`, `null`, `literal`, `enum`, `object`, `array`, `tuple`, `record`, `union`, `optional`, `nullable`. `S.Infer<typeof schema>` extracts TypeScript type. Feeds `Validate`, `JSON`, `TOON`, and `Arbitrary` generators.
+- [@dolphin278/vjuga/schema/Validate.js](./src/schema/Validate.ts): `Validate` — code-generated validators via `new Function`. `validate(schema)` compiles once at init; returns `Result<T, SchemaError>` per call. Auto-detects discriminated unions for O(1) dispatch. Use on hot paths (HTTP request bodies, queue payloads).
+- [@dolphin278/vjuga/schema/JSON.js](./src/schema/JSON.ts): `schema/JSON` — code-generated JSON serializers and parsers. `stringify(schema)` up to 11x faster than native for small objects. `parse(schema)` validates + parses in one pass. Prototype-pollution guard built in. Compile at init scope.
+- [@dolphin278/vjuga/schema/TOON.js](./src/schema/TOON.ts): `TOON` — Token-Oriented Object Notation: 40–50% smaller than JSON. `stringify(schema)` / `parse(schema)`. Tabular array syntax, indentation-based nesting. Use for LLM context windows, config files, structured logs.
+- [@dolphin278/vjuga/schema/ValidationError.js](./src/schema/ValidationError.ts): `ValidationError` — structured `Error` subclass with `path`, `expected`, `received` fields. Use when building custom validators that return `Result<T, ValidationError>`.
+- [@dolphin278/vjuga/schema/Codegen.js](./src/schema/Codegen.ts): `Codegen` — `new Function` compilation plumbing (CodeBuffer, ref tracking, variable naming). Used internally by `Validate`, `JSON`, `TOON`. Application code does not typically import this directly.
+
+## I/O
+
+- [@dolphin278/vjuga/HTML.js](./src/HTML.ts): `HTML` — HTML entity escaping. `escape(str)` encodes `& < > " '`. ~2x faster than regex replace in V8. Use whenever interpolating user content into HTML markup.
+- [@dolphin278/vjuga/HttpServer.js](./src/HttpServer.ts): `HttpServer` — minimal HTTP/1.1 server that bypasses `node:http` overhead (no `IncomingMessage`, no `EventEmitter`, no `writeHead` serialization). Keep-alive and pipelining. No HTTP/2 or chunked encoding. Use only when profiling shows `node:http` as the bottleneck.
+- [@dolphin278/vjuga/JSON.js](./src/JSON.ts): `JSON` — typed JSON parsing with prototype-pollution protection. `safeParse(str)` → `Result<JSONValue>` (strips `__proto__`/`constructor`). `parse(str)` → `JSONValue | undefined`. Use `safeParse` for all untrusted input.
+
+## Property-Based Testing
+
+- [@dolphin278/vjuga/Arbitrary.js](./src/Arbitrary.ts): `Arbitrary` — composable generators with integrated shrinking (rose trees). `integer`, `string`, `boolean`, `array`, `record`, `tuple`, `oneOf`, `map`, `chain`, `filter`, `constant`, `letrec`, `gen`. Shrinking composes automatically.
+- [@dolphin278/vjuga/Property.js](./src/Property.ts): `Property` — PBT runner. `assert(arb, predicate, opts?)` runs N random cases and shrinks failures. `assertAsync` for async predicates. `check`/`checkAsync` return raw `CheckResult`. Use inside `node:test`.
+- [@dolphin278/vjuga/StatefulTest.js](./src/StatefulTest.ts): `StatefulTest` — model-based stateful testing via command sequences. `assertStateful({ initialModel, initialReal, commands })`. Use for stateful APIs (caches, queues, state machines) where bugs arise from specific operation orderings.
+- [@dolphin278/vjuga/CoverageGuided.js](./src/CoverageGuided.ts): `CoverageGuided` — coverage-guided fuzzing via V8/WebKit inspector. `fuzz(arb, target, opts?)`. Steers toward unexplored branches. Use for parsers, validators, serializers. ~5–10x slower per run than PBT; not portable to browsers.
+- [@dolphin278/vjuga/PRNG.js](./src/PRNG.ts): `PRNG` — deterministic, splittable SplitMix64 PRNG. `seed(bigint)`, `make(seed)`, `next(rng)`, `nextInt(rng, lo, hi)`, `split(rng)`. Use for reproducible random sequences with independent sub-streams. Not cryptographic.
+
+## Key Constraints
+
+- Zero external dependencies — no npm packages at runtime.
+- ESM-only (`"type": "module"`) — `.js` extension **required** in all imports.
+- Node.js >=22 required.
+- All modules are standalone files — import only what you use.
+- `WorkerPool` and `HttpServer` use Node.js built-ins — not available in browsers or edge runtimes.
+- `CoverageGuided` uses `node:inspector` or `bun:jsc` — not portable to browsers.
+- No default exports — all modules use named exports.
+- Module-level API style: create with `make(...)`, operate with free functions `Module.fn(handle, ...)`.

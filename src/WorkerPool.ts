@@ -10,6 +10,13 @@
  * - Fast path in run(): default-priority tasks bypass PQ when idle workers exist
  * - Reusable message object in sendTask() avoids per-call object allocation
  * - maybeResolveDrain() is only called when a drain deferred is pending
+ *
+ * When to use: CPU-bound tasks that block the event loop — image processing,
+ * cryptography, compression, compute-heavy parsing. Thread creation and
+ * structured-clone serialization make WorkerPool counterproductive for tasks
+ * shorter than ~1ms. For I/O-bound concurrency, async/await +
+ * `PromiseUtils.props` is simpler. The worker module must export a `default`
+ * function and be a separate file.
  */
 
 import { Worker, type Transferable } from "node:worker_threads";

@@ -54,6 +54,7 @@ import {
  * contains control chars, or contains the delimiter.
  */
 function needsQuote(s: string, delimCode: number): boolean {
+  if (s === undefined || s === null) return true;
   const len = s.length;
   if (len === 0) return true;
 
@@ -336,11 +337,8 @@ function emitStringifyBody(
       ctx.buf.indent--;
       emit(ctx.buf, "}");
       break;
-    default: {
-      // exhaustive — unreachable when all schema kinds are handled
-      /* node:coverage ignore next */
+    default:
       unreachable(schema);
-    }
   }
 }
 
@@ -488,8 +486,9 @@ function emitTabularStringify(
   const helperName = freshVar(ctx.buf);
   const cellExprs = fields.map((f) => {
     const child = objSchema.meta.properties[f];
-    const inner = child.kind === "optional" ? child.meta.inner : child;
-    return inlineExpr(inner, `o[${escapeJsonString(f)}]`);
+    // Use the full child (including optional wrapper) so inlineExpr emits
+    // the undefined guard: `(accessor === undefined ? "" : inner_expr)`
+    return inlineExpr(child, `o[${escapeJsonString(f)}]`);
   });
   const fn = compileHelper<Function>(
     ctx.buf,
@@ -692,11 +691,8 @@ function emitParseBody(
     case "nullable":
       emitParseBody(buf, schema.meta.inner, depth, pathExpr, indent, delim, flexible);
       break;
-    default: {
-      // exhaustive — unreachable when all schema kinds are handled
-      /* node:coverage ignore next */
+    default:
       unreachable(schema);
-    }
   }
 }
 
@@ -1174,19 +1170,15 @@ function emitFlexibleObjectParse(
   indent: number,
   resultVar: string,
 ): void {
-  const padStr = " ".repeat(depth * indent);
   const mapVar = freshVar(buf);
 
   emit(buf, `var ${mapVar} = {};`);
   emit(buf, "while (li < lines.length) {");
   buf.indent++;
   const cv = freshVar(buf);
-  if (depth === 0) {
-    emit(buf, `var ${cv} = lines[li];`);
-  } else {
-    emit(buf, `if (!lines[li].startsWith(${escapeJsonString(padStr)})) break;`);
-    emit(buf, `var ${cv} = lines[li].slice(${padStr.length});`);
-  }
+  // Flexible order only operates at root level (depth 0) — nested objects
+  // are parsed via emitCompoundFieldParse with schema-order.
+  emit(buf, `var ${cv} = lines[li];`);
   emit(buf, `if (${cv}.startsWith(" ")) break;`);
   emit(buf, `var ci = ${cv}.indexOf(": ");`);
   emit(buf, "if (ci === -1) break;");

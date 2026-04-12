@@ -441,3 +441,34 @@ test("parse nested nullable", () => {
   assert.deepEqual(assertOk(fn('{"x":null}')), { x: null });
   assert.deepEqual(assertOk(fn('{"x":42}')), { x: 42 });
 });
+
+// ---------------------------------------------------------------------------
+// Coverage: union with non-quick-checkable variants (getTypeCheck → null)
+// ---------------------------------------------------------------------------
+
+test("stringify union with literal variants (getTypeCheck returns null)", () => {
+  // literal kind has no getTypeCheck — falls through to JSON.stringify fallback
+  const fn = SJ.stringify(S.union(S.literal("a"), S.literal("b")));
+  assert.equal(fn("a" as "a" | "b"), '"a"');
+  assert.equal(fn("b" as "a" | "b"), '"b"');
+});
+
+test("stringify union with enum variant", () => {
+  const fn = SJ.stringify(S.union(S.enum_("x", "y"), S.integer()));
+  assert.equal(fn("x"), '"x"');
+  assert.equal(fn(42), "42");
+});
+
+// ---------------------------------------------------------------------------
+// Coverage: exhaustive default branches — invalid schema kind
+// ---------------------------------------------------------------------------
+
+test("stringify throws on unknown schema kind", () => {
+  const bad = { kind: "INVALID", meta: undefined } as unknown as S.Schema;
+  assert.throws(() => SJ.stringify(bad), /unreachable/i);
+});
+
+test("parse throws on unknown schema kind", () => {
+  const bad = { kind: "INVALID", meta: undefined } as unknown as S.Schema;
+  assert.throws(() => SJ.parse(bad), /unreachable/i);
+});

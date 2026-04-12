@@ -434,10 +434,8 @@ function buildJsonSchemaNode(s: Schema, built: Map<Schema, JsonSchemaObject>): J
       return built.get(s.meta.inner)!;
     case "nullable":
       return { anyOf: [built.get(s.meta.inner)!, { type: "null" }] };
-    default: {
-      /* node:coverage ignore next */
+    default:
       unreachable(s);
-    }
   }
 }
 

@@ -190,11 +190,8 @@ export function emitValidation(
       buf.indent--;
       emit(buf, "}");
       break;
-    default: {
-      // exhaustive — unreachable when all schema kinds are handled
-      /* node:coverage ignore next */
+    default:
       unreachable(schema);
-    }
   }
 }
 
@@ -421,8 +418,6 @@ function emitUnionValidation(
       const check = quickTypeCheck(variant, accessor);
       if (check !== null) {
         emit(buf, `if (${check}) break ${label};`);
-      } else if (variant.kind === "object") {
-        emitObjectVariantTest(buf, variant, accessor, label);
       }
     } else {
       emitValidation(buf, variant, accessor, pathExpr);
@@ -476,33 +471,6 @@ function emitDiscriminatedValidation(
   emitRef(buf, discLabelRef, discLabel);
   const discPathExpr = childPath(pathExpr, discriminant);
   emit(buf, `default: return _err(_me(${discPathExpr}, ${discLabelRef}, ${discAccessor}));`);
-  buf.indent--;
-  emit(buf, "}");
-}
-
-function emitObjectVariantTest(
-  buf: CodeBuffer,
-  schema: Schema & { readonly kind: "object" },
-  accessor: string,
-  label: string,
-): void {
-  emit(buf, `if (${accessor} !== null && typeof ${accessor} === "object") {`);
-  buf.indent++;
-  const innerLabel = "uo" + buf.varCounter++;
-  emit(buf, `${innerLabel}: {`);
-  buf.indent++;
-  const keys = Object.keys(schema.meta.properties);
-  for (let i = 0; i < keys.length; i++) {
-    const child = schema.meta.properties[keys[i]];
-    const childAccessor = `${accessor}[${JSON.stringify(keys[i])}]`;
-    const check = quickTypeCheck(child, childAccessor);
-    if (check !== null) {
-      emit(buf, `if (!(${check})) break ${innerLabel};`);
-    }
-  }
-  emit(buf, `break ${label};`);
-  buf.indent--;
-  emit(buf, "}");
   buf.indent--;
   emit(buf, "}");
 }

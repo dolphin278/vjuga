@@ -108,11 +108,8 @@ function walkStringify(buf: CodeBuffer, schema: Schema, accessor: string): strin
       return `(${accessor} === undefined ? "null" : ${walkStringify(buf, schema.meta.inner, accessor)})`;
     case "nullable":
       return `(${accessor} === null ? "null" : ${walkStringify(buf, schema.meta.inner, accessor)})`;
-    default: {
-      // exhaustive — unreachable when all schema kinds are handled
-      /* node:coverage ignore next */
+    default:
       unreachable(schema);
-    }
   }
 }
 

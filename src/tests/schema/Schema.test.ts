@@ -779,3 +779,8 @@ test("round-trip — nullable", () => {
   assert.equal(r[0], true);
   assert.equal(r[1].kind, "nullable");
 });
+
+test("toJsonSchema throws on unknown schema kind", () => {
+  const bad = { kind: "INVALID", meta: undefined } as unknown as S.Schema;
+  assert.throws(() => S.toJsonSchema(bad), /unreachable/i);
+});

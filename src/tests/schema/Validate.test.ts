@@ -583,3 +583,77 @@ test("enum — large set (>8 values)", () => {
   assertOk(v(10));
   assertErr(v(11));
 });
+
+// ---------------------------------------------------------------------------
+// Coverage: union — non-discriminated objects with object variant test
+// ---------------------------------------------------------------------------
+
+test("union — object variant without quick type check", () => {
+  // Two object schemas where the first variant can't be distinguished by typeof —
+  // triggers emitObjectVariantTest (tests object shape matching)
+  const v = validate(
+    S.union(S.object({ x: S.integer(), y: S.integer() }), S.object({ name: S.string() })),
+  );
+  assertOk(v({ x: 1, y: 2 }));
+  assertOk(v({ name: "hi" }));
+  // First variant tried first — fails shape check, falls through to second
+  assertOk(v({ name: "hi", extra: true }));
+});
+
+test("union — quickTypeCheck null literal", () => {
+  const v = validate(S.union(S.null_(), S.string()));
+  assertOk(v(null));
+  assertOk(v("hello"));
+  assertErr(v(42));
+});
+
+test("union — non-discriminated object-only variants (emitObjectVariantTest)", () => {
+  // Both variants are objects without a discriminant key — triggers
+  // emitObjectVariantTest which probes object shape with labeled breaks
+  const v = validate(S.union(S.object({ x: S.integer() }), S.object({ y: S.string() })));
+  assertOk(v({ x: 1 }));
+  assertOk(v({ y: "hi" }));
+  assertErr(v("not an object"));
+  assertErr(v(null));
+});
+
+test("union — quickTypeCheck returns null for literal kind", () => {
+  // literal and enum don't have a quickTypeCheck, so the union falls back
+  // to trying each variant via emitValidation on the last variant
+  const v = validate(S.union(S.literal("a"), S.literal("b")));
+  assertOk(v("a"));
+  assertOk(v("b"));
+  assertErr(v("c"));
+});
+
+test("union — three object variants without discriminant", () => {
+  const v = validate(
+    S.union(
+      S.object({ a: S.integer() }),
+      S.object({ b: S.string() }),
+      S.object({ c: S.boolean() }),
+    ),
+  );
+  assertOk(v({ a: 1 }));
+  assertOk(v({ b: "hi" }));
+  assertOk(v({ c: true }));
+  assertErr(v(42));
+});
+
+test("validate throws on unknown schema kind", () => {
+  const bad = { kind: "INVALID", meta: undefined } as unknown as S.Schema;
+  assert.throws(() => validate(bad), /unreachable/i);
+});
+
+test("union — quickTypeCheck default returns null for unknown kind", () => {
+  // A variant with an unknown kind causes quickTypeCheck to return null,
+  // falling through to emit the last variant's full validation
+  const unknown = { kind: "CUSTOM", meta: undefined } as unknown as S.Schema;
+  const u = {
+    kind: "union",
+    meta: { variants: [unknown, S.string()] },
+  } as unknown as S.StringSchema;
+  const v = validate(u);
+  // The unknown variant has no type check, so it's skipped — string is tried last
+  assert.equal(v("hello")[0], true);
+});

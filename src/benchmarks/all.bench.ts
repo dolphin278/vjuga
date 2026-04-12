@@ -33,7 +33,6 @@ const modules = [
   "./Result.bench.js",
   "./LRUCache.bench.js",
   "./PriorityQueue.bench.js",
-  "./Validator.bench.js",
   "./RadixTree.bench.js",
   "./WorkerPool.bench.js",
   "./TaggedUnion.bench.js",

@@ -10,7 +10,6 @@ import * as PQ from "../PriorityQueue.js";
 import * as RadixTree from "../RadixTree.js";
 import * as SOA from "../SOA.js";
 import * as Pool from "../MemoryPool.js";
-import * as V from "../Validator.js";
 import * as HTML from "../HTML.js";
 import * as VJSON from "../JSON.js";
 import * as Arb from "../Arbitrary.js";
@@ -133,7 +132,10 @@ test("Queue: make(iterable) matches push-by-push", () => {
 
 test("LRUCache: capacity-1 cache", () => {
   Prop.assert(
-    Arb.array(Arb.tuple(Arb.string({ minLength: 1, maxLength: 3 }), Arb.integer(0, 100)), { minLength: 1, maxLength: 50 }),
+    Arb.array(Arb.tuple(Arb.string({ minLength: 1, maxLength: 3 }), Arb.integer(0, 100)), {
+      minLength: 1,
+      maxLength: 50,
+    }),
     (pairs) => {
       const cache = LRU.make<string, number>(1);
       for (const [k, v] of pairs) {
@@ -288,28 +290,34 @@ test("PQ: interleaved push/pop always returns current minimum", () => {
     { minLength: 1, maxLength: 200 },
   );
 
-  Prop.assert(arb, (ops) => {
-    const pq = PQ.make<number>((a, b) => a - b);
-    const model: number[] = []; // sorted
+  Prop.assert(
+    arb,
+    (ops) => {
+      const pq = PQ.make<number>((a, b) => a - b);
+      const model: number[] = []; // sorted
 
-    for (const [op, val] of ops) {
-      if (op === "push") {
-        PQ.push(pq, val);
-        // Binary insert into sorted model
-        let lo = 0, hi = model.length;
-        while (lo < hi) {
-          const mid = (lo + hi) >>> 1;
-          if (model[mid] < val) lo = mid + 1; else hi = mid;
+      for (const [op, val] of ops) {
+        if (op === "push") {
+          PQ.push(pq, val);
+          // Binary insert into sorted model
+          let lo = 0,
+            hi = model.length;
+          while (lo < hi) {
+            const mid = (lo + hi) >>> 1;
+            if (model[mid] < val) lo = mid + 1;
+            else hi = mid;
+          }
+          model.splice(lo, 0, val);
+        } else if (model.length > 0) {
+          const expected = model.shift();
+          const actual = PQ.pop(pq);
+          if (actual !== expected) return false;
         }
-        model.splice(lo, 0, val);
-      } else if (model.length > 0) {
-        const expected = model.shift();
-        const actual = PQ.pop(pq);
-        if (actual !== expected) return false;
       }
-    }
-    return true;
-  }, { numRuns: 3000 });
+      return true;
+    },
+    { numRuns: 3000 },
+  );
 });
 
 // ============================================================================
@@ -318,7 +326,7 @@ test("PQ: interleaved push/pop always returns current minimum", () => {
 
 test("RadixTree: unicode keys", () => {
   const unicodeKey = Arb.map(
-    Arb.array(Arb.integer(0x20, 0xFFFF), { minLength: 0, maxLength: 10 }),
+    Arb.array(Arb.integer(0x20, 0xffff), { minLength: 0, maxLength: 10 }),
     (codes) => String.fromCharCode(...codes),
   );
 
@@ -412,7 +420,10 @@ test("SOA: swapRemove preserves all non-removed elements", () => {
 
   Prop.assert(
     Arb.tuple(
-      Arb.array(Arb.tuple(Arb.integer(-100, 100), Arb.integer(-100, 100)), { minLength: 2, maxLength: 50 }),
+      Arb.array(Arb.tuple(Arb.integer(-100, 100), Arb.integer(-100, 100)), {
+        minLength: 2,
+        maxLength: 50,
+      }),
       Arb.nat(49),
     ),
     ([pairs, rawIdx]) => {
@@ -446,7 +457,10 @@ test("SOA: view reflects mutations correctly", () => {
   type Point = { x: number; y: number };
 
   Prop.assert(
-    Arb.array(Arb.tuple(Arb.integer(-100, 100), Arb.integer(-100, 100)), { minLength: 1, maxLength: 20 }),
+    Arb.array(Arb.tuple(Arb.integer(-100, 100), Arb.integer(-100, 100)), {
+      minLength: 1,
+      maxLength: 20,
+    }),
     (pairs) => {
       const soa: SOA.SOA<Point> = { x: [], y: [] };
       for (const [x, y] of pairs) SOA.push(soa, { x, y });
@@ -471,89 +485,6 @@ test("SOA: view reflects mutations correctly", () => {
 });
 
 // ============================================================================
-// Validator — deeply nested schemas, boundary values
-// ============================================================================
-
-test("Validator: deeply nested object validation", () => {
-  // Build a nested validator: { a: { b: { c: number() } } }
-  const deepValidator = V.object({
-    a: V.object({
-      b: V.object({
-        c: V.number(),
-      }),
-    }),
-  });
-
-  Prop.assert(
-    Arb.integer(-10000, 10000),
-    (n) => {
-      const input = { a: { b: { c: n } } };
-      const result = deepValidator(input);
-      if (result[0] !== true) return false;
-      return (result[1] as { a: { b: { c: number } } }).a.b.c === n;
-    },
-    { numRuns: 2000 },
-  );
-});
-
-test("Validator: union with overlapping types", () => {
-  const validator = V.union([V.string(), V.number(), V.boolean(), V.null_()]);
-
-  const arb = Arb.oneOf(
-    Arb.map(Arb.string(), (s) => s as unknown),
-    Arb.map(Arb.integer(), (n) => n as unknown),
-    Arb.map(Arb.boolean(), (b) => b as unknown),
-    Arb.constant(null as unknown),
-  );
-
-  Prop.assert(arb, (v) => {
-    const result = validator(v);
-    return result[0] === true;
-  }, { numRuns: 3000 });
-});
-
-test("Validator: array of objects round-trip", () => {
-  const itemValidator = V.object({ id: V.number(), name: V.string() });
-  const arrayValidator = V.array(itemValidator);
-
-  Prop.assert(
-    Arb.array(
-      Arb.record({ id: Arb.integer(0, 10000), name: Arb.string({ maxLength: 5 }) }),
-      { minLength: 0, maxLength: 20 },
-    ),
-    (items) => {
-      const result = arrayValidator(items);
-      if (result[0] !== true) return false;
-      const validated = result[1] as { id: number; name: string }[];
-      if (validated.length !== items.length) return false;
-      for (let i = 0; i < items.length; i++) {
-        if (validated[i].id !== items[i].id || validated[i].name !== items[i].name) return false;
-      }
-      return true;
-    },
-    { numRuns: 2000 },
-  );
-});
-
-test("Validator: number boundaries (NaN, Infinity, -Infinity)", () => {
-  const numV = V.number();
-  // NaN should fail
-  assert.equal(numV(NaN)[0], false);
-  // Infinity should pass (it's a number)
-  assert.equal(numV(Infinity)[0], true);
-  assert.equal(numV(-Infinity)[0], true);
-  // positiveNumber rejects 0
-  assert.equal(V.positiveNumber()(0)[0], false);
-  assert.equal(V.positiveNumber()(0.001)[0], true);
-  // integer rejects floats
-  assert.equal(V.integer()(1.5)[0], false);
-  assert.equal(V.integer()(0)[0], true);
-  // nonNegativeInteger rejects -1
-  assert.equal(V.nonNegativeInteger()(-1)[0], false);
-  assert.equal(V.nonNegativeInteger()(0)[0], true);
-});
-
-// ============================================================================
 // HTML — stress with all-special-chars input
 // ============================================================================
 
@@ -563,16 +494,20 @@ test("HTML: string of only special chars", () => {
     (chars) => chars.join(""),
   );
 
-  Prop.assert(specialOnly, (s) => {
-    const escaped = HTML.escape(s);
-    // No literal < > " ' in output
-    for (let i = 0; i < escaped.length; i++) {
-      const c = escaped[i]!;
-      if (c === "<" || c === ">" || c === '"' || c === "'") return false;
-    }
-    // Length should be much larger (each char expands to 4-6 chars)
-    return escaped.length >= s.length;
-  }, { numRuns: 2000 });
+  Prop.assert(
+    specialOnly,
+    (s) => {
+      const escaped = HTML.escape(s);
+      // No literal < > " ' in output
+      for (let i = 0; i < escaped.length; i++) {
+        const c = escaped[i]!;
+        if (c === "<" || c === ">" || c === '"' || c === "'") return false;
+      }
+      // Length should be much larger (each char expands to 4-6 chars)
+      return escaped.length >= s.length;
+    },
+    { numRuns: 2000 },
+  );
 });
 
 // ============================================================================
@@ -617,19 +552,25 @@ test("JSON: round-trip with recursive JSON values (high volume)", () => {
       Arb.constant(null as unknown),
       Arb.map(Arb.array(tie("jsonValue"), { maxLength: 4 }), (a) => a as unknown),
       Arb.map(
-        Arb.dictionary(Arb.string({ minLength: 1, maxLength: 6 }), tie("jsonValue"), { maxSize: 4 }),
+        Arb.dictionary(Arb.string({ minLength: 1, maxLength: 6 }), tie("jsonValue"), {
+          maxSize: 4,
+        }),
         (d) => d as unknown,
       ),
     ),
   }));
 
-  Prop.assert(jsonValue, (v) => {
-    const s = VJSON.stringify(v);
-    if (s === undefined) return true; // skip undefined results
-    const parsed = VJSON.parseExn(s);
-    // Deep equality
-    return JSON.stringify(parsed) === JSON.stringify(v);
-  }, { numRuns: 5000 });
+  Prop.assert(
+    jsonValue,
+    (v) => {
+      const s = VJSON.stringify(v);
+      if (s === undefined) return true; // skip undefined results
+      const parsed = VJSON.parseExn(s);
+      // Deep equality
+      return JSON.stringify(parsed) === JSON.stringify(v);
+    },
+    { numRuns: 5000 },
+  );
 });
 
 // ============================================================================
@@ -642,7 +583,9 @@ test("MemoryPool: rapid acquire/release never corrupts", () => {
     (n) => {
       const pool = Pool.make({
         factory: () => ({ val: 0 }),
-        reset: (obj) => { obj.val = 0; },
+        reset: (obj) => {
+          obj.val = 0;
+        },
         maxSize: 10,
       });
 

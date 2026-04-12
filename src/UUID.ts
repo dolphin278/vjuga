@@ -27,7 +27,7 @@
 
 import type { Branded } from "./FunctionUtils.js";
 import { type Result, ok, err } from "./Result.js";
-import { ValidationError, type Validator } from "./Validator.js";
+import { ValidationError, type Validator } from "./schema/ValidationError.js";
 import { randomUUID, getRandomValues } from "node:crypto";
 
 /** Branded string guaranteed to be a valid UUID. */
@@ -87,8 +87,7 @@ export function v7(): UUID {
   // Variant 1: high 2 bits of byte 8 = 10
   bytes[8] = (bytes[8] & 0x3f) | 0x80;
 
-  return (
-    HEX[bytes[0]] +
+  return (HEX[bytes[0]] +
     HEX[bytes[1]] +
     HEX[bytes[2]] +
     HEX[bytes[3]] +
@@ -107,8 +106,7 @@ export function v7(): UUID {
     HEX[bytes[12]] +
     HEX[bytes[13]] +
     HEX[bytes[14]] +
-    HEX[bytes[15]]
-  ) as UUID;
+    HEX[bytes[15]]) as UUID;
 }
 
 /** Extracts the version number (4-bit nibble at position 12) from a UUID. */
@@ -116,7 +114,7 @@ export function version(id: UUID): number {
   return parseInt(id[14], 16);
 }
 
-/** Returns a `Validator<UUID>` for use with the Validator module. */
+/** Returns a `Validator<UUID>` that validates unknown values as UUIDs. */
 export function validator(): Validator<UUID> {
   return function validateUUID(value: unknown): Result<UUID, ValidationError> {
     if (typeof value !== "string") return err(new ValidationError("UUID", value));

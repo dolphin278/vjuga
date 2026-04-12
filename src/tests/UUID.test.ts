@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as UUID from "../UUID.js";
-import { ValidationError } from "../Validator.js";
+import { ValidationError } from "../schema/ValidationError.js";
 
 // --- uuid (throwing constructor) ---
 

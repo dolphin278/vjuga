@@ -27,7 +27,6 @@ export const IS_OPTIMIZED = 16; // TurboFan/Turboshaft
 export const IS_MAGLEV = 32; // Maglev mid-tier JIT
 
 export function reportOptimizationStatus(fn: Function, label: string): void {
-  optimizeFunctionOnNextCall(fn);
   const s = getOptimizationStatus(fn);
   if (s === -1) {
     console.log(`[v8] ${label}: --allow-natives-syntax not active`);

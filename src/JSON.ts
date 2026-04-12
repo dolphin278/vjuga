@@ -67,7 +67,7 @@ export const parse = (json: string): JSONValue | undefined => {
  * Inspired by Matteo Collina's `secure-json-parse` — prototype pollution
  * via `__proto__` in parsed JSON is a well-known attack vector (OWASP).
  */
-function stripDangerousKeys(value: JSONValue): boolean {
+export function stripDangerousKeys(value: JSONValue): boolean {
   let found = false;
   // Explicit stack avoids recursion — no closure per frame, no stack overflow
   // on deeply nested inputs.
@@ -132,3 +132,60 @@ export const safeParse = (json: string): Result<JSONValue, string> => {
 
 const PROTO_TOKEN = "__proto__";
 const CONSTRUCTOR_TOKEN = "constructor";
+
+// ---------------------------------------------------------------------------
+// JSON string escaping — shared by src/JSON.ts and schema/JSON.ts
+// ---------------------------------------------------------------------------
+
+// Pre-computed escape table for control characters (0x00-0x1f)
+const ESCAPE_TABLE: string[] = [];
+for (let i = 0; i < 32; i++) {
+  ESCAPE_TABLE[i] = "\\u" + i.toString(16).padStart(4, "0");
+}
+ESCAPE_TABLE[0x08] = "\\b";
+ESCAPE_TABLE[0x09] = "\\t";
+ESCAPE_TABLE[0x0a] = "\\n";
+ESCAPE_TABLE[0x0c] = "\\f";
+ESCAPE_TABLE[0x0d] = "\\r";
+
+/**
+ * Escape a string for JSON output. Adds surrounding quotes.
+ * Short strings (<128 chars): manual charCode scan (avoids JSON.stringify overhead).
+ * Long strings: delegate to JSON.stringify (V8 SIMD-accelerated).
+ */
+export function escapeJsonString(s: string): string {
+  const len = s.length;
+  if (len < 128) {
+    let out = '"';
+    let last = 0;
+    for (let i = 0; i < len; i++) {
+      const c = s.charCodeAt(i);
+      if (c === 0x22) {
+        out += s.slice(last, i) + '\\"';
+        last = i + 1;
+      } else if (c === 0x5c) {
+        out += s.slice(last, i) + "\\\\";
+        last = i + 1;
+      } else if (c < 0x20) {
+        out += s.slice(last, i) + ESCAPE_TABLE[c];
+        last = i + 1;
+      } else if (c >= 0xd800 && c <= 0xdfff) {
+        // Valid surrogate pair: high (D800-DBFF) followed by low (DC00-DFFF).
+        // Emit the pair unescaped — only lone surrogates need escaping (RFC 8259 §8).
+        if (c <= 0xdbff && i + 1 < len) {
+          const next = s.charCodeAt(i + 1);
+          if (next >= 0xdc00 && next <= 0xdfff) {
+            i++; // skip the low surrogate — the pair is valid
+            continue;
+          }
+        }
+        out += s.slice(last, i) + "\\u" + c.toString(16);
+        last = i + 1;
+      }
+    }
+    if (last === 0) return '"' + s + '"';
+    return out + s.slice(last) + '"';
+  }
+  // Long strings: delegate to JSON.stringify (V8 SIMD-accelerated, handles surrogates)
+  return JSON.stringify(s);
+}

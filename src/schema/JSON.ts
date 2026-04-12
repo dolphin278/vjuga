@@ -287,12 +287,13 @@ function walkStringifyRecord(
   const helperName = freshVar(buf);
   const valExpr = walkStringify(buf, schema.meta.values, "o[k]");
 
-  // for...in avoids Object.keys() array allocation on the hot path
+  // for...in avoids Object.keys() array allocation on the hot path.
+  // Object.hasOwn guard prevents inherited/polluted prototype keys from leaking.
   const fn = compileHelper<Function>(
     buf,
     `function ${helperName}(o) {
   var s = "{", first = 1;
-  for (var k in o) { if (first) first = 0; else s += ","; s += _esc(k) + ":" + ${valExpr}; }
+  for (var k in o) { if (!Object.hasOwn(o, k)) continue; if (first) first = 0; else s += ","; s += _esc(k) + ":" + ${valExpr}; }
   return s === "{" ? "{}" : s + "}";
 }`,
   );

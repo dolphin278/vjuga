@@ -170,7 +170,15 @@ export function escapeJsonString(s: string): string {
         out += s.slice(last, i) + ESCAPE_TABLE[c];
         last = i + 1;
       } else if (c >= 0xd800 && c <= 0xdfff) {
-        // Lone surrogates must be escaped per JSON spec (RFC 8259 §8)
+        // Valid surrogate pair: high (D800-DBFF) followed by low (DC00-DFFF).
+        // Emit the pair unescaped — only lone surrogates need escaping (RFC 8259 §8).
+        if (c <= 0xdbff && i + 1 < len) {
+          const next = s.charCodeAt(i + 1);
+          if (next >= 0xdc00 && next <= 0xdfff) {
+            i++; // skip the low surrogate — the pair is valid
+            continue;
+          }
+        }
         out += s.slice(last, i) + "\\u" + c.toString(16);
         last = i + 1;
       }

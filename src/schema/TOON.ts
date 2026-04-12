@@ -253,7 +253,8 @@ function splitByDelimiter(s: string, delim: string, expected?: number): string[]
     result[idx++] = s.slice(start);
     // Fill remaining slots with empty string to avoid undefined holes when
     // actual field count < expected (e.g., truncated tabular input).
-    for (; idx < expected; idx++) result[idx] = "";
+    // Skip fill on the common path where all fields are present.
+    if (idx < expected) for (; idx < expected; idx++) result[idx] = "";
     return result;
   }
   const result: string[] = [];
@@ -303,19 +304,7 @@ function inlineExpr(schema: Schema, accessor: string): string {
     return `(${accessor} === undefined ? "" : ${inlineExpr(schema.meta.inner, accessor)})`;
   if (schema.kind === "nullable")
     return `(${accessor} === null ? "null" : ${inlineExpr(schema.meta.inner, accessor)})`;
-  switch (schema.kind) {
-    case "string":
-      return `_q(${accessor}, _delim)`;
-    case "number":
-    case "integer":
-      return `_cn(${accessor})`;
-    case "boolean":
-      return `(${accessor} ? "true" : "false")`;
-    case "null":
-      return `"null"`;
-    default:
-      return `(typeof ${accessor} === "string" ? _q(${accessor}, _delim) : "" + ${accessor})`;
-  }
+  return primitiveExpr(schema, accessor);
 }
 
 // ---------------------------------------------------------------------------
@@ -987,7 +976,7 @@ function emitPrimFieldParse(
   } else {
     emit(
       buf,
-      `if (${rawVar} === null) return _err(_me(${pathExpr}, "key '${key}'", li < lines.length ? lines[li] : "end of input"));`,
+      `if (${rawVar} === null) return _err(_me(${pathExpr}, ${escapeJsonString("key '" + key + "'")}, li < lines.length ? lines[li] : "end of input"));`,
     );
   }
 
@@ -1036,7 +1025,7 @@ function emitCompoundFieldParse(
     } else {
       emit(
         buf,
-        `if (li >= lines.length || lines[li] !== ${escapeJsonString(nestedLine)}) return _err(_me(${pathExpr}, "key '${key}'", li < lines.length ? lines[li] : "end of input"));`,
+        `if (li >= lines.length || lines[li] !== ${escapeJsonString(nestedLine)}) return _err(_me(${pathExpr}, ${escapeJsonString("key '" + key + "'")}, li < lines.length ? lines[li] : "end of input"));`,
       );
     }
     emit(buf, "li++;");
@@ -1299,7 +1288,8 @@ function emitFlexibleObjectParse(
 ): void {
   const mapVar = freshVar(buf);
 
-  emit(buf, `var ${mapVar} = {};`);
+  // Null-prototype object prevents __proto__ pollution from untrusted input
+  emit(buf, `var ${mapVar} = Object.create(null);`);
   emit(buf, "while (li < lines.length) {");
   buf.indent++;
   const cv = freshVar(buf);
@@ -1332,7 +1322,7 @@ function emitFlexibleObjectParse(
     } else {
       emit(
         buf,
-        `if (!(${escapeJsonString(key)} in ${mapVar})) return _err(_me(${childPath}, "key '${key}'", "not found"));`,
+        `if (!(${escapeJsonString(key)} in ${mapVar})) return _err(_me(${childPath}, ${escapeJsonString("key '" + key + "'")}, "not found"));`,
       );
     }
 

@@ -5,30 +5,49 @@
  * and path expression helpers. This module knows nothing about schemas — it is
  * pure string-building infrastructure that any code generator can use.
  *
+ * When to use: building code generators that compile domain logic into
+ * optimized functions at init time. Used internally by Validate, JSON, and
+ * TOON modules. Not typically imported by application code.
+ *
  * Internal design:
- *   `CodeBuffer.code` accumulates source via string concatenation (V8 cons-
- *   string optimization). `CodeBuffer.refs` maps generated parameter names to
- *   runtime values that are passed as closure-captured arguments to the
- *   compiled `new Function`. `freshVar` produces unique variable names (v0,
- *   v1, ...) to avoid collisions in generated code.
+ *   `CodeBuffer.code`: source string built via `+=` (V8 cons-string opt).
+ *   `CodeBuffer.refs`: Map of param names → runtime values passed to the
+ *   compiled `new Function` as closure-captured arguments.
+ *   `freshVar(buf)`: allocates unique names (v0, v1, ...).
  *
- * Design tradeoffs:
- *   String concatenation over array.join: V8 optimizes repeated `+=` on
- *   strings via cons-strings (deferred flattening). For code generation where
- *   we append many small fragments, this is faster than building an array and
- *   joining. The generated code is typically <10KB so the cons-string chain
- *   stays efficient.
- *
- * @example
+ * @example Build and compile a simple function
  * ```ts
  * import { createBuffer, emit, emitRef, compileFunction } from "vjuga/schema/Codegen";
  * const buf = createBuffer();
- * emitRef(buf, "_ok", ok);
- * emit(buf, "return function f(v) {");
- * emit(buf, "  return _ok(v);");
+ * emitRef(buf, "_double", (n: number) => n * 2);
+ * emit(buf, "return function transform(v) {");
+ * emit(buf, "  return _double(v);");
  * emit(buf, "}");
- * const f = compileFunction(buf);
+ * const fn = compileFunction<(v: number) => number>(buf);
+ * fn(21); // 42
  * ```
+ *
+ * @example Helper functions — compile sub-functions with access to same refs
+ * ```ts
+ * const helper = compileHelper<Function>(buf, "function add(a, b) { return a + b; }");
+ * emitRef(buf, "_add", helper);
+ * // Generated code can now call _add(x, y)
+ * ```
+ *
+ * @example Path expressions — for error messages in validators/parsers
+ * ```ts
+ * childPath('"user"', "name");        // '"user.name"' (static)
+ * dynamicChildPath('"items"', "idx"); // '"items." + idx' (dynamic)
+ * ```
+ *
+ * Pitfalls:
+ *   - The buffer's `code` must contain a `return function ...` statement.
+ *     `compileFunction` wraps it in `new Function(...refs, code)` and calls
+ *     the factory — the returned value IS the compiled function.
+ *   - `emitRef` must be called BEFORE the ref name is used in emitted code.
+ *     Refs are passed as function parameters — missing refs cause ReferenceError.
+ *   - `compileHelper` creates a sub-function with access to all current refs.
+ *     Call it to get the function, then register the result via `emitRef`.
  */
 
 // ---------------------------------------------------------------------------

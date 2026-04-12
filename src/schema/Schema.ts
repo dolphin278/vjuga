@@ -5,34 +5,75 @@
  * A Schema is a plain `{ kind, meta }` object that describes a type.
  * Unlike closure-based validators, schemas are introspectable data that can be
  * compiled to multiple targets: validators, JSON serializers/parsers, TOON
- * serializers/parsers, and Arbitrary generators.
+ * serializers/parsers, and Arbitrary generators. Define once, compile many.
  *
  * When to use: whenever you need runtime type information that feeds more than
  * one consumer (validation + serialization + type inference). For one-shot
- * validation of external input, the compiled validator from `schema/Validate`
- * is the right tool.
+ * validation of external input, use `schema/Validate` directly.
+ *
+ * 14 schema kinds: string, number, integer, boolean, null, literal, enum,
+ * object, array, tuple, record, union, optional, nullable.
  *
  * Internal design:
- *   Every node is `{ kind: K, meta: M }` — two own properties. The `kind`
- *   discriminant is a string literal; `meta` carries kind-specific payload
- *   (constraints, child schemas, etc.). Nodes with no extra data use
- *   `meta: undefined`. All nodes share the same V8 hidden class shape
- *   (two named properties), keeping downstream switches monomorphic.
+ *   Every node is `{ kind: K, meta: M }` — two own properties, same V8
+ *   hidden class shape across all kinds, keeping downstream switches
+ *   monomorphic. `meta` carries kind-specific payload (constraints, child
+ *   schemas). Nodes with no extra data use `meta: undefined`.
  *
  * Design tradeoffs:
- *   Data over closures. Closures are opaque to compilers; plain objects can be
- *   walked, serialized, and compiled to `new Function(...)` bodies. The cost is
- *   that schema construction is slightly more verbose than chained method calls,
- *   but construction is a one-time init cost — the hot path is the generated
- *   code.
+ *   Data over closures — plain objects can be walked, serialized, and compiled
+ *   to `new Function(...)` bodies. Construction is a one-time init cost.
  *
- * @example
+ * @example Basic usage — define schema, infer TypeScript type
  * ```ts
  * import * as S from "vjuga/schema/Schema";
  * const User = S.object({ id: S.integer(), name: S.string() });
- * type User = S.Infer<typeof User>;
- * const jsonSchema = S.toJsonSchema(User);
+ * type User = S.Infer<typeof User>; // { id: number; name: string }
  * ```
+ *
+ * @example Constraints — string length, number range, regex pattern
+ * ```ts
+ * const Email = S.string({ format: "email", maxLength: 255 });
+ * const Age = S.integer({ minimum: 0, maximum: 150 });
+ * const Slug = S.string({ pattern: "^[a-z0-9-]+$" });
+ * ```
+ *
+ * @example Optional and nullable fields
+ * ```ts
+ * // optional(T) → T | undefined (omitted key in objects)
+ * // nullable(T) → T | null (key present, value is null)
+ * const Profile = S.object({
+ *   name: S.string(),
+ *   bio: S.optional(S.string()),    // may be absent
+ *   avatar: S.nullable(S.string()), // present but may be null
+ * });
+ * ```
+ *
+ * @example Discriminated unions — detected automatically by validators/serializers
+ * ```ts
+ * const Shape = S.union(
+ *   S.object({ type: S.literal("circle"), radius: S.number() }),
+ *   S.object({ type: S.literal("rect"), w: S.number(), h: S.number() }),
+ * );
+ * // Validators emit a switch on "type" — O(1) dispatch, not O(n) trial.
+ * ```
+ *
+ * @example JSON Schema 2020-12 interop
+ * ```ts
+ * const jsonSchema = S.toJsonSchema(User);   // → { type: "object", ... }
+ * const schema = S.fromJsonSchema(jsonSchema); // → Result<Schema, string>
+ * ```
+ *
+ * Pitfalls:
+ *   - `Infer<Schema>` (the base union type) causes "excessively deep"
+ *     errors. Always infer from a specific schema constant, not `Schema`.
+ *   - Schemas are immutable plain objects — do not mutate `meta` after
+ *     creation. Build a new schema instead.
+ *   - `optional(T)` means "key may be absent" in objects. Outside objects
+ *     it behaves like `T | undefined`. Use `nullable(T)` for null values.
+ *   - `fromJsonSchema` returns `Result` — always check the error case.
+ *     Unsupported features ($ref, allOf, oneOf, not, if/then/else) return
+ *     `Err`.
  */
 
 import { type Result, ok, err } from "../Result.js";

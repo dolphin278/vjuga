@@ -13,16 +13,59 @@
  *
  * Internal design:
  *   `emitValidation` walks the schema tree and emits inline checks into a
- *   `CodeBuffer`. The buffer is then compiled into a `new Function`. This
- *   function is also used by JSON.parse to inline validation after parsing.
+ *   `CodeBuffer`. The buffer is then compiled via `new Function`. This emitter
+ *   is also used by `schema/JSON.parse` to inline validation after parsing.
  *
- * @example
+ * @example Compile once, validate many
  * ```ts
  * import * as S from "vjuga/schema/Schema";
  * import { validate } from "vjuga/schema/Validate";
- * const check = validate(S.object({ id: S.integer(), name: S.string() }));
- * const result = check(input); // Result<{ id: number; name: string }, SchemaError>
+ *
+ * const checkUser = validate(S.object({
+ *   id: S.integer(),
+ *   name: S.string(),
+ *   email: S.string({ format: "email" }),
+ * }));
+ *
+ * const result = checkUser(input); // Result<{ id: number; name: string; email: string }, SchemaError>
+ * if (result[0]) {
+ *   const user = result[1]; // fully typed
+ * } else {
+ *   console.error(result[1].path, result[1].expected, result[1].received);
+ * }
  * ```
+ *
+ * @example Discriminated union — auto-detected, emits switch statement
+ * ```ts
+ * const checkEvent = validate(S.union(
+ *   S.object({ type: S.literal("click"), x: S.number(), y: S.number() }),
+ *   S.object({ type: S.literal("key"), code: S.string() }),
+ * ));
+ * // Generated code dispatches on event.type via switch — O(1), not O(n).
+ * ```
+ *
+ * @example SchemaError structure
+ * ```ts
+ * // SchemaError is a plain object, not an Error subclass — cheap to construct.
+ * // { path: "user.address.zip", expected: "string", received: 12345 }
+ * ```
+ *
+ * Best practices:
+ *   - Compile validators at module/init scope, not inside request handlers.
+ *     Compilation costs ~0.1ms; the compiled function runs in nanoseconds.
+ *   - Use `Result` destructuring: `const [ok, value] = check(input)`.
+ *   - For objects, all properties are required unless wrapped in `optional()`.
+ *   - Discriminated unions (shared literal property) get O(1) dispatch
+ *     automatically — prefer them over untagged unions.
+ *
+ * Pitfalls:
+ *   - Do NOT call `validate(schema)` inside a loop — each call compiles a
+ *     new function via `new Function`. Store the compiled validator.
+ *   - The validator trusts its own generated code but validates ALL input
+ *     fields. There is no "partial" or "strip unknown keys" mode — extra
+ *     keys on input objects are silently accepted.
+ *   - SchemaError.received holds the raw input value. Be careful logging it
+ *     for large payloads — it is not truncated.
  */
 
 import type { Result } from "../Result.js";

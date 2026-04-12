@@ -11,17 +11,21 @@
  * When to use: hot-path serialization/deserialization where the schema is known
  * at init time. For cold-path or ad-hoc JSON, use the standard `JSON` module.
  *
+ * Performance (Node 25.9, vs native JSON):
+ *   stringify 2 fields: 4.4ns vs 49ns (11x faster)
+ *   stringify 5 fields: 36ns vs 84ns (2.3x faster)
+ *   parse 2 fields: 177ns vs 151ns (17% slower — validation overhead)
+ *   parse 5 fields: 304ns vs 261ns (16% slower)
+ *   stringify 100-elem array: 5.3µs vs 4.4µs (1.2x slower — C++ advantage)
+ *
  * Design tradeoffs:
- *   stringify: generated string concatenation with pre-computed key fragments
- *   beats JSON.stringify for known shapes because it avoids key enumeration,
- *   toJSON protocol, and replacer overhead. The `escStr` helper handles string
- *   escaping — short strings use a charCode loop, long strings delegate to
- *   `JSON.stringify` (which is SIMD-accelerated in V8 for raw string escaping).
+ *   stringify: generated string concatenation with pre-computed key fragments.
+ *   All-required objects compile to pure inline expressions — no per-element
+ *   function dispatch in array loops.
+ *   parse: native `JSON.parse` (C++ in V8) + inline validation. Prototype
+ *   pollution guard via `stripDangerousKeys` for `__proto__`/`constructor`.
  *
- *   parse: uses native `JSON.parse` (C++ in V8, unbeatable for raw parsing)
- *   then validates inline — combining parse + validate avoids double traversal.
- *
- * @example
+ * @example Compile once at init, call on hot path
  * ```ts
  * import * as S from "vjuga/schema/Schema";
  * import * as SJ from "vjuga/schema/JSON";
@@ -31,6 +35,45 @@
  * toJson({ id: 1, name: "Alice" }); // '{"id":1,"name":"Alice"}'
  * fromJson('{"id":1,"name":"Alice"}'); // [true, { id: 1, name: "Alice" }]
  * ```
+ *
+ * @example Parse returns Result — never throws
+ * ```ts
+ * const result = fromJson(untrustedInput);
+ * if (!result[0]) {
+ *   // result[1] is SchemaError: { path, expected, received }
+ *   console.error(`Invalid at ${result[1].path}: expected ${result[1].expected}`);
+ *   return;
+ * }
+ * const user = result[1]; // fully typed User
+ * ```
+ *
+ * @example Optional fields — omitted keys serialize as null in JSON
+ * ```ts
+ * const Schema = S.object({ name: S.string(), bio: S.optional(S.string()) });
+ * const toJson = SJ.stringify(Schema);
+ * toJson({ name: "Alice" });            // '{"name":"Alice"}'  (bio omitted)
+ * toJson({ name: "Alice", bio: "Hi" }); // '{"name":"Alice","bio":"Hi"}'
+ * ```
+ *
+ * Best practices:
+ *   - Compile `stringify`/`parse` at module scope — each call generates a
+ *     new function via `new Function`. The compiled function is the hot path.
+ *   - `stringify` assumes input matches the schema — validate at system
+ *     boundaries, not inside serializers. Use `validate()` for untrusted data.
+ *   - `parse` combines parsing + validation in one step. If you only need
+ *     parsing without validation, use `vjuga/JSON.safeParse` instead.
+ *
+ * Pitfalls:
+ *   - `parse` returns `Err` for invalid JSON (not undefined, not throws).
+ *     Check `result[0]` before accessing `result[1]`.
+ *   - `stringify` output for `optional(T)` fields: absent → key omitted,
+ *     `undefined` → `"null"`. This matches JSON semantics (no `undefined`).
+ *   - For 100+ element arrays of objects, native `JSON.stringify` is ~20%
+ *     faster due to C++ `SeqOneByteString` — this gap is fundamental.
+ *   - `parse` guards against `__proto__` prototype pollution. The guard
+ *     scans the raw JSON string for dangerous tokens before walking the
+ *     parsed tree — a false positive (e.g. `"type":"constructor"`) triggers
+ *     the walk but produces correct results.
  */
 
 import type { Result } from "../Result.js";

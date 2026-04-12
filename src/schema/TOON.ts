@@ -1,6 +1,10 @@
 /**
  * TOON — code-generated Token-Oriented Object Notation serializers and parsers.
  *
+ * TOON is a human-readable, indentation-based format optimized for token
+ * efficiency (LLM context windows, config files, structured logs). Typical
+ * output is 40-50% smaller than JSON for tabular data.
+ *
  * `stringify(schema)` compiles a schema-specific TOON serializer. Format
  * selection (inline arrays, tabular arrays, expanded objects) is decided at
  * compile time based on schema shape — no runtime format detection.
@@ -12,22 +16,75 @@
  * Spec conformance: TOON 3.0 (2025-11-24). Subset: no key folding, no path
  * expansion. Delimiter configurable (comma default).
  *
- * V8 optimization status:
- *   Both toonStringify and toonParse reach Turbofan (top tier) after
- *   sufficient warm-up. Turbofan compilation is concurrent — status
- *   checks during warm-up may show Maglev, but benchmark iterations
- *   execute Turbofan code. The `readField` helper keeps per-field
- *   bytecode minimal (3 lines vs 5-6 inline), preserving Turbofan
- *   eligibility for schemas with many fields.
- *
- * @example
+ * @example Basic object — key: value format, one field per line
  * ```ts
  * import * as S from "vjuga/schema/Schema";
  * import * as ST from "vjuga/schema/TOON";
  * const User = S.object({ id: S.integer(), name: S.string() });
  * const toToon = ST.stringify(User);
- * toToon({ id: 1, name: "Alice" }); // "id: 1\nname: Alice"
+ * const fromToon = ST.parse(User);
+ * toToon({ id: 1, name: "Alice" });
+ * // "id: 1\nname: Alice"
+ * fromToon("id: 1\nname: Alice"); // [true, { id: 1, name: "Alice" }]
  * ```
+ *
+ * @example Tabular arrays — uniform object arrays use compact table format
+ * ```ts
+ * // Arrays of objects with only primitive fields → tabular format:
+ * //   users[3]{id,name,role}:
+ * //     1,Alice,admin
+ * //     2,Bob,user
+ * //     3,Charlie,user
+ * const Schema = S.object({
+ *   users: S.array(S.object({ id: S.integer(), name: S.string(), role: S.string() })),
+ * });
+ * // Output is ~50% smaller than JSON for this shape.
+ * ```
+ *
+ * @example Inline primitive arrays — compact single-line format
+ * ```ts
+ * // Arrays of primitives → inline: "tags[3]: admin,user,moderator"
+ * const Schema = S.object({ tags: S.array(S.string()) });
+ * ```
+ *
+ * @example Flexible order parse — for external TOON where field order varies
+ * ```ts
+ * const fromToon = ST.parse(User, { flexibleOrder: true });
+ * // Parses "name: Alice\nid: 1" (reversed order) correctly.
+ * // ~2x slower than schema-order parse — use only when order is unknown.
+ * ```
+ *
+ * @example Options — delimiter and indent
+ * ```ts
+ * ST.stringify(schema, { delimiter: "\t", indent: 4 });
+ * ST.parse(schema, { delimiter: "\t", indent: 4 });
+ * ```
+ *
+ * Best practices:
+ *   - Default (schema-order) parse is fastest — use it when you control the
+ *     producer. Use `flexibleOrder` only for external/user-generated TOON.
+ *   - Compile `stringify`/`parse` at module scope, not per-request.
+ *   - TOON is most beneficial for tabular data (arrays of uniform objects)
+ *     where the column header eliminates repeated key names.
+ *   - Use comma delimiter (default) for most cases. Tab (`\t`) is useful
+ *     when values contain commas. Pipe (`|`) for values containing tabs.
+ *
+ * Pitfalls:
+ *   - `flexibleOrder` only supports flat objects with primitive fields.
+ *     Nested objects/arrays inside flexible-order schemas use schema-order.
+ *   - Union parse only attempts the first variant — no backtracking.
+ *     Prefer discriminated unions or put the most common variant first.
+ *   - Strings containing the delimiter, quotes, or colons are automatically
+ *     quoted. Strings starting/ending with whitespace are also quoted.
+ *     Parsing unquotes transparently.
+ *   - TOON `null` is the literal string "null". The parser distinguishes
+ *     `nullable(T)` fields: "null" → null, other → parse as T.
+ *   - Root-level arrays/tuples are supported for parse but not for
+ *     stringify (wrap in an object for round-trip).
+ *
+ * V8 optimization: both compiled stringify and parse functions reach
+ * Turbofan (top tier) after warm-up. The `readField` helper keeps per-field
+ * bytecode minimal, preserving Turbofan eligibility for large schemas.
  */
 
 import type { Result } from "../Result.js";

@@ -6,12 +6,37 @@
  * consumers can depend on the error type without pulling in the full
  * Validator combinator library.
  *
- * @example
+ * When to use: building custom validators that return `Result<T, ValidationError>`
+ * and need to compose with the Validator module or branded-type validators.
+ * For schema-based validation, use `schema/Validate` which has its own
+ * `SchemaError` (plain object, cheaper to construct than Error subclass).
+ *
+ * @example Custom validator function
  * ```ts
  * import { ValidationError, type Validator } from "vjuga/ValidationError";
- * const v: Validator<string> = (value) =>
- *   typeof value === "string" ? ok(value) : err(new ValidationError("string", value));
+ * import { ok, err } from "vjuga/Result";
+ * const isEmail: Validator<string> = (value) => {
+ *   if (typeof value !== "string") return err(new ValidationError("email string", value));
+ *   if (!value.includes("@")) return err(new ValidationError("valid email", value));
+ *   return ok(value);
+ * };
  * ```
+ *
+ * @example Error structure — path tracks nested field location
+ * ```ts
+ * const e = new ValidationError("string", 42, "user.name");
+ * e.message;  // 'Validation failed at "user.name": expected string, got number'
+ * e.path;     // "user.name"
+ * e.expected; // "string"
+ * e.received; // 42
+ * ```
+ *
+ * Pitfalls:
+ *   - `ValidationError` extends `Error` — it allocates a stack trace.
+ *     For hot-path validation, prefer `schema/Validate` which uses plain
+ *     `SchemaError` objects (no stack trace, ~10x cheaper to construct).
+ *   - `path` is a dot-separated string, not an array. Empty string means
+ *     the root value failed. Numeric indices appear as `"items.0.name"`.
  */
 
 import type { Result } from "./Result.js";

@@ -102,6 +102,7 @@ import {
   freshVar,
   compileFunction,
   compileHelper,
+  typeCheckExpr,
 } from "./Codegen.js";
 
 // ---------------------------------------------------------------------------
@@ -119,7 +120,6 @@ import {
  * contains control chars, or contains the delimiter.
  */
 function needsQuote(s: string, delimCode: number): boolean {
-  if (s === undefined || s === null) return true;
   const len = s.length;
   if (len === 0) return true;
 
@@ -186,6 +186,11 @@ function toonQuote(s: string, delim: string): string {
     } else if (c === 0x09) {
       out += s.slice(last, i) + "\\t";
       last = i + 1;
+    } else if (c < 0x20) {
+      // Remaining control chars (0x00-0x08, 0x0b, 0x0c, 0x0e-0x1f) — escape
+      // as \uXXXX so the TOON output contains no raw control characters.
+      out += s.slice(last, i) + "\\u" + c.toString(16).padStart(4, "0");
+      last = i + 1;
     }
   }
   return out + s.slice(last) + '"';
@@ -206,7 +211,20 @@ function toonUnquote(s: string): string {
       else if (next === 0x6e) out += "\n";
       else if (next === 0x72) out += "\r";
       else if (next === 0x74) out += "\t";
-      else {
+      else if (next === 0x75 && i + 5 < s.length - 1) {
+        // \uXXXX escape — decode 4 hex digits to a char code
+        const hex = s.slice(i + 2, i + 6);
+        const code = parseInt(hex, 16);
+        if (code === code) {
+          out += String.fromCharCode(code);
+          i += 5;
+          last = i + 1;
+          continue;
+        }
+        out += s[i];
+        last = i + 1;
+        continue;
+      } else {
         out += s[i];
         last = i + 1;
         continue;
@@ -491,12 +509,17 @@ function emitArrayStringify(
   if (isPrimitive(schema.meta.items)) {
     const helperName = freshVar(ctx.buf);
     const elemExpr = inlineExpr(schema.meta.items, "a[i]");
+    // Use += cons-string concat (matches JSON array stringify pattern) —
+    // avoids per-call array allocation and join overhead.
     const fn = compileHelper<Function>(
       ctx.buf,
       `function ${helperName}(a) {
-  var parts = [];
-  for (var i = 0; i < a.length; i++) parts.push(${elemExpr});
-  return parts.join(_delim);
+  var n = a.length;
+  if (n === 0) return "";
+  var i = 0;
+  var s = ${elemExpr};
+  for (i = 1; i < n; i++) s += _delim + ${elemExpr};
+  return s;
 }`,
     );
     emitRef(ctx.buf, helperName, fn);
@@ -626,7 +649,7 @@ function emitUnionStringify(
 ): void {
   const variants = schema.meta.variants;
   for (let i = 0; i < variants.length; i++) {
-    const check = simpleTypeCheck(variants[i], accessor);
+    const check = typeCheckExpr(variants[i], accessor);
     if (check !== null && i < variants.length - 1) {
       emit(ctx.buf, `if (${check}) {`);
       ctx.buf.indent++;
@@ -639,32 +662,13 @@ function emitUnionStringify(
     }
   }
   for (let i = 0; i < variants.length - 1; i++) {
-    if (simpleTypeCheck(variants[i], accessor) !== null) {
+    if (typeCheckExpr(variants[i], accessor) !== null) {
       ctx.buf.indent--;
       emit(ctx.buf, "}");
     }
   }
 }
 
-function simpleTypeCheck(schema: Schema, accessor: string): string | null {
-  switch (schema.kind) {
-    case "string":
-      return `typeof ${accessor} === "string"`;
-    case "number":
-    case "integer":
-      return `typeof ${accessor} === "number"`;
-    case "boolean":
-      return `typeof ${accessor} === "boolean"`;
-    case "null":
-      return `${accessor} === null`;
-    case "object":
-      return `typeof ${accessor} === "object" && ${accessor} !== null`;
-    case "array":
-      return `Array.isArray(${accessor})`;
-    default:
-      return null;
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Parse helpers — captured by generated code via emitRef.

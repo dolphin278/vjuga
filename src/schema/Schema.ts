@@ -656,20 +656,20 @@ export function fromJsonSchema(root: JsonSchemaObject): Result<Schema, string> {
     if (type === "string") {
       const c: Record<string, unknown> = {};
       let hasConstraints = false;
-      if ("minLength" in js) {
-        c.minLength = js.minLength as number;
+      if (typeof js.minLength === "number") {
+        c.minLength = js.minLength;
         hasConstraints = true;
       }
-      if ("maxLength" in js) {
-        c.maxLength = js.maxLength as number;
+      if (typeof js.maxLength === "number") {
+        c.maxLength = js.maxLength;
         hasConstraints = true;
       }
-      if ("pattern" in js) {
-        c.pattern = js.pattern as string;
+      if (typeof js.pattern === "string") {
+        c.pattern = js.pattern;
         hasConstraints = true;
       }
-      if ("format" in js) {
-        c.format = js.format as string;
+      if (typeof js.format === "string") {
+        c.format = js.format;
         hasConstraints = true;
       }
       results.push(string(hasConstraints ? (c as StringConstraints) : undefined));
@@ -730,8 +730,8 @@ export function fromJsonSchema(root: JsonSchemaObject): Result<Schema, string> {
 
       // Array with items
       if ("items" in js && typeof js.items === "object" && js.items !== null) {
-        const min = "minItems" in js ? (js.minItems as number) : undefined;
-        const max = "maxItems" in js ? (js.maxItems as number) : undefined;
+        const min = typeof js.minItems === "number" ? js.minItems : undefined;
+        const max = typeof js.maxItems === "number" ? js.maxItems : undefined;
         workStack.push({ _v: 0, tag: 5, min, max });
         workStack.push({ _v: 1, js: js.items as JsonSchemaObject });
         continue;
@@ -813,24 +813,24 @@ export function findDiscriminant(variants: readonly Schema[]): string | null {
 function extractNumberConstraints(js: JsonSchemaObject): NumberConstraints | undefined {
   const c: Record<string, unknown> = {};
   let has = false;
-  if ("minimum" in js) {
-    c.minimum = js.minimum as number;
+  if (typeof js.minimum === "number") {
+    c.minimum = js.minimum;
     has = true;
   }
-  if ("maximum" in js) {
-    c.maximum = js.maximum as number;
+  if (typeof js.maximum === "number") {
+    c.maximum = js.maximum;
     has = true;
   }
-  if ("exclusiveMinimum" in js) {
-    c.exclusiveMinimum = js.exclusiveMinimum as number;
+  if (typeof js.exclusiveMinimum === "number") {
+    c.exclusiveMinimum = js.exclusiveMinimum;
     has = true;
   }
-  if ("exclusiveMaximum" in js) {
-    c.exclusiveMaximum = js.exclusiveMaximum as number;
+  if (typeof js.exclusiveMaximum === "number") {
+    c.exclusiveMaximum = js.exclusiveMaximum;
     has = true;
   }
-  if ("multipleOf" in js) {
-    c.multipleOf = js.multipleOf as number;
+  if (typeof js.multipleOf === "number") {
+    c.multipleOf = js.multipleOf;
     has = true;
   }
   return has ? (c as NumberConstraints) : undefined;

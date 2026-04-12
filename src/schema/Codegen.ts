@@ -156,7 +156,8 @@ export function dynamicChildPath(parentExpr: string, indexVar: string): string {
   if (isStaticPath(parentExpr)) {
     const parent = JSON.parse(parentExpr) as string;
     if (parent === "") return `"" + ${indexVar}`;
-    return `"${parent}." + ${indexVar}`;
+    // JSON.stringify escapes quotes, backslash, control chars in parent
+    return `${JSON.stringify(parent + ".")} + ${indexVar}`;
   }
   return parentExpr + ` + "." + ${indexVar}`;
 }
@@ -164,4 +165,35 @@ export function dynamicChildPath(parentExpr: string, indexVar: string): string {
 /** A static path expression is a simple JSON string literal with no + operators. */
 function isStaticPath(expr: string): boolean {
   return expr.indexOf("+") === -1;
+}
+
+// ---------------------------------------------------------------------------
+// Runtime type-check expression helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns a JS expression string that evaluates to true if `accessor` matches
+ * the runtime type expected by `schema.kind`, or null for kinds that cannot be
+ * distinguished by a simple typeof check (literal, enum, union, optional, nullable).
+ */
+export function typeCheckExpr(schema: { readonly kind: string }, accessor: string): string | null {
+  switch (schema.kind) {
+    case "string":
+      return `typeof ${accessor} === "string"`;
+    case "number":
+    case "integer":
+      return `typeof ${accessor} === "number"`;
+    case "boolean":
+      return `typeof ${accessor} === "boolean"`;
+    case "null":
+      return `${accessor} === null`;
+    case "array":
+    case "tuple":
+      return `Array.isArray(${accessor})`;
+    case "object":
+    case "record":
+      return `typeof ${accessor} === "object" && ${accessor} !== null && !Array.isArray(${accessor})`;
+    default:
+      return null;
+  }
 }

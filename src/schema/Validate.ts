@@ -549,7 +549,7 @@ function emitDiscriminatedValidation(
  * Generate an inline JS expression that type-checks a value against a schema.
  * Returns null for complex schemas that can't be checked with a single expression.
  */
-export function quickTypeCheck(schema: Schema, accessor: string): string | null {
+function quickTypeCheck(schema: Schema, accessor: string): string | null {
   switch (schema.kind) {
     case "string":
       return `typeof ${accessor} === "string"`;

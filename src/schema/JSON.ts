@@ -92,6 +92,7 @@ import {
   freshVar,
   compileFunction,
   compileHelper,
+  typeCheckExpr,
 } from "./Codegen.js";
 
 // ---------------------------------------------------------------------------
@@ -328,7 +329,7 @@ function walkStringifyUnion(
   const helperName = freshVar(buf);
   let body = `function ${helperName}(v) {\n`;
   for (let i = 0; i < variants.length; i++) {
-    const check = getTypeCheck(variants[i], "v");
+    const check = typeCheckExpr(variants[i], "v");
     if (check !== null) {
       body += `  if (${check}) return ${walkStringify(buf, variants[i], "v")};\n`;
     }
@@ -339,27 +340,6 @@ function walkStringifyUnion(
   return `${helperName}(${accessor})`;
 }
 
-function getTypeCheck(schema: Schema, accessor: string): string | null {
-  switch (schema.kind) {
-    case "string":
-      return `typeof ${accessor} === "string"`;
-    case "number":
-    case "integer":
-      return `typeof ${accessor} === "number"`;
-    case "boolean":
-      return `typeof ${accessor} === "boolean"`;
-    case "null":
-      return `${accessor} === null`;
-    case "array":
-    case "tuple":
-      return `Array.isArray(${accessor})`;
-    case "object":
-    case "record":
-      return `typeof ${accessor} === "object" && ${accessor} !== null && !Array.isArray(${accessor})`;
-    default:
-      return null;
-  }
-}
 
 // ---------------------------------------------------------------------------
 // parse

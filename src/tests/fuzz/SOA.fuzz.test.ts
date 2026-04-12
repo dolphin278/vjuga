@@ -1,10 +1,10 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import * as SOA from "../SOA.js";
-import * as Arb from "../Arbitrary.js";
-import * as Prop from "../Property.js";
-import * as ST from "../StatefulTest.js";
-import * as PRNG from "../PRNG.js";
+import * as SOA from "../../SOA.js";
+import * as Arb from "../../Arbitrary.js";
+import * as Prop from "../../Property.js";
+import * as ST from "../../StatefulTest.js";
+import * as PRNG from "../../PRNG.js";
 
 const fixedSeed = PRNG.seed(42n);
 
@@ -151,8 +151,9 @@ test("SOA stateful model-based test", () => {
     initialModel: () => ({ items: [] }),
     initialReal: freshSOA,
     commands: [pushCmd, popCmd, getCmd, setCmd, lengthCmd, swapRemoveCmd, clearCmd, getSliceCmd],
-    numRuns: 200,
+    numRuns: 1_000_000,
     maxCommands: 50,
+    timeoutMs: 300_000,
     seed: fixedSeed,
   });
 });
@@ -172,7 +173,7 @@ test("SOA push then get roundtrip", () => {
         assertPointEqual(got, items[i]!, `roundtrip index ${i}`);
       }
     },
-    { numRuns: 500, seed: fixedSeed },
+    { numRuns: 1_000_000, seed: fixedSeed },
   );
 });
 
@@ -198,6 +199,6 @@ test("SOA createView reflects correct values", () => {
         assert.equal(view.y, items[0]!.y, "view.y after reindex");
       }
     },
-    { numRuns: 500, seed: fixedSeed },
+    { numRuns: 1_000_000, seed: fixedSeed },
   );
 });

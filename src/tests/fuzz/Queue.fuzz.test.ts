@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import * as Queue from "../Queue.js";
-import * as Arb from "../Arbitrary.js";
-import * as Prop from "../Property.js";
-import * as ST from "../StatefulTest.js";
+import * as Queue from "../../Queue.js";
+import * as Arb from "../../Arbitrary.js";
+import * as Prop from "../../Property.js";
+import * as ST from "../../StatefulTest.js";
 
 // ---------------------------------------------------------------------------
 // Property-based tests
@@ -19,7 +19,7 @@ test("push N items then toArray returns them in order", () => {
       if (arr.length !== items.length) return false;
       return arr.every((v, i) => v === items[i]);
     },
-    { numRuns: 500 },
+    { numRuns: 1_000_000 },
   );
 });
 
@@ -34,7 +34,7 @@ test("push N then shift N returns FIFO order", () => {
       }
       return true;
     },
-    { numRuns: 500 },
+    { numRuns: 1_000_000 },
   );
 });
 
@@ -59,7 +59,7 @@ test("size equals pushes minus pops and shifts", () => {
       }
     }
     return Queue.size(q) === expected;
-  }, { numRuns: 500 });
+  }, { numRuns: 1_000_000 });
 });
 
 // ---------------------------------------------------------------------------
@@ -210,7 +210,8 @@ test("stateful: Queue matches array model under random operations", () => {
           },
         }),
     ],
-    numRuns: 200,
+    numRuns: 1_000_000,
     maxCommands: 50,
+    timeoutMs: 300_000,
   });
 });

@@ -9,17 +9,17 @@
  */
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import * as Queue from "../Queue.js";
-import * as LRU from "../LRUCache.js";
-import * as PQ from "../PriorityQueue.js";
-import * as RadixTree from "../RadixTree.js";
-import * as SOA from "../SOA.js";
-import * as HTML from "../HTML.js";
-import * as VJSON from "../JSON.js";
-import * as Arb from "../Arbitrary.js";
-import * as Prop from "../Property.js";
-import * as ST from "../StatefulTest.js";
-import * as CG from "../CoverageGuided.js";
+import * as Queue from "../../Queue.js";
+import * as LRU from "../../LRUCache.js";
+import * as PQ from "../../PriorityQueue.js";
+import * as RadixTree from "../../RadixTree.js";
+import * as SOA from "../../SOA.js";
+import * as HTML from "../../HTML.js";
+import * as VJSON from "../../JSON.js";
+import * as Arb from "../../Arbitrary.js";
+import * as Prop from "../../Property.js";
+import * as ST from "../../StatefulTest.js";
+import * as CG from "../../CoverageGuided.js";
 
 // ============================================================================
 // Queue: tryToShrinkList path (requires list.length > 10,000)
@@ -115,7 +115,7 @@ test("LRUCache: rapid set-del-set on same key doesn't corrupt", () => {
       // Cache should be valid
       return LRU.size(cache) <= 5 && LRU.size(cache) >= 0;
     },
-    { numRuns: 2000 },
+    { numRuns: 1_000_000 },
   );
 });
 
@@ -148,7 +148,7 @@ test("LRUCache: capacity-1 del then immediate set", () => {
       }
       return true;
     },
-    { numRuns: 3000 },
+    { numRuns: 1_000_000 },
   );
 });
 
@@ -311,7 +311,7 @@ test("CoverageGuided: fuzz RadixTree operations never crash", () => {
 // ============================================================================
 
 test("Memoization: import and fuzz", async () => {
-  const Memo = await import("../Memoization.js");
+  const Memo = await import("../../Memoization.js");
 
   // Test memoize basic correctness
   let callCount = 0;
@@ -343,12 +343,12 @@ test("Memoization: import and fuzz", async () => {
       const unique = new Set(inputs).size;
       return callCount === unique;
     },
-    { numRuns: 2000 },
+    { numRuns: 1_000_000 },
   );
 });
 
 test("Memoization: once() calls function exactly once", async () => {
-  const Memo = await import("../Memoization.js");
+  const Memo = await import("../../Memoization.js");
 
   Prop.assert(
     Arb.integer(1, 100),
@@ -362,7 +362,7 @@ test("Memoization: once() calls function exactly once", async () => {
       for (let i = 0; i < n; i++) fn();
       return calls === 1 && fn() === 42;
     },
-    { numRuns: 2000 },
+    { numRuns: 1_000_000 },
   );
 });
 
@@ -371,7 +371,7 @@ test("Memoization: once() calls function exactly once", async () => {
 // ============================================================================
 
 test("ErrorChain: chain traversal with random depth", async () => {
-  const EC = await import("../ErrorChain.js");
+  const EC = await import("../../ErrorChain.js");
 
   Prop.assert(
     Arb.integer(1, 20),
@@ -392,12 +392,12 @@ test("ErrorChain: chain traversal with random depth", async () => {
 
       return true;
     },
-    { numRuns: 1000 },
+    { numRuns: 1_000_000 },
   );
 });
 
 test("ErrorChain: find() locates error by predicate", async () => {
-  const EC = await import("../ErrorChain.js");
+  const EC = await import("../../ErrorChain.js");
 
   const inner = new TypeError("type error");
   const middle = new RangeError("range error", { cause: inner });

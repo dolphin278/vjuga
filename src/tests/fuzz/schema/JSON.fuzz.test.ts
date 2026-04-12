@@ -1,11 +1,11 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import * as S from "../../schema/Schema.js";
-import * as SJ from "../../schema/JSON.js";
-import * as Arb from "../../Arbitrary.js";
-import * as Prop from "../../Property.js";
+import * as S from "../../../schema/Schema.js";
+import * as SJ from "../../../schema/JSON.js";
+import * as Arb from "../../../Arbitrary.js";
+import * as Prop from "../../../Property.js";
 
-const NUM_RUNS = 500;
+const NUM_RUNS = 1_000_000;
 
 // ---------------------------------------------------------------------------
 // stringify → parse round-trip

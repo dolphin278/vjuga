@@ -402,6 +402,24 @@ test("checkStatefulAsync() detects async bugs", async () => {
   assert.equal(result.ok, false);
 });
 
+// ---------------------------------------------------------------------------
+// timeoutMs
+// ---------------------------------------------------------------------------
+
+test("checkStateful() timeoutMs: stops before numRuns when deadline passes", () => {
+  const result = ST.checkStateful({
+    initialModel: () => ({ count: 0 }),
+    initialReal: () => new Counter(),
+    commands: [incrementCmd],
+    numRuns: 10_000_000,
+    timeoutMs: 1,
+    seed: fixedSeed,
+    maxCommands: 5,
+  });
+  assert.equal(result.ok, true);
+  assert.ok(result.numRuns < 10_000_000, `should stop early, got ${result.numRuns}`);
+});
+
 test("assertStatefulAsync() throws on async failure", async () => {
   await assert.rejects(
     () =>

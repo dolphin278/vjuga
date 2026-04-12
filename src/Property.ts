@@ -8,10 +8,12 @@
  * When to use: wrap `Arbitrary` generators with `assert` / `assertAsync` inside
  * `node:test` tests to verify properties over random inputs. Use `check` /
  * `checkAsync` when you need the raw `CheckResult` for programmatic inspection.
+ * Set `timeoutMs` when a test may run indefinitely on slow predicates — the loop
+ * exits early and returns the actual run count if the deadline passes.
  *
  * Design tradeoffs: the runner is split into sync and async variants rather
  * than always using async because the sync path avoids Promise allocation
- * overhead — property tests run 100+ iterations and the overhead adds up.
+ * overhead — property tests run millions of iterations and the overhead adds up.
  * The internal `stringify` is intentionally unexported; it exists solely to
  * format counterexamples in failure messages.
  *
@@ -52,6 +54,10 @@ export interface CheckConfig {
   readonly maxShrinks?: number;
   /** Path string for exact replay of a specific counterexample. */
   readonly path?: string;
+  /** Wall-clock deadline in milliseconds. When set, the run loop exits early if
+   *  the deadline passes before numRuns completes; CheckResult.numRuns reflects
+   *  actual completed runs. */
+  readonly timeoutMs?: number;
 }
 
 /** Result of a property check. */
@@ -261,7 +267,7 @@ function replayPath<T>(tree: Tree<T>, indices: number[]): Tree<T> {
 // Internal: resolve config defaults
 // ---------------------------------------------------------------------------
 
-/* c8 ignore next 9 -- config defaults create implicit ?? branches; both sides tested across test suite */
+/* c8 ignore next 11 -- config defaults create implicit ?? branches; both sides tested across test suite */
 function resolveConfig(config?: CheckConfig) {
   return {
     numRuns: config?.numRuns ?? 100,
@@ -269,6 +275,7 @@ function resolveConfig(config?: CheckConfig) {
     maxSize: config?.maxSize ?? 100,
     maxShrinks: config?.maxShrinks ?? 1000,
     path: config?.path,
+    timeoutMs: config?.timeoutMs,
   };
 }
 
@@ -314,7 +321,10 @@ export function check<T>(
     };
   }
 
-  for (let i = 0; i < cfg.numRuns; i++) {
+  const deadline = cfg.timeoutMs !== undefined ? Date.now() + cfg.timeoutMs : undefined;
+  let i = 0;
+  for (; i < cfg.numRuns; i++) {
+    if (deadline !== undefined && Date.now() > deadline) break;
     /* c8 ignore next -- ternary branch */
     const size = cfg.numRuns <= 1 ? cfg.maxSize : Math.floor((i * cfg.maxSize) / (cfg.numRuns - 1));
     const testPrng = split(prng);
@@ -348,7 +358,7 @@ export function check<T>(
     }
   }
 
-  return { ok: true, numRuns: cfg.numRuns, seed: cfg.seed };
+  return { ok: true, numRuns: i, seed: cfg.seed };
 }
 
 /**
@@ -406,7 +416,10 @@ export async function checkAsync<T>(
     };
   }
 
-  for (let i = 0; i < cfg.numRuns; i++) {
+  const deadline = cfg.timeoutMs !== undefined ? Date.now() + cfg.timeoutMs : undefined;
+  let i = 0;
+  for (; i < cfg.numRuns; i++) {
+    if (deadline !== undefined && Date.now() > deadline) break;
     /* c8 ignore next -- ternary branch */
     const size = cfg.numRuns <= 1 ? cfg.maxSize : Math.floor((i * cfg.maxSize) / (cfg.numRuns - 1));
     const testPrng = split(prng);
@@ -440,7 +453,7 @@ export async function checkAsync<T>(
     }
   }
 
-  return { ok: true, numRuns: cfg.numRuns, seed: cfg.seed };
+  return { ok: true, numRuns: i, seed: cfg.seed };
 }
 
 /**

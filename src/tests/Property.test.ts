@@ -377,6 +377,31 @@ test("assert() formats large TypedArray counterexample with truncation", () => {
   );
 });
 
+// ---------------------------------------------------------------------------
+// timeoutMs
+// ---------------------------------------------------------------------------
+
+test("check() timeoutMs: stops before numRuns when deadline passes", () => {
+  let count = 0;
+  const result = Prop.check(
+    Arb.integer(),
+    () => { count++; return true; },
+    { numRuns: 10_000_000, timeoutMs: 1 },
+  );
+  assert.equal(result.ok, true);
+  assert.ok(result.numRuns < 10_000_000, `should stop early, got ${result.numRuns}`);
+});
+
+test("check() timeoutMs: reports full numRuns when ample time", () => {
+  const result = Prop.check(
+    Arb.integer(),
+    () => true,
+    { numRuns: 50, timeoutMs: 30_000, seed: fixedSeed },
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.numRuns, 50);
+});
+
 test("assert() formats Date, RegExp, Error, function, symbol, bigint, null, undefined", () => {
   // Test various types through stringify
   const types: Arb.Arbitrary<unknown>[] = [

@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import * as Pool from "../MemoryPool.js";
-import * as Arb from "../Arbitrary.js";
-import * as Prop from "../Property.js";
-import * as ST from "../StatefulTest.js";
+import * as Pool from "../../MemoryPool.js";
+import * as Arb from "../../Arbitrary.js";
+import * as Prop from "../../Property.js";
+import * as ST from "../../StatefulTest.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -34,7 +34,7 @@ test("acquire/release cycle reuses objects without new allocations", () => {
       for (let i = 0; i < n; i++) Pool.acquire(pool);
       return counter === before;
     },
-    { numRuns: 500 },
+    { numRuns: 1_000_000 },
   );
 });
 
@@ -51,7 +51,7 @@ test("withAcquire returns fn result and releases", () => {
       Pool.release(pool, obj2);
       return counter === before;
     },
-    { numRuns: 500 },
+    { numRuns: 1_000_000 },
   );
 });
 
@@ -68,7 +68,7 @@ test("exhaustion throws when acquiring beyond maxSize", () => {
         return e instanceof Pool.MemoryPoolExhaustedError;
       }
     },
-    { numRuns: 500 },
+    { numRuns: 1_000_000 },
   );
 });
 
@@ -163,7 +163,8 @@ test("stateful: MemoryPool matches model under random operations", () => {
           },
         }),
     ],
-    numRuns: 200,
+    numRuns: 1_000_000,
     maxCommands: 50,
+    timeoutMs: 300_000,
   });
 });

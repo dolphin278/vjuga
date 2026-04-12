@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import * as VJSON from "../JSON.js";
-import * as Arb from "../Arbitrary.js";
-import * as Prop from "../Property.js";
+import * as VJSON from "../../JSON.js";
+import * as Arb from "../../Arbitrary.js";
+import * as Prop from "../../Property.js";
 
 // ---------------------------------------------------------------------------
 // JSON value generator — recursive via letrec
@@ -32,7 +32,7 @@ test("stringify/parse round-trip: JSON.parse(VJSON.stringify(v)) deep-equals v",
     assert.notEqual(str, undefined);
     const parsed = JSON.parse(str!);
     assert.deepEqual(parsed, v);
-  }, { numRuns: 500 });
+  }, { numRuns: 1_000_000 });
 });
 
 test("stringify/parseExn round-trip: VJSON.parseExn(VJSON.stringify(v)) deep-equals v", () => {
@@ -41,7 +41,7 @@ test("stringify/parseExn round-trip: VJSON.parseExn(VJSON.stringify(v)) deep-equ
     assert.notEqual(str, undefined);
     const parsed = VJSON.parseExn(str!);
     assert.deepEqual(parsed, v);
-  }, { numRuns: 500 });
+  }, { numRuns: 1_000_000 });
 });
 
 test("parse returns undefined for invalid JSON", () => {
@@ -53,7 +53,7 @@ test("parse returns undefined for invalid JSON", () => {
   );
   Prop.assert(invalidArb, (s) => {
     return VJSON.parse(s) === undefined;
-  }, { numRuns: 500 });
+  }, { numRuns: 1_000_000 });
 });
 
 test("safeParse strips __proto__ and constructor keys at any depth", () => {
@@ -99,7 +99,7 @@ test("safeParse strips __proto__ and constructor keys at any depth", () => {
         }
       }
     }
-  }, { numRuns: 500 });
+  }, { numRuns: 1_000_000 });
 });
 
 test("stringify produces JSON parseable by native JSON.parse", () => {
@@ -108,5 +108,5 @@ test("stringify produces JSON parseable by native JSON.parse", () => {
     assert.notEqual(str, undefined);
     // Should not throw
     JSON.parse(str!);
-  }, { numRuns: 500 });
+  }, { numRuns: 1_000_000 });
 });

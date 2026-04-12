@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import * as PQ from "../PriorityQueue.js";
-import * as Arb from "../Arbitrary.js";
-import * as Prop from "../Property.js";
-import * as ST from "../StatefulTest.js";
+import * as PQ from "../../PriorityQueue.js";
+import * as Arb from "../../Arbitrary.js";
+import * as Prop from "../../Property.js";
+import * as ST from "../../StatefulTest.js";
 
 const cmp = (a: number, b: number): number => a - b;
 
@@ -24,7 +24,7 @@ test("pop sequence is always sorted", () => {
       }
       return true;
     },
-    { numRuns: 500 },
+    { numRuns: 1_000_000 },
   );
 });
 
@@ -39,7 +39,7 @@ test("heapify then pop all equals sort", () => {
       if (result.length !== sorted.length) return false;
       return result.every((v, i) => v === sorted[i]);
     },
-    { numRuns: 500 },
+    { numRuns: 1_000_000 },
   );
 });
 
@@ -66,7 +66,7 @@ test("size tracks correctly through random push/pop interleaving", () => {
       }
       return true;
     },
-    { numRuns: 500 },
+    { numRuns: 1_000_000 },
   );
 });
 
@@ -133,7 +133,8 @@ test("stateful: PriorityQueue matches sorted-array model", () => {
           },
         }),
     ],
-    numRuns: 200,
+    numRuns: 1_000_000,
     maxCommands: 50,
+    timeoutMs: 300_000,
   });
 });

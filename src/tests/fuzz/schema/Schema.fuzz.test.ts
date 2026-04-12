@@ -1,9 +1,9 @@
 import { test } from "node:test";
-import * as S from "../../schema/Schema.js";
-import * as Arb from "../../Arbitrary.js";
-import * as Prop from "../../Property.js";
+import * as S from "../../../schema/Schema.js";
+import * as Arb from "../../../Arbitrary.js";
+import * as Prop from "../../../Property.js";
 
-const NUM_RUNS = 500;
+const NUM_RUNS = 1_000_000;
 
 // ---------------------------------------------------------------------------
 // toJsonSchema → fromJsonSchema round-trip
@@ -149,7 +149,7 @@ test("isPrimitive returns true for leaf schemas", () => {
         S.isPrimitive(S.nullable(S.number()))
       );
     },
-    { numRuns: 10 },
+    { numRuns: NUM_RUNS },
   );
 });
 

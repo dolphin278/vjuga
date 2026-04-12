@@ -28,15 +28,18 @@ Then follow the `dolphin278-craft` skill. vjuga-specific additions on top of tha
   performance regressions.
 - Tests live in `src/tests/`, named after the source module.
 - **Fuzz tests are mandatory.** Every `src/*.ts` module must have a
-  corresponding fuzz test (`src/tests/<Module>.fuzz.test.ts` or coverage in
-  a shared fuzz file like `aggressive-fuzz.test.ts`). Fuzz tests use the
+  corresponding fuzz test (`src/tests/fuzz/<Module>.fuzz.test.ts` or coverage
+  in a shared fuzz file like `src/tests/fuzz/aggressive-fuzz.test.ts`). Schema
+  module fuzz tests live in `src/tests/fuzz/schema/`. Fuzz tests use the
   built-in PBT library (`Arbitrary`, `Property`, `StatefulTest`,
   `CoverageGuided`). Stateful modules must have a model-based stateful test
   (`ST.assertStateful`) with an oracle model; pure-function modules must have
-  property-based tests (`Prop.assert`). Use `{ numRuns: 500 }` for property
-  tests and `{ numRuns: 200, maxCommands: 50 }` for stateful tests at
-  minimum. The `npm run test:fuzz` script runs all fuzz tests and is part of
-  the `prepare` gate.
+  property-based tests (`Prop.assert`). Use `{ numRuns: 1_000_000 }` for
+  property tests and `{ numRuns: 1_000_000, maxCommands: 50, timeoutMs: 300_000 }`
+  for stateful tests. The `npm run test:fuzz` script runs all fuzz tests and is
+  part of the `prepare` gate. Fuzz tests are **not** run by `npm test` — they
+  live in `src/tests/fuzz/` which is intentionally excluded from the regular
+  test glob.
 - **Module-level docstrings are required.** Every `src/*.ts` module must begin
   with a JSDoc block (`/** ... */`) before any imports or code. Include the
   following sections (omit a section only when it does not apply):

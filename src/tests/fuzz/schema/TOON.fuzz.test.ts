@@ -1,10 +1,10 @@
 import { test } from "node:test";
-import * as S from "../../schema/Schema.js";
-import * as ST from "../../schema/TOON.js";
-import * as Arb from "../../Arbitrary.js";
-import * as Prop from "../../Property.js";
+import * as S from "../../../schema/Schema.js";
+import * as ST from "../../../schema/TOON.js";
+import * as Arb from "../../../Arbitrary.js";
+import * as Prop from "../../../Property.js";
 
-const NUM_RUNS = 500;
+const NUM_RUNS = 1_000_000;
 
 // ---------------------------------------------------------------------------
 // stringify → parse round-trip for primitives
@@ -246,6 +246,7 @@ test("record of numbers round-trips through TOON", () => {
 
 test("flexible order parses fields in any order", () => {
   const schema = S.object({ a: S.integer(), b: S.string(), c: S.boolean() });
+  const str = ST.stringify(schema);
   const par = ST.parse(schema, { flexibleOrder: true });
   Prop.assert(
     Arb.record({
@@ -254,9 +255,12 @@ test("flexible order parses fields in any order", () => {
       c: Arb.boolean(),
     }),
     (obj) => {
-      // Emit in reverse order
-      const toon = `c: ${obj.c}\nb: ${obj.b}\na: ${obj.a}`;
-      const r = par(toon);
+      // Use ST.stringify to produce correctly-quoted TOON, then reverse lines to
+      // test flexible-order parsing. Raw interpolation breaks for string values
+      // that TOON treats as quoted (e.g. '""' → parsed as empty string).
+      const lines = str(obj).split("\n");
+      lines.reverse();
+      const r = par(lines.join("\n"));
       return r[0] === true && r[1].a === obj.a && r[1].b === obj.b && r[1].c === obj.c;
     },
     { numRuns: NUM_RUNS },

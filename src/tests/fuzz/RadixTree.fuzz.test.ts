@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import * as RadixTree from "../RadixTree.js";
-import * as Arb from "../Arbitrary.js";
-import * as Prop from "../Property.js";
-import * as ST from "../StatefulTest.js";
+import * as RadixTree from "../../RadixTree.js";
+import * as Arb from "../../Arbitrary.js";
+import * as Prop from "../../Property.js";
+import * as ST from "../../StatefulTest.js";
 
 // ---------------------------------------------------------------------------
 // Property-based tests: invariants over random insert/lookup/remove sequences
@@ -25,7 +25,7 @@ test("insert then lookup always returns the inserted value", () => {
     // Insert one more and verify it's retrievable
     RadixTree.insert(tree, extraKey, extraVal);
     return RadixTree.lookup(tree, extraKey) === extraVal;
-  }, { numRuns: 500 });
+  }, { numRuns: 1_000_000 });
 });
 
 test("size equals number of distinct keys", () => {
@@ -40,7 +40,7 @@ test("size equals number of distinct keys", () => {
       }
       return RadixTree.size(tree) === seen.size;
     },
-    { numRuns: 500 },
+    { numRuns: 1_000_000 },
   );
 });
 
@@ -61,7 +61,7 @@ test("entries returns exactly the keys inserted (last-write-wins)", () => {
       }
       return true;
     },
-    { numRuns: 500 },
+    { numRuns: 1_000_000 },
   );
 });
 
@@ -78,7 +78,7 @@ test("remove then lookup returns undefined", () => {
       }
       return true;
     },
-    { numRuns: 500 },
+    { numRuns: 1_000_000 },
   );
 });
 
@@ -106,7 +106,7 @@ test("prefixMatch returns superset of exact match", () => {
       const sorted2 = expectedValues.sort((a, b) => a - b);
       return sorted1.every((v, i) => v === sorted2[i]);
     },
-    { numRuns: 500 },
+    { numRuns: 1_000_000 },
   );
 });
 
@@ -235,7 +235,8 @@ test("stateful: RadixTree matches Map under random operations", () => {
         }));
       },
     ],
-    numRuns: 200,
+    numRuns: 1_000_000,
     maxCommands: 50,
+    timeoutMs: 300_000,
   });
 });

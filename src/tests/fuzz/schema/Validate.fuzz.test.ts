@@ -1,10 +1,10 @@
 import { test } from "node:test";
-import * as S from "../../schema/Schema.js";
-import { validate } from "../../schema/Validate.js";
-import * as Arb from "../../Arbitrary.js";
-import * as Prop from "../../Property.js";
+import * as S from "../../../schema/Schema.js";
+import { validate } from "../../../schema/Validate.js";
+import * as Arb from "../../../Arbitrary.js";
+import * as Prop from "../../../Property.js";
 
-const NUM_RUNS = 500;
+const NUM_RUNS = 1_000_000;
 
 // ---------------------------------------------------------------------------
 // Validators accept matching types

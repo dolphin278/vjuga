@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import * as LRU from "../LRUCache.js";
-import * as Arb from "../Arbitrary.js";
-import * as Prop from "../Property.js";
-import * as ST from "../StatefulTest.js";
+import * as LRU from "../../LRUCache.js";
+import * as Arb from "../../Arbitrary.js";
+import * as Prop from "../../Property.js";
+import * as ST from "../../StatefulTest.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -131,8 +131,9 @@ test("LRUCache stateful model-based fuzz test", () => {
     initialModel: (): LRUModel => ({ map: new Map(), order: [], capacity: CAPACITY }),
     initialReal: () => LRU.make<string, number>(CAPACITY),
     commands: [setCmd, getCmd, hasCmd, delCmd, sizeCmd],
-    numRuns: 200,
+    numRuns: 1_000_000,
     maxCommands: 50,
+    timeoutMs: 300_000,
   });
 });
 
@@ -149,7 +150,7 @@ test("LRUCache property: set(k, v) then get(k) returns v", () => {
       LRU.set(cache, k, v);
       assert.equal(LRU.get(cache, k), v);
     },
-    { numRuns: 500 },
+    { numRuns: 1_000_000 },
   );
 });
 
@@ -168,6 +169,6 @@ test("LRUCache property: size never exceeds capacity after N sets", () => {
         assert.ok(LRU.size(cache) <= CAPACITY, `size ${LRU.size(cache)} exceeds capacity ${CAPACITY}`);
       }
     },
-    { numRuns: 500 },
+    { numRuns: 1_000_000 },
   );
 });

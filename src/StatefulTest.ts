@@ -87,6 +87,9 @@ export interface StatefulConfig<Model, Real> {
   readonly seed?: Seed;
   /** Maximum shrink iterations. Default 1000. */
   readonly maxShrinks?: number;
+  /** Wall-clock deadline in milliseconds. When set, the run loop exits early if
+   *  the deadline passes before numRuns completes. */
+  readonly timeoutMs?: number;
 }
 
 /** Async configuration variant. */
@@ -99,6 +102,9 @@ export interface AsyncStatefulConfig<Model, Real> {
   readonly numRuns?: number;
   readonly seed?: Seed;
   readonly maxShrinks?: number;
+  /** Wall-clock deadline in milliseconds. When set, the run loop exits early if
+   *  the deadline passes before numRuns completes. */
+  readonly timeoutMs?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -306,14 +312,18 @@ async function shrinkStatefulAsync<Model, Real>(
 export function checkStateful<Model, Real>(
   config: StatefulConfig<Model, Real>,
 ): CheckResult<Command<Model, Real>[]> {
-  /* c8 ignore next 4 -- config defaults; both sides tested across test suite */
+  /* c8 ignore next 5 -- config defaults; both sides tested across test suite */
   const numRuns = config.numRuns ?? 100;
   const maxCommands = config.maxCommands ?? 50;
   const maxShrinks = config.maxShrinks ?? 1000;
   const usedSeed = config.seed ?? randomSeed();
+  const timeoutMs = config.timeoutMs;
   const prng = make(usedSeed);
 
-  for (let i = 0; i < numRuns; i++) {
+  const deadline = timeoutMs !== undefined ? Date.now() + timeoutMs : undefined;
+  let i = 0;
+  for (; i < numRuns; i++) {
+    if (deadline !== undefined && Date.now() > deadline) break;
     /* c8 ignore next -- ternary branch */
     const size = numRuns <= 1 ? 100 : Math.floor((i * 100) / (numRuns - 1));
     const testPrng = split(prng);
@@ -345,7 +355,7 @@ export function checkStateful<Model, Real>(
     }
   }
 
-  return { ok: true, numRuns: numRuns, seed: usedSeed };
+  return { ok: true, numRuns: i, seed: usedSeed };
 }
 
 /** Runs a stateful check and throws on failure. */
@@ -383,9 +393,13 @@ export async function checkStatefulAsync<Model, Real>(
   const maxCommands = config.maxCommands ?? 50;
   const maxShrinks = config.maxShrinks ?? 1000;
   const usedSeed = config.seed ?? randomSeed();
+  const timeoutMs = config.timeoutMs;
   const prng = make(usedSeed);
 
-  for (let i = 0; i < numRuns; i++) {
+  const deadline = timeoutMs !== undefined ? Date.now() + timeoutMs : undefined;
+  let i = 0;
+  for (; i < numRuns; i++) {
+    if (deadline !== undefined && Date.now() > deadline) break;
     const size = numRuns <= 1 ? 100 : Math.floor((i * 100) / (numRuns - 1));
     const testPrng = split(prng);
 
@@ -417,7 +431,7 @@ export async function checkStatefulAsync<Model, Real>(
     }
   }
 
-  return { ok: true, numRuns: numRuns, seed: usedSeed };
+  return { ok: true, numRuns: i, seed: usedSeed };
 }
 
 /** Async variant of assertStateful. */

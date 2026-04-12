@@ -10,15 +10,15 @@
  */
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import * as Queue from "../Queue.js";
-import * as LRU from "../LRUCache.js";
-import * as PQ from "../PriorityQueue.js";
-import * as RadixTree from "../RadixTree.js";
-import * as SOA from "../SOA.js";
-import * as VJSON from "../JSON.js";
-import * as Arb from "../Arbitrary.js";
-import * as Prop from "../Property.js";
-import * as ST from "../StatefulTest.js";
+import * as Queue from "../../Queue.js";
+import * as LRU from "../../LRUCache.js";
+import * as PQ from "../../PriorityQueue.js";
+import * as RadixTree from "../../RadixTree.js";
+import * as SOA from "../../SOA.js";
+import * as VJSON from "../../JSON.js";
+import * as Arb from "../../Arbitrary.js";
+import * as Prop from "../../Property.js";
+import * as ST from "../../StatefulTest.js";
 
 // ============================================================================
 // Queue: size() correctness at exact capacity boundaries
@@ -78,7 +78,7 @@ test("Queue: alternating push-front/pop-back at exact capacity", () => {
 
       return Queue.size(q) === 0;
     },
-    { numRuns: 5000 },
+    { numRuns: 1_000_000 },
   );
 });
 
@@ -112,7 +112,7 @@ test("LRUCache: fill, evict all via new keys, verify old keys gone", () => {
 
       return true;
     },
-    { numRuns: 3000 },
+    { numRuns: 1_000_000 },
   );
 });
 
@@ -141,7 +141,7 @@ test("LRUCache: del all entries then reuse", () => {
 
       return true;
     },
-    { numRuns: 3000 },
+    { numRuns: 1_000_000 },
   );
 });
 
@@ -161,7 +161,7 @@ test("PQ: single element push/pop cycle", () => {
       }
       return true;
     },
-    { numRuns: 3000 },
+    { numRuns: 1_000_000 },
   );
 });
 
@@ -178,7 +178,7 @@ test("PQ: reverse-sorted input (worst case for sift-up)", () => {
       }
       return true;
     },
-    { numRuns: 2000 },
+    { numRuns: 1_000_000 },
   );
 });
 
@@ -211,7 +211,7 @@ test("RadixTree: empty key alongside regular keys", () => {
 
       return RadixTree.size(tree) === 0;
     },
-    { numRuns: 5000 },
+    { numRuns: 1_000_000 },
   );
 });
 
@@ -368,8 +368,9 @@ test("Queue: 10,000-run stateful test", () => {
           },
         }),
     ],
-    numRuns: 10000,
+    numRuns: 1_000_000,
     maxCommands: 30,
+    timeoutMs: 300_000,
   });
 });
 
@@ -452,7 +453,8 @@ test("LRUCache: 5,000-run stateful test (capacity 3)", () => {
           },
         }),
     ],
-    numRuns: 5000,
+    numRuns: 1_000_000,
     maxCommands: 50,
+    timeoutMs: 300_000,
   });
 });

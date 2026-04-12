@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import * as HTML from "../HTML.js";
-import * as Arb from "../Arbitrary.js";
-import * as Prop from "../Property.js";
+import * as HTML from "../../HTML.js";
+import * as Arb from "../../Arbitrary.js";
+import * as Prop from "../../Property.js";
 
 // ---------------------------------------------------------------------------
 // Generators
@@ -49,15 +49,15 @@ test("fuzz: no dangerous chars in escaped output", () => {
       if (FORBIDDEN_IN_OUTPUT.has(escaped[i]!)) return false;
     }
     return true;
-  }, { numRuns: 500 });
+  }, { numRuns: 1_000_000 });
 });
 
 test("fuzz: safe strings are returned unchanged", () => {
-  Prop.assert(safeStr, (s) => HTML.escape(s) === s, { numRuns: 500 });
+  Prop.assert(safeStr, (s) => HTML.escape(s) === s, { numRuns: 1_000_000 });
 });
 
 test("fuzz: length is non-decreasing", () => {
-  Prop.assert(generalStr, (s) => HTML.escape(s).length >= s.length, { numRuns: 500 });
+  Prop.assert(generalStr, (s) => HTML.escape(s).length >= s.length, { numRuns: 1_000_000 });
 });
 
 test("fuzz: correct entity mapping for each special char", () => {
@@ -81,7 +81,7 @@ test("fuzz: correct entity mapping for each special char", () => {
   Prop.assert(singleSpecial, ({ prefix, char, suffix }) => {
     const escaped = HTML.escape(prefix + char + suffix);
     return escaped === prefix + ENTITY_MAP[char] + suffix;
-  }, { numRuns: 500 });
+  }, { numRuns: 1_000_000 });
 });
 
 test("fuzz: empty string returns empty string", () => {

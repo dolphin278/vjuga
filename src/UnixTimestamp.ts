@@ -27,7 +27,7 @@
 
 import type { Branded } from "./FunctionUtils.js";
 import { type Result, ok, err } from "./Result.js";
-import { ValidationError, type Validator } from "./Validator.js";
+import { ValidationError, type Validator } from "./ValidationError.js";
 import { type ISOTimestamp, fromEpochMs } from "./ISOTimestamp.js";
 
 /** Branded number guaranteed to be a finite Unix epoch timestamp in seconds. */

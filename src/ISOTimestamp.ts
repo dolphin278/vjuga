@@ -31,7 +31,7 @@
 
 import type { Branded } from "./FunctionUtils.js";
 import { type Result, ok, err } from "./Result.js";
-import { ValidationError, type Validator } from "./Validator.js";
+import { ValidationError, type Validator } from "./ValidationError.js";
 
 /** Branded string guaranteed to be a valid ISO 8601 datetime. */
 export type ISOTimestamp = Branded<string, "ISOTimestamp">;
@@ -100,14 +100,13 @@ export function fromEpochMs(ms: number): ISOTimestamp {
   const rem_min = totalMin % 60;
   const totalHr = (totalMin - rem_min) / 60;
   const rem_hr = totalHr % 24;
-  const z = ((totalHr - rem_hr) / 24) + 719468;
+  const z = (totalHr - rem_hr) / 24 + 719468;
 
   // Hinnant civil_from_days — all integer arithmetic.
   // z is always >= 719468 for non-negative ms, so the era branch for z < 0 is elided.
   const era = (z / 146097) | 0;
   const doe = z - era * 146097;
-  const yoe =
-    ((doe - ((doe / 1460) | 0) + ((doe / 36524) | 0) - ((doe / 146096) | 0)) / 365) | 0;
+  const yoe = ((doe - ((doe / 1460) | 0) + ((doe / 36524) | 0) - ((doe / 146096) | 0)) / 365) | 0;
   const y = yoe + era * 400;
   const doy = doe - (365 * yoe + ((yoe / 4) | 0) - ((yoe / 100) | 0));
   const mp = ((5 * doy + 2) / 153) | 0;
@@ -115,9 +114,20 @@ export function fromEpochMs(ms: number): ISOTimestamp {
   const m = mp + (mp < 10 ? 3 : -9);
   const yr = y + (m <= 2 ? 1 : 0);
 
-  return (PAD4[yr] + "-" + PAD2[m] + "-" + PAD2[d] + "T" +
-    PAD2[rem_hr] + ":" + PAD2[rem_min] + ":" + PAD2[rem_sec] + "." +
-    PAD3[rem_ms] + "Z") as ISOTimestamp;
+  return (PAD4[yr] +
+    "-" +
+    PAD2[m] +
+    "-" +
+    PAD2[d] +
+    "T" +
+    PAD2[rem_hr] +
+    ":" +
+    PAD2[rem_min] +
+    ":" +
+    PAD2[rem_sec] +
+    "." +
+    PAD3[rem_ms] +
+    "Z") as ISOTimestamp;
 }
 
 /** Returns the current time as a branded ISOTimestamp (~40% faster than Date.toISOString). */

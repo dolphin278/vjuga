@@ -23,45 +23,14 @@ import type {
   PositiveInteger,
   NonNegativeInteger,
 } from "./FunctionUtils.js";
+// Re-export from the standalone module so existing consumers see no change
+export { ValidationError, type Validator } from "./ValidationError.js";
+import { ValidationError, type Validator } from "./ValidationError.js";
 
 // Cached at module level so every `for...in` call site in this file goes
 // through the same function reference — keeps V8 ICs monomorphic regardless of
 // the shape of the object being iterated.
 const hasOwnProp = Object.prototype.hasOwnProperty;
-
-// ---------------------------------------------------------------------------
-// ValidationError
-// ---------------------------------------------------------------------------
-
-/**
- * Error thrown (or returned as Err) when validation fails.
- *
- * `path` is a dot-separated string of the keys traversed to reach the failing
- * field (e.g. `"user.address.zip"`). An empty string means the root value
- * failed validation.
- */
-export class ValidationError extends Error {
-  readonly path: string;
-  readonly expected: string;
-  readonly received: unknown;
-
-  constructor(expected: string, received: unknown, path = "") {
-    const location = path === "" ? "value" : `"${path}"`;
-    super(
-      `Validation failed at ${location}: expected ${expected}, got ${formatReceived(received)}`,
-    );
-    this.name = "ValidationError";
-    this.path = path;
-    this.expected = expected;
-    this.received = received;
-  }
-}
-
-function formatReceived(value: unknown): string {
-  if (value === null) return "null";
-  if (Array.isArray(value)) return "array";
-  return typeof value;
-}
 
 function rerootError(e: ValidationError, parentPath: string | number): ValidationError {
   // empty-string parentPath would produce a leading-dot path, but no caller passes ""; kept as a safety guard
@@ -70,13 +39,6 @@ function rerootError(e: ValidationError, parentPath: string | number): Validatio
   const childPath = e.path === "" ? String(parentPath) : `${parentPath}.${e.path}`;
   return new ValidationError(e.expected, e.received, childPath);
 }
-
-// ---------------------------------------------------------------------------
-// Validator type
-// ---------------------------------------------------------------------------
-
-/** A validator maps an unknown value to a typed Result. */
-export type Validator<T> = (value: unknown) => Result<T, ValidationError>;
 
 // ---------------------------------------------------------------------------
 // Primitives

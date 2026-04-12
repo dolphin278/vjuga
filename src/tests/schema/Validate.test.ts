@@ -204,6 +204,14 @@ test("object — rejects non-object", () => {
   assertErr(validate(S.object({ a: S.string() }))(42));
 });
 
+test("object — rejects arrays", () => {
+  // typeof [] === "object", so without Array.isArray guard an array
+  // with matching properties (e.g. .length) would incorrectly pass.
+  const v = validate(S.object({ length: S.number() }));
+  assertErr(v([1, 2, 3]));
+  assertErr(v([]));
+});
+
 test("object — nested error path", () => {
   const v = validate(S.object({ user: S.object({ name: S.string() }) }));
   const e = assertErr(v({ user: { name: 42 } }));
@@ -358,6 +366,17 @@ test("discriminated union — switch on tag", () => {
   assertErr(v({ type: "rect", w: 3, h: "four" }));
   assertErr(v(null));
   assertErr(v(42));
+});
+
+test("discriminated union — rejects arrays", () => {
+  const v = validate(
+    S.union(
+      S.object({ type: S.literal("a"), value: S.string() }),
+      S.object({ type: S.literal("b"), value: S.number() }),
+    ),
+  );
+  assertErr(v([1, 2]));
+  assertErr(v([]));
 });
 
 test("discriminated union — 3+ variants", () => {

@@ -390,9 +390,11 @@ function emitObjectValidation(
   accessor: string,
   pathExpr: string,
 ): void {
+  // Array check required: typeof [] === "object", so without _isArr guard
+  // an array with matching properties (e.g. [1,2,3] has .length) would pass.
   emit(
     buf,
-    `if (${accessor} === null || typeof ${accessor} !== "object") return _err(_me(${pathExpr}, "object", ${accessor}));`,
+    `if (${accessor} === null || typeof ${accessor} !== "object" || _isArr(${accessor})) return _err(_me(${pathExpr}, "object", ${accessor}));`,
   );
   const keys = Object.keys(schema.meta.properties);
   for (let i = 0; i < keys.length; i++) {
@@ -531,7 +533,7 @@ function emitDiscriminatedValidation(
 ): void {
   emit(
     buf,
-    `if (${accessor} === null || typeof ${accessor} !== "object") return _err(_me(${pathExpr}, "object", ${accessor}));`,
+    `if (${accessor} === null || typeof ${accessor} !== "object" || _isArr(${accessor})) return _err(_me(${pathExpr}, "object", ${accessor}));`,
   );
   const discAccessor = `${accessor}[${JSON.stringify(discriminant)}]`;
   emit(buf, `switch (${discAccessor}) {`);

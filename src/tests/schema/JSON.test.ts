@@ -308,6 +308,10 @@ test("parse rejects non-object", () => {
   assertErr(SJ.parse(S.object({ a: S.string() }))('"string"'));
 });
 
+test("parse rejects array as object", () => {
+  assertErr(SJ.parse(S.object({ length: S.number() }))("[1,2,3]"));
+});
+
 test("parse rejects non-array", () => {
   assertErr(SJ.parse(S.array(S.string()))("{}"));
 });

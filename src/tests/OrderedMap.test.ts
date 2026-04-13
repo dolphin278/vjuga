@@ -295,6 +295,28 @@ test("forRange() exact single match", () => {
   assert.deepEqual(pairs, [[5, "five"]]);
 });
 
+test("forRange() lo === hi but key not present returns 0", () => {
+  const m = OM.make<number, string>();
+  OM.set(m, 3, "three");
+  OM.set(m, 7, "seven");
+  let called = 0;
+  const count = OM.forRange(m, 5, 5, () => called++);
+  assert.equal(count, 0);
+  assert.equal(called, 0);
+});
+
+test("forRange() lo below minimum visits all entries in map", () => {
+  const m = OM.make<number, string>();
+  OM.set(m, 3, "three");
+  OM.set(m, 5, "five");
+  OM.set(m, 7, "seven");
+  const keys: number[] = [];
+  // lo=0 is below min(3), hi=10 is above max(7) — should visit all 3
+  const count = OM.forRange(m, 0, 10, (k) => keys.push(k));
+  assert.equal(count, 3);
+  assert.deepEqual(keys, [3, 5, 7]);
+});
+
 // ---------------------------------------------------------------------------
 // Large sequential insert — verify sorted order and size
 // ---------------------------------------------------------------------------

@@ -23,8 +23,9 @@ const CAPACITY = 10_000;
 const FPR = 0.01;
 
 // Matched params for bloomfilter.js — same bit count and hash count as vjuga.
-const BF_M = BF.bitCount(BF.make(CAPACITY, FPR)); // = 131072
-const BF_K = BF.hashCount(BF.make(CAPACITY, FPR));
+const _paramBF = BF.make(CAPACITY, FPR);
+const BF_M = BF.bitCount(_paramBF); // = 131072
+const BF_K = BF.hashCount(_paramBF);
 
 // ---------------------------------------------------------------------------
 // Warm-up

@@ -44,6 +44,14 @@ test("has() returns correct presence", () => {
   assert.equal(OM.has(m, "y"), false);
 });
 
+test("has() returns true when value is undefined", () => {
+  const m = OM.make<string, number | undefined>();
+  OM.set(m, "k", undefined);
+  assert.equal(OM.has(m, "k"), true);
+  assert.equal(OM.size(m), 1);
+  assert.equal(OM.get(m, "k"), undefined);
+});
+
 test("set() on existing key updates value without changing size", () => {
   const m = OM.make<string, number>();
   OM.set(m, "a", 1);

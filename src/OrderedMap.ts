@@ -78,6 +78,11 @@ function defaultCmp<K>(a: K, b: K): number {
  * Creates an empty `OrderedMap`. Supply an optional `compare` function
  * (returns negative/0/positive for a<b/a=b/a>b). Default comparator works
  * for `string` and `number` keys.
+ *
+ * **Comparator contract**: `compare` must be a total order — it must return a
+ * *finite* number (not NaN) for all pairs of keys in the map. A NaN-returning
+ * comparator causes all insertions after the first to silently collide at the
+ * root, producing wrong results for `get`, `has`, and `del`.
  */
 export function make<K, V>(compare?: (a: K, b: K) => number): OrderedMap<K, V> {
   const cmp = compare ?? (defaultCmp as (a: K, b: K) => number);
@@ -156,10 +161,6 @@ function updateHeight<K, V>(m: OrderedMap<K, V>, n: number): void {
   m[kHeight][n] = 1 + (lh > rh ? lh : rh);
 }
 
-function balanceFactor<K, V>(m: OrderedMap<K, V>, n: number): number {
-  return nodeHeight(m, m[kLeft][n]) - nodeHeight(m, m[kRight][n]);
-}
-
 // rotateRight: n has a heavy left subtree
 //      n              l
 //     / \            / \
@@ -188,21 +189,37 @@ function rotateLeft<K, V>(m: OrderedMap<K, V>, n: number): number {
 }
 
 function rebalance<K, V>(m: OrderedMap<K, V>, n: number): number {
-  updateHeight(m, n);
-  const bf = balanceFactor(m, n);
+  // Inlines height update + balance factor to share 4 reads.
+  // Calling updateHeight then computing bf separately re-reads kLeft[n],
+  // kRight[n] and both child heights — 8 typed-array reads where 4 suffice.
+  const height = m[kHeight];
+  const left = m[kLeft];
+  const right = m[kRight];
+  const l = left[n];
+  const r = right[n];
+  const lh = l === NULL ? 0 : height[l];
+  const rh = r === NULL ? 0 : height[r];
+  height[n] = 1 + (lh > rh ? lh : rh);
+  const bf = lh - rh;
   if (bf > 1) {
-    // Left-heavy
-    if (balanceFactor(m, m[kLeft][n]) < 0) {
-      // LR case: rotate left child left first
-      m[kLeft][n] = rotateLeft(m, m[kLeft][n]);
+    // Left-heavy: check for LR imbalance in left child
+    const ll = left[l];
+    const lr = right[l];
+    const llh = ll === NULL ? 0 : height[ll];
+    const lrh = lr === NULL ? 0 : height[lr];
+    if (llh < lrh) {
+      left[n] = rotateLeft(m, l); // LR: rotate left child left first
     }
     return rotateRight(m, n);
   }
   if (bf < -1) {
-    // Right-heavy
-    if (balanceFactor(m, m[kRight][n]) > 0) {
-      // RL case: rotate right child right first
-      m[kRight][n] = rotateRight(m, m[kRight][n]);
+    // Right-heavy: check for RL imbalance in right child
+    const rl = left[r];
+    const rr = right[r];
+    const rlh = rl === NULL ? 0 : height[rl];
+    const rrh = rr === NULL ? 0 : height[rr];
+    if (rlh > rrh) {
+      right[n] = rotateRight(m, r); // RL: rotate right child right first
     }
     return rotateLeft(m, n);
   }
@@ -218,6 +235,7 @@ function insertNode<K, V>(
   root: number,
   key: K,
   val: V,
+  cmp: (a: K, b: K) => number, // passed from set() to avoid re-reading m[kCmp] each frame
 ): number {
   if (root === NULL) {
     const n = allocNode(m);
@@ -229,16 +247,16 @@ function insertNode<K, V>(
     m[kSize]++;
     return n;
   }
-  const cmp = m[kCmp](key, m[kKeys][root] as K);
-  if (cmp < 0) {
+  const c = cmp(key, m[kKeys][root] as K);
+  if (c < 0) {
     // Use a temp variable rather than `m[kLeft][root] = insertNode(...)` to
     // avoid the JS LHS-before-RHS evaluation trap: if allocNode() grows the
     // backing Int32Array mid-recursion, the LHS `m[kLeft]` reference is
     // captured BEFORE the call and the write goes to the stale array.
-    const newChild = insertNode(m, m[kLeft][root], key, val);
+    const newChild = insertNode(m, m[kLeft][root], key, val, cmp);
     m[kLeft][root] = newChild;
-  } else if (cmp > 0) {
-    const newChild = insertNode(m, m[kRight][root], key, val);
+  } else if (c > 0) {
+    const newChild = insertNode(m, m[kRight][root], key, val, cmp);
     m[kRight][root] = newChild;
   } else {
     // Key already exists — update value in place, no size change.
@@ -252,51 +270,65 @@ function insertNode<K, V>(
 // Delete helpers
 // ---------------------------------------------------------------------------
 
-// Returns [newRoot, minNodeIndex] — minNodeIndex is detached from the tree.
-function deleteMin<K, V>(m: OrderedMap<K, V>, root: number): [number, number] {
+// Module-level outputs for deleteMin / deleteNode — eliminates [number, N]
+// tuple allocations at every recursion level (O(log n) allocations per del).
+// Non-reentrant: del() must not be called from within a del() callback.
+// (The tree mutation itself is non-reentrant regardless of this optimisation.)
+let _delDeleted = false; // set by deleteNode, read by del()
+let _delMinIdx = 0;      // set by deleteMin, read by deleteNode()
+
+// Returns new root for the subtree. Sets _delMinIdx to the detached minimum.
+function deleteMin<K, V>(m: OrderedMap<K, V>, root: number): number {
   if (m[kLeft][root] === NULL) {
-    // This node is the minimum; its right child takes its structural place.
-    return [m[kRight][root], root];
+    _delMinIdx = root;
+    return m[kRight][root]; // min's right child takes its structural place
   }
-  const [newLeft, minIdx] = deleteMin(m, m[kLeft][root]);
-  m[kLeft][root] = newLeft;
-  return [rebalance(m, root), minIdx];
+  m[kLeft][root] = deleteMin(m, m[kLeft][root]);
+  return rebalance(m, root);
 }
 
-// Returns [newRoot, wasDeleted: boolean]
-function deleteNode<K, V>(m: OrderedMap<K, V>, root: number, key: K): [number, boolean] {
-  if (root === NULL) return [NULL, false];
-  const cmp = m[kCmp](key, m[kKeys][root] as K);
-  if (cmp < 0) {
-    const [newLeft, deleted] = deleteNode(m, m[kLeft][root], key);
+// Returns new root for the subtree. Sets _delDeleted.
+// cmp is passed from del() to avoid re-reading m[kCmp] at each recursion level.
+function deleteNode<K, V>(
+  m: OrderedMap<K, V>,
+  root: number,
+  key: K,
+  cmp: (a: K, b: K) => number,
+): number {
+  if (root === NULL) { _delDeleted = false; return NULL; }
+  const c = cmp(key, m[kKeys][root] as K);
+  if (c < 0) {
+    const newLeft = deleteNode(m, m[kLeft][root], key, cmp);
+    if (!_delDeleted) return root;
     m[kLeft][root] = newLeft;
-    if (!deleted) return [root, false];
-    return [rebalance(m, root), true];
+    return rebalance(m, root);
   }
-  if (cmp > 0) {
-    const [newRight, deleted] = deleteNode(m, m[kRight][root], key);
+  if (c > 0) {
+    const newRight = deleteNode(m, m[kRight][root], key, cmp);
+    if (!_delDeleted) return root;
     m[kRight][root] = newRight;
-    if (!deleted) return [root, false];
-    return [rebalance(m, root), true];
+    return rebalance(m, root);
   }
   // Found — delete this node
+  _delDeleted = true;
   m[kSize]--;
-  const left = m[kLeft][root];
-  const right = m[kRight][root];
-  if (right === NULL) {
+  const leftChild = m[kLeft][root];
+  const rightChild = m[kRight][root];
+  if (rightChild === NULL) {
     freeNode(m, root);
-    return [left, true];
+    return leftChild;
   }
-  if (left === NULL) {
+  if (leftChild === NULL) {
     freeNode(m, root);
-    return [right, true];
+    return rightChild;
   }
   // Two children: replace with in-order successor (min of right subtree)
-  const [newRight, successor] = deleteMin(m, right);
-  m[kLeft][successor] = left;
+  const newRight = deleteMin(m, rightChild);
+  const successor = _delMinIdx;
+  m[kLeft][successor] = leftChild;
   m[kRight][successor] = newRight;
   freeNode(m, root);
-  return [rebalance(m, successor), true];
+  return rebalance(m, successor);
 }
 
 // ---------------------------------------------------------------------------
@@ -305,19 +337,25 @@ function deleteNode<K, V>(m: OrderedMap<K, V>, root: number, key: K): [number, b
 
 /** Inserts or updates `key` with `value`. O(log n). */
 export function set<K, V>(m: OrderedMap<K, V>, key: K, value: V): void {
-  m[kRoot] = insertNode(m, m[kRoot], key, value);
+  m[kRoot] = insertNode(m, m[kRoot], key, value, m[kCmp]); // cache cmp once
 }
 
 /** Returns the value associated with `key`, or `undefined` if not present. O(log n). */
 export function get<K, V>(m: OrderedMap<K, V>, key: K): V | undefined {
-  let n = m[kRoot];
+  // Cache array refs before the loop: each m[kXxx] is a symbol-property read.
+  // After JIT warm-up V8 compiles these to slot offsets, but caching still
+  // saves one indirection per iteration on every loop pass.
   const cmp = m[kCmp];
+  const keys = m[kKeys];
+  const left = m[kLeft];
+  const right = m[kRight];
+  let n = m[kRoot];
   while (n !== NULL) {
-    const c = cmp(key, m[kKeys][n] as K);
+    const c = cmp(key, keys[n] as K);
     if (c < 0) {
-      n = m[kLeft][n];
+      n = left[n];
     } else if (c > 0) {
-      n = m[kRight][n];
+      n = right[n];
     } else {
       return m[kVals][n] as V;
     }
@@ -325,9 +363,24 @@ export function get<K, V>(m: OrderedMap<K, V>, key: K): V | undefined {
   return undefined;
 }
 
-/** Returns `true` if `key` is in the map. O(log n). */
+/**
+ * Returns `true` if `key` is in the map. O(log n).
+ *
+ * Implemented as an independent tree walk rather than `get(m,key) !== undefined`
+ * so that keys stored with value `undefined` are correctly reported as present.
+ */
 export function has<K, V>(m: OrderedMap<K, V>, key: K): boolean {
-  return get(m, key) !== undefined;
+  const cmp = m[kCmp];
+  const left = m[kLeft];
+  const right = m[kRight];
+  const keys = m[kKeys];
+  let cur = m[kRoot];
+  while (cur !== NULL) {
+    const c = cmp(key, keys[cur] as K);
+    if (c === 0) return true;
+    cur = c < 0 ? left[cur] : right[cur];
+  }
+  return false;
 }
 
 /**
@@ -335,9 +388,8 @@ export function has<K, V>(m: OrderedMap<K, V>, key: K): boolean {
  * `false` otherwise. O(log n).
  */
 export function del<K, V>(m: OrderedMap<K, V>, key: K): boolean {
-  const [newRoot, deleted] = deleteNode(m, m[kRoot], key);
-  m[kRoot] = newRoot;
-  return deleted;
+  m[kRoot] = deleteNode(m, m[kRoot], key, m[kCmp]); // cache cmp once
+  return _delDeleted;
 }
 
 /** Returns the number of key-value pairs in the map. O(1). */
@@ -349,7 +401,8 @@ export function size<K, V>(m: OrderedMap<K, V>): number {
 export function min<K, V>(m: OrderedMap<K, V>): [K, V] | undefined {
   let n = m[kRoot];
   if (n === NULL) return undefined;
-  while (m[kLeft][n] !== NULL) n = m[kLeft][n];
+  const left = m[kLeft]; // cache: avoids repeated symbol lookup inside the loop
+  while (left[n] !== NULL) n = left[n];
   return [m[kKeys][n] as K, m[kVals][n] as V];
 }
 
@@ -357,7 +410,8 @@ export function min<K, V>(m: OrderedMap<K, V>): [K, V] | undefined {
 export function max<K, V>(m: OrderedMap<K, V>): [K, V] | undefined {
   let n = m[kRoot];
   if (n === NULL) return undefined;
-  while (m[kRight][n] !== NULL) n = m[kRight][n];
+  const right = m[kRight]; // cache: avoids repeated symbol lookup inside the loop
+  while (right[n] !== NULL) n = right[n];
   return [m[kKeys][n] as K, m[kVals][n] as V];
 }
 
@@ -366,21 +420,24 @@ export function max<K, V>(m: OrderedMap<K, V>): [K, V] | undefined {
  * if all keys are greater than `key`. O(log n).
  */
 export function floor<K, V>(m: OrderedMap<K, V>, key: K): [K, V] | undefined {
-  let n = m[kRoot];
   const cmp = m[kCmp];
+  const keys = m[kKeys];
+  const left = m[kLeft];
+  const right = m[kRight];
+  let n = m[kRoot];
   let best: number = NULL;
   while (n !== NULL) {
-    const c = cmp(key, m[kKeys][n] as K);
-    if (c === 0) return [m[kKeys][n] as K, m[kVals][n] as V];
+    const c = cmp(key, keys[n] as K);
+    if (c === 0) return [keys[n] as K, m[kVals][n] as V];
     if (c > 0) {
       best = n;
-      n = m[kRight][n];
+      n = right[n];
     } else {
-      n = m[kLeft][n];
+      n = left[n];
     }
   }
   if (best === NULL) return undefined;
-  return [m[kKeys][best] as K, m[kVals][best] as V];
+  return [keys[best] as K, m[kVals][best] as V];
 }
 
 /**
@@ -388,21 +445,24 @@ export function floor<K, V>(m: OrderedMap<K, V>, key: K): [K, V] | undefined {
  * if all keys are less than `key`. O(log n).
  */
 export function ceiling<K, V>(m: OrderedMap<K, V>, key: K): [K, V] | undefined {
-  let n = m[kRoot];
   const cmp = m[kCmp];
+  const keys = m[kKeys];
+  const left = m[kLeft];
+  const right = m[kRight];
+  let n = m[kRoot];
   let best: number = NULL;
   while (n !== NULL) {
-    const c = cmp(key, m[kKeys][n] as K);
-    if (c === 0) return [m[kKeys][n] as K, m[kVals][n] as V];
+    const c = cmp(key, keys[n] as K);
+    if (c === 0) return [keys[n] as K, m[kVals][n] as V];
     if (c < 0) {
       best = n;
-      n = m[kLeft][n];
+      n = left[n];
     } else {
-      n = m[kRight][n];
+      n = right[n];
     }
   }
   if (best === NULL) return undefined;
-  return [m[kKeys][best] as K, m[kVals][best] as V];
+  return [keys[best] as K, m[kVals][best] as V];
 }
 
 // ---------------------------------------------------------------------------
@@ -419,6 +479,12 @@ export function ceiling<K, V>(m: OrderedMap<K, V>, key: K): [K, V] | undefined {
 /**
  * Yields all keys in ascending order. Uses an explicit stack — safe for any
  * tree depth.
+ *
+ * **Mutation during iteration is unsupported.** Calling `set` or `del` on the
+ * map while iterating produces undefined results: `del` can cause slots in the
+ * cached topology arrays to be zeroed (yielding `undefined` and silently
+ * dropping subsequent keys); `set` can trigger array growth that invalidates
+ * the cached `left`/`right` references captured before the first yield.
  */
 export function* keys<K, V>(m: OrderedMap<K, V>): IterableIterator<K> {
   // Cache array references before the first yield — each m[kXxx] symbol
@@ -443,6 +509,7 @@ export function* keys<K, V>(m: OrderedMap<K, V>): IterableIterator<K> {
 
 /**
  * Yields all values in key-ascending order.
+ * **Do not call `set` or `del` on the map during iteration** — see `keys()`.
  */
 export function* values<K, V>(m: OrderedMap<K, V>): IterableIterator<V> {
   const left = m[kLeft];
@@ -463,6 +530,7 @@ export function* values<K, V>(m: OrderedMap<K, V>): IterableIterator<V> {
 
 /**
  * Yields all [key, value] pairs in key-ascending order.
+ * **Do not call `set` or `del` on the map during iteration** — see `keys()`.
  */
 export function* entries<K, V>(m: OrderedMap<K, V>): IterableIterator<[K, V]> {
   const left = m[kLeft];
@@ -555,6 +623,8 @@ export function forRange<K, V>(
  * phase visits only the in-range nodes, stopping as soon as a key > hi is seen.
  * A naive full in-order traversal would be O(n); the pruned version is ~n/k
  * times faster when the range is small relative to the map size.
+ *
+ * **Do not call `set` or `del` on the map during iteration** — see `keys()`.
  */
 export function* range<K, V>(
   m: OrderedMap<K, V>,

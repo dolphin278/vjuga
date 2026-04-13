@@ -99,6 +99,41 @@ test("hashCount() is at least 1", () => {
 // False-positive rate
 // ---------------------------------------------------------------------------
 
+test("make() uses ceil(kExact) when floor(kExact) violates fpr (coverage path)", () => {
+  // capacity=100, fpr=0.3: m=256, kExact≈1.774, floor=1, ceil=2.
+  // actualFpr(256, 1, 100) ≈ 0.3234 > 0.3 → floor fails.
+  // actualFpr(256, 2, 100) ≈ 0.2939 ≤ 0.3 → ceil succeeds.
+  const bf = BF.make(100, 0.3);
+  assert.equal(BF.hashCount(bf), 2, "k should be ceil(kExact)=2");
+  assert.equal(BF.bitCount(bf), 256, "m should be 256");
+  // Verify no-false-negatives after adding all capacity items.
+  for (let i = 0; i < 100; i++) BF.add(bf, `x${i}`);
+  for (let i = 0; i < 100; i++) {
+    assert.equal(BF.mightContain(bf, `x${i}`), true, `false negative for x${i}`);
+  }
+});
+
+test("make() satisfies fpr guarantee for adversarial capacity=427 fpr=0.1 (critic regression)", () => {
+  // capacity=427 was the concrete example from adversarial review where
+  // Math.round(kExact) produced k=3 with actual FPR ≈ 0.1003 > 0.1.
+  // The fix picks k from {floor, ceil} of kExact that satisfies actualFpr ≤ fpr,
+  // doubling m if necessary.
+  const bf = BF.make(427, 0.1);
+  for (let i = 0; i < 427; i++) BF.add(bf, `item-${i}`);
+  let fp = 0;
+  for (let i = 427; i < 1427; i++) {
+    if (BF.mightContain(bf, `item-${i}`)) fp++;
+  }
+  const measured = fp / 1000;
+  assert.ok(
+    measured <= 0.1 * 2,
+    `FPR ${measured.toFixed(4)} exceeds 2× configured fpr 0.1`,
+  );
+  // Verify the theoretical guarantee holds (bitCount and hashCount reflect correct k/m).
+  assert.ok(BF.bitCount(bf) >= 32, "bitCount must be ≥ 32");
+  assert.ok(BF.hashCount(bf) >= 1, "hashCount must be ≥ 1");
+});
+
 test("false-positive rate is approximately ≤ 2× configured fpr", () => {
   const n = 10_000;
   const fpr = 0.01;

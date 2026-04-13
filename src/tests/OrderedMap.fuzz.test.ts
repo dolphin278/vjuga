@@ -66,6 +66,10 @@ function modelSize(m: OMModel): number {
   return m.entries.length;
 }
 
+function modelRange(m: OMModel, lo: number, hi: number): [number, number][] {
+  return m.entries.filter(([k]) => k >= lo && k <= hi);
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -187,11 +191,73 @@ const entriesCmd: ST.CommandArbitrary<OMModel, OMReal> = (_model) =>
     },
   });
 
+const keysCmd: ST.CommandArbitrary<OMModel, OMReal> = (_model) =>
+  Arb.constant<ST.Command<OMModel, OMReal>>({
+    name: "keys",
+    check: () => true,
+    run: (m: OMModel, real: OMReal) => {
+      assert.deepEqual(
+        [...OM.keys(real)],
+        m.entries.map(([k]) => k),
+        "keys() traversal mismatch",
+      );
+    },
+  });
+
+const valuesCmd: ST.CommandArbitrary<OMModel, OMReal> = (_model) =>
+  Arb.constant<ST.Command<OMModel, OMReal>>({
+    name: "values",
+    check: () => true,
+    run: (m: OMModel, real: OMReal) => {
+      assert.deepEqual(
+        [...OM.values(real)],
+        m.entries.map(([, v]) => v),
+        "values() traversal mismatch",
+      );
+    },
+  });
+
+const rangeCmd: ST.CommandArbitrary<OMModel, OMReal> = (_model) =>
+  Arb.map(Arb.tuple(keyArb, keyArb), ([a, b]) => {
+    const lo = Math.min(a, b);
+    const hi = Math.max(a, b);
+    return {
+      name: `range(${lo}, ${hi})`,
+      check: () => true,
+      run: (m: OMModel, real: OMReal) => {
+        assert.deepEqual(
+          [...OM.range(real, lo, hi)],
+          modelRange(m, lo, hi),
+          `range(${lo}, ${hi}) mismatch`,
+        );
+      },
+    };
+  });
+
+const forRangeCmd: ST.CommandArbitrary<OMModel, OMReal> = (_model) =>
+  Arb.map(Arb.tuple(keyArb, keyArb), ([a, b]) => {
+    const lo = Math.min(a, b);
+    const hi = Math.max(a, b);
+    return {
+      name: `forRange(${lo}, ${hi})`,
+      check: () => true,
+      run: (m: OMModel, real: OMReal) => {
+        const collected: [number, number][] = [];
+        const count = OM.forRange(real, lo, hi, (k, v) => {
+          collected.push([k, v]);
+        });
+        const expected = modelRange(m, lo, hi);
+        assert.deepEqual(collected, expected, `forRange(${lo}, ${hi}) result mismatch`);
+        assert.equal(count, expected.length, `forRange(${lo}, ${hi}) count mismatch`);
+      },
+    };
+  });
+
 // ---------------------------------------------------------------------------
-// Stateful model-based test
+// Stateful model-based test — 1M runs, 50 commands per sequence
 // ---------------------------------------------------------------------------
 
-test("OrderedMap stateful model-based fuzz test", () => {
+test("OrderedMap stateful model-based fuzz test", { timeout: 300_000 }, () => {
   ST.assertStateful({
     initialModel: (): OMModel => ({ entries: [] }),
     initialReal: () => OM.make<number, number>(),
@@ -206,8 +272,12 @@ test("OrderedMap stateful model-based fuzz test", () => {
       ceilingCmd,
       sizeCmd,
       entriesCmd,
+      keysCmd,
+      valuesCmd,
+      rangeCmd,
+      forRangeCmd,
     ],
-    numRuns: 200,
+    numRuns: 1_000_000,
     maxCommands: 50,
   });
 });
@@ -225,7 +295,7 @@ test("OrderedMap property: get after set returns value", () => {
       OM.set(m, k, v);
       assert.equal(OM.get(m, k), v);
     },
-    { numRuns: 500 },
+    { numRuns: 1_000_000 },
   );
 });
 
@@ -245,6 +315,98 @@ test("OrderedMap property: keys are always in sorted order", () => {
         assert.ok(ks[i - 1] < ks[i], `keys not sorted at index ${i}: ${ks[i - 1]} >= ${ks[i]}`);
       }
     },
-    { numRuns: 500 },
+    { numRuns: 1_000_000 },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Property: has(k) iff get(k) !== undefined
+// ---------------------------------------------------------------------------
+
+test("OrderedMap property: has iff get is defined", () => {
+  const arb = Arb.tuple(
+    Arb.array(Arb.tuple(keyArb, valArb), { minLength: 0, maxLength: 30 }),
+    keyArb,
+  );
+  Prop.assert(
+    arb,
+    ([pairs, k]) => {
+      const m = OM.make<number, number>();
+      for (const [mk, mv] of pairs) OM.set(m, mk, mv);
+      assert.equal(
+        OM.has(m, k),
+        OM.get(m, k) !== undefined,
+        `has(${k}) !== (get(${k}) !== undefined)`,
+      );
+    },
+    { numRuns: 1_000_000 },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Property: floor/ceiling duals —
+//   floor(k) ≤ k and ceiling(k) ≥ k (when they exist)
+//   floor(k)?.key === ceiling(k)?.key when k is present
+// ---------------------------------------------------------------------------
+
+test("OrderedMap property: floor and ceiling bounds", () => {
+  const arb = Arb.tuple(
+    Arb.array(Arb.tuple(keyArb, valArb), { minLength: 0, maxLength: 30 }),
+    keyArb,
+  );
+  Prop.assert(
+    arb,
+    ([pairs, k]) => {
+      const m = OM.make<number, number>();
+      for (const [mk, mv] of pairs) OM.set(m, mk, mv);
+      const f = OM.floor(m, k);
+      const c = OM.ceiling(m, k);
+      if (f !== undefined) {
+        assert.ok(f[0] <= k, `floor(${k}) returned key ${f[0]} > ${k}`);
+      }
+      if (c !== undefined) {
+        assert.ok(c[0] >= k, `ceiling(${k}) returned key ${c[0]} < ${k}`);
+      }
+      // If k is in the map, floor and ceiling must both return it.
+      if (OM.has(m, k)) {
+        assert.ok(f !== undefined && f[0] === k, `floor(${k}) should return k when k is present`);
+        assert.ok(c !== undefined && c[0] === k, `ceiling(${k}) should return k when k is present`);
+      }
+    },
+    { numRuns: 1_000_000 },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Property: range(lo, hi) results are a subset of entries between lo and hi
+// ---------------------------------------------------------------------------
+
+test("OrderedMap property: range returns all and only in-bounds entries", () => {
+  const arb = Arb.tuple(
+    Arb.array(Arb.tuple(keyArb, valArb), { minLength: 0, maxLength: 30 }),
+    Arb.tuple(keyArb, keyArb),
+  );
+  Prop.assert(
+    arb,
+    ([pairs, [a, b]]) => {
+      const lo = Math.min(a, b);
+      const hi = Math.max(a, b);
+      const m = OM.make<number, number>();
+      for (const [k, v] of pairs) OM.set(m, k, v);
+      const result = [...OM.range(m, lo, hi)];
+      // All results must satisfy lo ≤ k ≤ hi.
+      for (const [k] of result) {
+        assert.ok(k >= lo && k <= hi, `range key ${k} outside [${lo}, ${hi}]`);
+      }
+      // Results must be in sorted order.
+      for (let i = 1; i < result.length; i++) {
+        assert.ok(result[i - 1][0] < result[i][0], `range not sorted at index ${i}`);
+      }
+      // Count must match forRange count.
+      let frCount = 0;
+      OM.forRange(m, lo, hi, () => { frCount++; });
+      assert.equal(result.length, frCount, "range() length !== forRange() count");
+    },
+    { numRuns: 1_000_000 },
   );
 });

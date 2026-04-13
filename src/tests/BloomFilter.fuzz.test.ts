@@ -37,7 +37,6 @@ function biasedItem(model: BFModel): Arb.Arbitrary<string> {
 const addCmd: ST.CommandArbitrary<BFModel, BFReal> = (_model) =>
   Arb.map(itemArb, (item) => ({
     name: `add(${JSON.stringify(item)})`,
-    check: () => true,
     run: (m: BFModel, real: BFReal) => {
       BF.add(real, item);
       m.set.add(item);
@@ -50,7 +49,6 @@ const addCmd: ST.CommandArbitrary<BFModel, BFReal> = (_model) =>
 const mightContainCmd: ST.CommandArbitrary<BFModel, BFReal> = (model) =>
   Arb.map(biasedItem(model), (item) => ({
     name: `mightContain(${JSON.stringify(item)})`,
-    check: () => true,
     run: (m: BFModel, real: BFReal) => {
       const result = BF.mightContain(real, item);
       // No-false-negatives: if model has item, filter must return true.
@@ -63,7 +61,6 @@ const mightContainCmd: ST.CommandArbitrary<BFModel, BFReal> = (model) =>
 const countCmd: ST.CommandArbitrary<BFModel, BFReal> = (_model) =>
   Arb.constant<ST.Command<BFModel, BFReal>>({
     name: "count",
-    check: () => true,
     run: (m: BFModel, real: BFReal) => {
       // count() tracks total add() calls, not unique items.
       assert.equal(BF.count(real), m.addCount, "count() mismatch");
@@ -73,7 +70,6 @@ const countCmd: ST.CommandArbitrary<BFModel, BFReal> = (_model) =>
 const clearCmd: ST.CommandArbitrary<BFModel, BFReal> = (_model) =>
   Arb.constant<ST.Command<BFModel, BFReal>>({
     name: "clear",
-    check: () => true,
     run: (m: BFModel, real: BFReal) => {
       // Snapshot items before clearing — we'll verify none are found after.
       const prevItems = [...m.set];
@@ -92,7 +88,6 @@ const clearCmd: ST.CommandArbitrary<BFModel, BFReal> = (_model) =>
 const bitHashInvariantCmd: ST.CommandArbitrary<BFModel, BFReal> = (_model) =>
   Arb.constant<ST.Command<BFModel, BFReal>>({
     name: "bitHashInvariant",
-    check: () => true,
     run: (_m: BFModel, real: BFReal) => {
       const m = BF.bitCount(real);
       assert.ok(m >= 32, "bitCount must be ≥ 32");

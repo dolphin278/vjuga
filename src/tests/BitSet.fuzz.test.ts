@@ -53,7 +53,6 @@ type BSReal = BitSet.BitSet;
 const setCmd: ST.CommandArbitrary<BitSetModel, BSReal> = (_model) =>
   Arb.map(indexArb, (i) => ({
     name: `set(${i})`,
-    check: () => true,
     run: (m: BitSetModel, real: BSReal) => {
       BitSet.set(real, i);
       modelSet(m, i);
@@ -65,7 +64,6 @@ const setCmd: ST.CommandArbitrary<BitSetModel, BSReal> = (_model) =>
 const clearCmd: ST.CommandArbitrary<BitSetModel, BSReal> = (_model) =>
   Arb.map(indexArb, (i) => ({
     name: `clear(${i})`,
-    check: () => true,
     run: (m: BitSetModel, real: BSReal) => {
       BitSet.clear(real, i);
       modelClear(m, i);
@@ -76,7 +74,6 @@ const clearCmd: ST.CommandArbitrary<BitSetModel, BSReal> = (_model) =>
 const toggleCmd: ST.CommandArbitrary<BitSetModel, BSReal> = (_model) =>
   Arb.map(indexArb, (i) => ({
     name: `toggle(${i})`,
-    check: () => true,
     run: (m: BitSetModel, real: BSReal) => {
       const before = modelGet(m, i);
       BitSet.toggle(real, i);
@@ -88,7 +85,6 @@ const toggleCmd: ST.CommandArbitrary<BitSetModel, BSReal> = (_model) =>
 const getCmd: ST.CommandArbitrary<BitSetModel, BSReal> = (_model) =>
   Arb.map(indexArb, (i) => ({
     name: `get(${i})`,
-    check: () => true,
     run: (m: BitSetModel, real: BSReal) => {
       assert.equal(BitSet.get(real, i), modelGet(m, i), `get(${i}) mismatch`);
     },
@@ -97,7 +93,6 @@ const getCmd: ST.CommandArbitrary<BitSetModel, BSReal> = (_model) =>
 const popcountCmd: ST.CommandArbitrary<BitSetModel, BSReal> = (_model) =>
   Arb.constant<ST.Command<BitSetModel, BSReal>>({
     name: "popcount",
-    check: () => true,
     run: (m: BitSetModel, real: BSReal) => {
       assert.equal(BitSet.popcount(real), modelPopcount(m), "popcount mismatch");
     },
@@ -106,7 +101,6 @@ const popcountCmd: ST.CommandArbitrary<BitSetModel, BSReal> = (_model) =>
 const toArrayCmd: ST.CommandArbitrary<BitSetModel, BSReal> = (_model) =>
   Arb.constant<ST.Command<BitSetModel, BSReal>>({
     name: "toArray",
-    check: () => true,
     run: (m: BitSetModel, real: BSReal) => {
       assert.deepEqual(BitSet.toArray(real), modelToArray(m), "toArray mismatch");
     },
@@ -115,7 +109,6 @@ const toArrayCmd: ST.CommandArbitrary<BitSetModel, BSReal> = (_model) =>
 const capacityCmd: ST.CommandArbitrary<BitSetModel, BSReal> = (_model) =>
   Arb.constant<ST.Command<BitSetModel, BSReal>>({
     name: "capacity",
-    check: () => true,
     run: (m: BitSetModel, real: BSReal) => {
       assert.equal(BitSet.capacity(real), m.capacity, "capacity mismatch");
     },

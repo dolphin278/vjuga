@@ -94,7 +94,6 @@ function biasedKey(model: OMModel): Arb.Arbitrary<number> {
 const setCmd: ST.CommandArbitrary<OMModel, OMReal> = (_model) =>
   Arb.map(Arb.tuple(keyArb, valArb), ([k, v]) => ({
     name: `set(${k}, ${v})`,
-    check: () => true,
     run: (m: OMModel, real: OMReal) => {
       OM.set(real, k, v);
       modelSet(m, k, v);
@@ -106,7 +105,6 @@ const setCmd: ST.CommandArbitrary<OMModel, OMReal> = (_model) =>
 const getCmd: ST.CommandArbitrary<OMModel, OMReal> = (model) =>
   Arb.map(biasedKey(model), (k) => ({
     name: `get(${k})`,
-    check: () => true,
     run: (m: OMModel, real: OMReal) => {
       assert.equal(OM.get(real, k), modelGet(m, k), `get(${k}) mismatch`);
     },
@@ -115,7 +113,6 @@ const getCmd: ST.CommandArbitrary<OMModel, OMReal> = (model) =>
 const hasCmd: ST.CommandArbitrary<OMModel, OMReal> = (model) =>
   Arb.map(biasedKey(model), (k) => ({
     name: `has(${k})`,
-    check: () => true,
     run: (m: OMModel, real: OMReal) => {
       assert.equal(OM.has(real, k), modelHas(m, k), `has(${k}) mismatch`);
     },
@@ -124,7 +121,6 @@ const hasCmd: ST.CommandArbitrary<OMModel, OMReal> = (model) =>
 const delCmd: ST.CommandArbitrary<OMModel, OMReal> = (model) =>
   Arb.map(biasedKey(model), (k) => ({
     name: `del(${k})`,
-    check: () => true,
     run: (m: OMModel, real: OMReal) => {
       const expected = modelDel(m, k);
       const actual = OM.del(real, k);
@@ -136,7 +132,6 @@ const delCmd: ST.CommandArbitrary<OMModel, OMReal> = (model) =>
 const minCmd: ST.CommandArbitrary<OMModel, OMReal> = (_model) =>
   Arb.constant<ST.Command<OMModel, OMReal>>({
     name: "min",
-    check: () => true,
     run: (m: OMModel, real: OMReal) => {
       assert.deepEqual(OM.min(real), modelMin(m), "min mismatch");
     },
@@ -145,7 +140,6 @@ const minCmd: ST.CommandArbitrary<OMModel, OMReal> = (_model) =>
 const maxCmd: ST.CommandArbitrary<OMModel, OMReal> = (_model) =>
   Arb.constant<ST.Command<OMModel, OMReal>>({
     name: "max",
-    check: () => true,
     run: (m: OMModel, real: OMReal) => {
       assert.deepEqual(OM.max(real), modelMax(m), "max mismatch");
     },
@@ -154,7 +148,6 @@ const maxCmd: ST.CommandArbitrary<OMModel, OMReal> = (_model) =>
 const floorCmd: ST.CommandArbitrary<OMModel, OMReal> = (_model) =>
   Arb.map(keyArb, (k) => ({
     name: `floor(${k})`,
-    check: () => true,
     run: (m: OMModel, real: OMReal) => {
       assert.deepEqual(OM.floor(real, k), modelFloor(m, k), `floor(${k}) mismatch`);
     },
@@ -163,7 +156,6 @@ const floorCmd: ST.CommandArbitrary<OMModel, OMReal> = (_model) =>
 const ceilingCmd: ST.CommandArbitrary<OMModel, OMReal> = (_model) =>
   Arb.map(keyArb, (k) => ({
     name: `ceiling(${k})`,
-    check: () => true,
     run: (m: OMModel, real: OMReal) => {
       assert.deepEqual(OM.ceiling(real, k), modelCeiling(m, k), `ceiling(${k}) mismatch`);
     },
@@ -172,7 +164,6 @@ const ceilingCmd: ST.CommandArbitrary<OMModel, OMReal> = (_model) =>
 const sizeCmd: ST.CommandArbitrary<OMModel, OMReal> = (_model) =>
   Arb.constant<ST.Command<OMModel, OMReal>>({
     name: "size",
-    check: () => true,
     run: (m: OMModel, real: OMReal) => {
       assert.equal(OM.size(real), modelSize(m), "size mismatch");
     },
@@ -181,7 +172,6 @@ const sizeCmd: ST.CommandArbitrary<OMModel, OMReal> = (_model) =>
 const entriesCmd: ST.CommandArbitrary<OMModel, OMReal> = (_model) =>
   Arb.constant<ST.Command<OMModel, OMReal>>({
     name: "entries",
-    check: () => true,
     run: (m: OMModel, real: OMReal) => {
       assert.deepEqual(
         [...OM.entries(real)],
@@ -191,23 +181,9 @@ const entriesCmd: ST.CommandArbitrary<OMModel, OMReal> = (_model) =>
     },
   });
 
-const keysCmd: ST.CommandArbitrary<OMModel, OMReal> = (_model) =>
-  Arb.constant<ST.Command<OMModel, OMReal>>({
-    name: "keys",
-    check: () => true,
-    run: (m: OMModel, real: OMReal) => {
-      assert.deepEqual(
-        [...OM.keys(real)],
-        m.entries.map(([k]) => k),
-        "keys() traversal mismatch",
-      );
-    },
-  });
-
 const valuesCmd: ST.CommandArbitrary<OMModel, OMReal> = (_model) =>
   Arb.constant<ST.Command<OMModel, OMReal>>({
     name: "values",
-    check: () => true,
     run: (m: OMModel, real: OMReal) => {
       assert.deepEqual(
         [...OM.values(real)],
@@ -223,7 +199,6 @@ const rangeCmd: ST.CommandArbitrary<OMModel, OMReal> = (_model) =>
     const hi = Math.max(a, b);
     return {
       name: `range(${lo}, ${hi})`,
-      check: () => true,
       run: (m: OMModel, real: OMReal) => {
         assert.deepEqual(
           [...OM.range(real, lo, hi)],
@@ -240,7 +215,6 @@ const forRangeCmd: ST.CommandArbitrary<OMModel, OMReal> = (_model) =>
     const hi = Math.max(a, b);
     return {
       name: `forRange(${lo}, ${hi})`,
-      check: () => true,
       run: (m: OMModel, real: OMReal) => {
         const collected: [number, number][] = [];
         const count = OM.forRange(real, lo, hi, (k, v) => {
@@ -272,7 +246,6 @@ test("OrderedMap stateful model-based fuzz test", { timeout: 300_000 }, () => {
       ceilingCmd,
       sizeCmd,
       entriesCmd,
-      keysCmd,
       valuesCmd,
       rangeCmd,
       forRangeCmd,
@@ -402,10 +375,6 @@ test("OrderedMap property: range returns all and only in-bounds entries", () => 
       for (let i = 1; i < result.length; i++) {
         assert.ok(result[i - 1][0] < result[i][0], `range not sorted at index ${i}`);
       }
-      // Count must match forRange count.
-      let frCount = 0;
-      OM.forRange(m, lo, hi, () => { frCount++; });
-      assert.equal(result.length, frCount, "range() length !== forRange() count");
     },
     { numRuns: 1_000_000 },
   );

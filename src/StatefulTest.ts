@@ -48,8 +48,8 @@ import { nextInt } from "./PRNG.js";
 export interface Command<Model, Real> {
   /** Human-readable name for shrink output. */
   readonly name: string;
-  /** Whether this command is valid in the current model state. */
-  check(model: Model): boolean;
+  /** Whether this command is valid in the current model state. Defaults to always-valid. */
+  check?(model: Model): boolean;
   /** Execute on the real system and update the model. Throws on mismatch. */
   run(model: Model, real: Real): void;
 }
@@ -57,7 +57,7 @@ export interface Command<Model, Real> {
 /** Async variant of Command where `run` returns a Promise. */
 export interface AsyncCommand<Model, Real> {
   readonly name: string;
-  check(model: Model): boolean;
+  check?(model: Model): boolean;
   run(model: Model, real: Real): Promise<void>;
 }
 
@@ -113,7 +113,7 @@ function executeCommandsSync<Model, Real>(
   for (let i = 0; i < commands.length; i++) {
     const cmd = commands[i]!;
     /* c8 ignore next 3 -- precondition skip */
-    if (!cmd.check(model)) continue;
+    if (cmd.check !== undefined && !cmd.check(model)) continue;
     try {
       cmd.run(model, real);
     } catch (e) {
@@ -131,7 +131,7 @@ async function executeCommandsAsync<Model, Real>(
 ): Promise<{ ok: boolean; error?: unknown; executedCount: number }> {
   for (let i = 0; i < commands.length; i++) {
     const cmd = commands[i]!;
-    if (!cmd.check(model)) continue;
+    if (cmd.check !== undefined && !cmd.check(model)) continue;
     try {
       await cmd.run(model, real);
     } catch (e) {

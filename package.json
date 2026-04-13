@@ -34,10 +34,13 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "bloomfilter": "^1.1.0",
     "fast-json-stringify": "^6.3.0",
+    "fastbitset": "^0.5.2",
     "mitata": "^0.1.0",
     "oxfmt": "^0.43.0",
     "oxlint": "^1.58.0",
+    "sorted-btree": "^2.1.0",
     "typescript": "^6.0.0"
   },
   "engines": {

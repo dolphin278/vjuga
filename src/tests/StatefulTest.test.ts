@@ -204,6 +204,32 @@ test("checkStateful() respects command preconditions", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Optional check field
+// ---------------------------------------------------------------------------
+
+test("checkStateful() runs commands without check unconditionally", () => {
+  const noCheckCmd: ST.CommandArbitrary<CounterModel, Counter> = (_model) =>
+    Arb.constant<ST.Command<CounterModel, Counter>>({
+      name: "increment-no-check",
+      run: (model, real) => {
+        model.count++;
+        real.increment();
+        /* c8 ignore next 3 -- correct impl never mismatches */
+        if (model.count !== real.get()) throw new Error("mismatch");
+      },
+    });
+  const result = ST.checkStateful({
+    initialModel: () => ({ count: 0 }),
+    initialReal: () => new Counter(),
+    commands: [noCheckCmd],
+    numRuns: 10,
+    seed: fixedSeed,
+    maxCommands: 5,
+  });
+  assert.equal(result.ok, true);
+});
+
+// ---------------------------------------------------------------------------
 // Teardown
 // ---------------------------------------------------------------------------
 

@@ -46,6 +46,9 @@ npm install @dolphin278/vjuga
 | Priority-ordered extraction (min first) | `PriorityQueue` | Binary min-heap. Supply comparator at construction. |
 | Prefix-keyed lookup / URL routing / autocomplete | `RadixTree` | `insert`, `lookup`, `prefixMatch`. Outperforms `Map` for prefix scans. |
 | Cache-friendly iteration over many records | `SOA` | Structure of Arrays. Use for tight loops, ECS, columnar data. |
+| Sorted key-value map with floor/ceiling/range | `OrderedMap` | AVL tree. `make(compare?)`, `set`, `get`, `has`, `del`, `min`, `max`, `floor`, `ceiling`, `range`, `keys`, `values`, `entries`. Use when sorted order or range queries matter; for unordered lookup use plain `Map`. |
+| Compact dense boolean vector or set algebra | `BitSet` | `Uint32Array`-backed. `make(capacity)`, `set`, `clear`, `toggle`, `get`, `popcount` (SWAR), `toArray`, `and`, `or`, `xor`, `not`. Use for SOA row flags, graph adjacency, or bit-parallel set operations. |
+| Fast "definitely absent" pre-filter | `BloomFilter` | Probabilistic. `make(capacity, fpr?)`, `add`, `mightContain`, `clear`, `count`. No false negatives. Use before expensive DB or cache lookups to skip work when item is definitely absent. |
 
 ### Async & concurrency
 

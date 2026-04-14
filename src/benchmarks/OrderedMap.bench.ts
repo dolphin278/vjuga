@@ -14,7 +14,9 @@ import { reportOptimizationStatus } from "./_v8.js";
 import * as OM from "../OrderedMap.js";
 
 const _req = createRequire(import.meta.url);
-type BTreeCtor = new <K, V>(compare?: (a: K, b: K) => number) => {
+type BTreeCtor = new <K, V>(
+  compare?: (a: K, b: K) => number,
+) => {
   set(k: K, v: V): unknown;
   get(k: K): V | undefined;
   has(k: K): boolean;
@@ -52,7 +54,10 @@ const N = 1000;
 }
 {
   const bt = new BTreeMap<number, number>();
-  for (let i = 0; i < 10_000; i++) { bt.set(i % N, i); bt.get(i % N); }
+  for (let i = 0; i < 10_000; i++) {
+    bt.set(i % N, i);
+    bt.get(i % N);
+  }
 }
 
 // Pre-built maps

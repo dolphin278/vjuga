@@ -43,13 +43,17 @@ const safeStr = Arb.filter(generalStr, isSafe);
 // ---------------------------------------------------------------------------
 
 test("fuzz: no dangerous chars in escaped output", () => {
-  Prop.assert(withDangerousChar, (s) => {
-    const escaped = HTML.escape(s);
-    for (let i = 0; i < escaped.length; i++) {
-      if (FORBIDDEN_IN_OUTPUT.has(escaped[i]!)) return false;
-    }
-    return true;
-  }, { numRuns: 1_000_000 });
+  Prop.assert(
+    withDangerousChar,
+    (s) => {
+      const escaped = HTML.escape(s);
+      for (let i = 0; i < escaped.length; i++) {
+        if (FORBIDDEN_IN_OUTPUT.has(escaped[i]!)) return false;
+      }
+      return true;
+    },
+    { numRuns: 1_000_000 },
+  );
 });
 
 test("fuzz: safe strings are returned unchanged", () => {
@@ -78,10 +82,14 @@ test("fuzz: correct entity mapping for each special char", () => {
     ([a, c, b]) => ({ prefix: a, char: c, suffix: b }),
   );
 
-  Prop.assert(singleSpecial, ({ prefix, char, suffix }) => {
-    const escaped = HTML.escape(prefix + char + suffix);
-    return escaped === prefix + ENTITY_MAP[char] + suffix;
-  }, { numRuns: 1_000_000 });
+  Prop.assert(
+    singleSpecial,
+    ({ prefix, char, suffix }) => {
+      const escaped = HTML.escape(prefix + char + suffix);
+      return escaped === prefix + ENTITY_MAP[char] + suffix;
+    },
+    { numRuns: 1_000_000 },
+  );
 });
 
 test("fuzz: empty string returns empty string", () => {

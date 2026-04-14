@@ -100,7 +100,7 @@ export function toggle(bs: BitSet, i: number): void {
 /** Returns `true` if bit `i` is 1. Throws `RangeError` if `i` is out of bounds. */
 export function get(bs: BitSet, i: number): boolean {
   checkBounds(bs, i);
-  return (bs[kBits][i >>> 5] >>> (i & 31) & 1) === 1;
+  return ((bs[kBits][i >>> 5] >>> (i & 31)) & 1) === 1;
 }
 
 /** Returns the bit capacity (number of addressable indices). */

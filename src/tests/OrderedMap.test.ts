@@ -197,11 +197,14 @@ test("range() returns all entries when lo <= min and hi >= max", () => {
   OM.set(m, 2, "two");
   OM.set(m, 5, "five");
   OM.set(m, 8, "eight");
-  assert.deepEqual([...OM.range(m, 1, 10)], [
-    [2, "two"],
-    [5, "five"],
-    [8, "eight"],
-  ]);
+  assert.deepEqual(
+    [...OM.range(m, 1, 10)],
+    [
+      [2, "two"],
+      [5, "five"],
+      [8, "eight"],
+    ],
+  );
 });
 
 test("range() returns partial range (inclusive bounds)", () => {
@@ -252,11 +255,14 @@ test("entries() yields in key-ascending order", () => {
   OM.set(m, "c", 3);
   OM.set(m, "a", 1);
   OM.set(m, "b", 2);
-  assert.deepEqual([...OM.entries(m)], [
-    ["a", 1],
-    ["b", 2],
-    ["c", 3],
-  ]);
+  assert.deepEqual(
+    [...OM.entries(m)],
+    [
+      ["a", 1],
+      ["b", 2],
+      ["c", 3],
+    ],
+  );
 });
 
 test("keys/values/entries on empty map yield nothing", () => {

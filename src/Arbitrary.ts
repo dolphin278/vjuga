@@ -35,7 +35,7 @@
  */
 
 import type { Fn1, Predicate } from "./FunctionUtils.js";
-import { type PRNG, type Seed, next, nextInt, nextBigInt, split } from "./PRNG.js";
+import { type PRNG, next, nextInt, nextBigInt, split } from "./PRNG.js";
 
 // ---------------------------------------------------------------------------
 // Core types

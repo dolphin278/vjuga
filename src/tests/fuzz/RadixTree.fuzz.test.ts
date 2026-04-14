@@ -19,13 +19,17 @@ test("insert then lookup always returns the inserted value", () => {
     Arb.integer(0, 1000),
   );
 
-  Prop.assert(arb, ([pairs, extraKey, extraVal]) => {
-    const tree = RadixTree.make<number>();
-    for (const [k, v] of pairs) RadixTree.insert(tree, k, v);
-    // Insert one more and verify it's retrievable
-    RadixTree.insert(tree, extraKey, extraVal);
-    return RadixTree.lookup(tree, extraKey) === extraVal;
-  }, { numRuns: 1_000_000 });
+  Prop.assert(
+    arb,
+    ([pairs, extraKey, extraVal]) => {
+      const tree = RadixTree.make<number>();
+      for (const [k, v] of pairs) RadixTree.insert(tree, k, v);
+      // Insert one more and verify it's retrievable
+      RadixTree.insert(tree, extraKey, extraVal);
+      return RadixTree.lookup(tree, extraKey) === extraVal;
+    },
+    { numRuns: 1_000_000 },
+  );
 });
 
 test("size equals number of distinct keys", () => {
@@ -141,9 +145,10 @@ test("stateful: RadixTree matches Map under random operations", () => {
       // Lookup
       (model) => {
         const keys = [...model.map.keys()];
-        const arb = keys.length > 0
-          ? Arb.oneOf(Arb.constantFrom(...(keys as [string, ...string[]])), keyArb)
-          : keyArb;
+        const arb =
+          keys.length > 0
+            ? Arb.oneOf(Arb.constantFrom(...(keys as [string, ...string[]])), keyArb)
+            : keyArb;
         return Arb.map(arb, (k) => ({
           name: `lookup(${JSON.stringify(k)})`,
           check: () => true,
@@ -158,9 +163,10 @@ test("stateful: RadixTree matches Map under random operations", () => {
       // Has
       (model) => {
         const keys = [...model.map.keys()];
-        const arb = keys.length > 0
-          ? Arb.oneOf(Arb.constantFrom(...(keys as [string, ...string[]])), keyArb)
-          : keyArb;
+        const arb =
+          keys.length > 0
+            ? Arb.oneOf(Arb.constantFrom(...(keys as [string, ...string[]])), keyArb)
+            : keyArb;
         return Arb.map(arb, (k) => ({
           name: `has(${JSON.stringify(k)})`,
           check: () => true,
@@ -175,9 +181,10 @@ test("stateful: RadixTree matches Map under random operations", () => {
       // Remove
       (model) => {
         const keys = [...model.map.keys()];
-        const arb = keys.length > 0
-          ? Arb.oneOf(Arb.constantFrom(...(keys as [string, ...string[]])), keyArb)
-          : keyArb;
+        const arb =
+          keys.length > 0
+            ? Arb.oneOf(Arb.constantFrom(...(keys as [string, ...string[]])), keyArb)
+            : keyArb;
         return Arb.map(arb, (k) => ({
           name: `remove(${JSON.stringify(k)})`,
           check: () => true,
@@ -217,14 +224,17 @@ test("stateful: RadixTree matches Map under random operations", () => {
       // PrefixMatch check
       (model) => {
         const keys = [...model.map.keys()];
-        const arb = keys.length > 0
-          ? Arb.oneOf(Arb.constantFrom(...(keys as [string, ...string[]])), keyArb)
-          : keyArb;
+        const arb =
+          keys.length > 0
+            ? Arb.oneOf(Arb.constantFrom(...(keys as [string, ...string[]])), keyArb)
+            : keyArb;
         return Arb.map(arb, (prefix) => ({
           name: `prefixMatch(${JSON.stringify(prefix)})`,
           check: () => true,
           run: (m: Model, r: Real) => {
-            const actual = RadixTree.prefixMatch(r.tree, prefix).slice().sort((a, b) => a - b);
+            const actual = RadixTree.prefixMatch(r.tree, prefix)
+              .slice()
+              .sort((a, b) => a - b);
             const expected: number[] = [];
             for (const [k, v] of m.map) {
               if (k.startsWith(prefix)) expected.push(v);

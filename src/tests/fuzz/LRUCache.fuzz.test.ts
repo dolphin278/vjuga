@@ -166,7 +166,10 @@ test("LRUCache property: size never exceeds capacity after N sets", () => {
       const cache = LRU.make<string, number>(CAPACITY);
       for (const [k, v] of pairs) {
         LRU.set(cache, k, v);
-        assert.ok(LRU.size(cache) <= CAPACITY, `size ${LRU.size(cache)} exceeds capacity ${CAPACITY}`);
+        assert.ok(
+          LRU.size(cache) <= CAPACITY,
+          `size ${LRU.size(cache)} exceeds capacity ${CAPACITY}`,
+        );
       }
     },
     { numRuns: 1_000_000 },

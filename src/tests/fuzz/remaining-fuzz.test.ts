@@ -17,117 +17,147 @@ import type { Result } from "../../Result.js";
 test("Result: ok/err discriminant and payload round-trip", async () => {
   const R = await import("../../Result.js");
 
-  Prop.assert(Arb.integer(-10000, 10000), (n) => {
-    const o = R.ok(n);
-    if (!R.isOk(o)) return false;
-    if (R.isErr(o)) return false;
-    if (o[0] !== true || o[1] !== n) return false;
+  Prop.assert(
+    Arb.integer(-10000, 10000),
+    (n) => {
+      const o = R.ok(n);
+      if (!R.isOk(o)) return false;
+      if (R.isErr(o)) return false;
+      if (o[0] !== true || o[1] !== n) return false;
 
-    const e = R.err(n);
-    if (R.isOk(e)) return false;
-    if (!R.isErr(e)) return false;
-    if (e[0] !== false || e[1] !== n) return false;
+      const e = R.err(n);
+      if (R.isOk(e)) return false;
+      if (!R.isErr(e)) return false;
+      if (e[0] !== false || e[1] !== n) return false;
 
-    return true;
-  }, { numRuns: 1_000_000 });
+      return true;
+    },
+    { numRuns: 1_000_000 },
+  );
 });
 
 test("Result: map transforms Ok, passes Err through", async () => {
   const R = await import("../../Result.js");
 
-  Prop.assert(Arb.integer(-1000, 1000), (n) => {
-    const doubled = R.map(R.ok(n), (x: number) => x * 2);
-    if (!R.isOk(doubled) || doubled[1] !== n * 2) return false;
+  Prop.assert(
+    Arb.integer(-1000, 1000),
+    (n) => {
+      const doubled = R.map(R.ok(n), (x: number) => x * 2);
+      if (!R.isOk(doubled) || doubled[1] !== n * 2) return false;
 
-    const errResult = R.map(R.err("fail") as Result<number, string>, (x: number) => x * 2);
-    if (!R.isErr(errResult) || errResult[1] !== "fail") return false;
+      const errResult = R.map(R.err("fail") as Result<number, string>, (x: number) => x * 2);
+      if (!R.isErr(errResult) || errResult[1] !== "fail") return false;
 
-    return true;
-  }, { numRuns: 1_000_000 });
+      return true;
+    },
+    { numRuns: 1_000_000 },
+  );
 });
 
 test("Result: mapErr transforms Err, passes Ok through", async () => {
   const R = await import("../../Result.js");
 
-  Prop.assert(Arb.string({ maxLength: 10 }), (s) => {
-    const mapped = R.mapErr(R.err(s), (e: string) => e.toUpperCase());
-    if (!R.isErr(mapped) || mapped[1] !== s.toUpperCase()) return false;
+  Prop.assert(
+    Arb.string({ maxLength: 10 }),
+    (s) => {
+      const mapped = R.mapErr(R.err(s), (e: string) => e.toUpperCase());
+      if (!R.isErr(mapped) || mapped[1] !== s.toUpperCase()) return false;
 
-    const okResult = R.mapErr(R.ok(42) as Result<number, string>, (e: string) => e.toUpperCase());
-    if (!R.isOk(okResult) || okResult[1] !== 42) return false;
+      const okResult = R.mapErr(R.ok(42) as Result<number, string>, (e: string) => e.toUpperCase());
+      if (!R.isOk(okResult) || okResult[1] !== 42) return false;
 
-    return true;
-  }, { numRuns: 1_000_000 });
+      return true;
+    },
+    { numRuns: 1_000_000 },
+  );
 });
 
 test("Result: flatMap chains Ok, passes Err through", async () => {
   const R = await import("../../Result.js");
 
-  Prop.assert(Arb.integer(0, 1000), (n) => {
-    const chained = R.flatMap(R.ok(n), (x: number) =>
-      x > 500 ? R.err("too big") : R.ok(x * 2),
-    );
-    if (n > 500) {
-      if (!R.isErr(chained) || chained[1] !== "too big") return false;
-    } else {
-      if (!R.isOk(chained) || chained[1] !== n * 2) return false;
-    }
-    return true;
-  }, { numRuns: 1_000_000 });
+  Prop.assert(
+    Arb.integer(0, 1000),
+    (n) => {
+      const chained = R.flatMap(R.ok(n), (x: number) => (x > 500 ? R.err("too big") : R.ok(x * 2)));
+      if (n > 500) {
+        if (!R.isErr(chained) || chained[1] !== "too big") return false;
+      } else {
+        if (!R.isOk(chained) || chained[1] !== n * 2) return false;
+      }
+      return true;
+    },
+    { numRuns: 1_000_000 },
+  );
 });
 
 test("Result: unwrapOr returns fallback for Err", async () => {
   const R = await import("../../Result.js");
 
-  Prop.assert(Arb.tuple(Arb.integer(-100, 100), Arb.integer(-100, 100)), ([val, fallback]) => {
-    if (R.unwrapOr(R.ok(val), fallback) !== val) return false;
-    if (R.unwrapOr(R.err("nope") as Result<number, string>, fallback) !== fallback) return false;
-    return true;
-  }, { numRuns: 1_000_000 });
+  Prop.assert(
+    Arb.tuple(Arb.integer(-100, 100), Arb.integer(-100, 100)),
+    ([val, fallback]) => {
+      if (R.unwrapOr(R.ok(val), fallback) !== val) return false;
+      if (R.unwrapOr(R.err("nope") as Result<number, string>, fallback) !== fallback) return false;
+      return true;
+    },
+    { numRuns: 1_000_000 },
+  );
 });
 
 test("Result: unwrap returns Ok value, throws on Err", async () => {
   const R = await import("../../Result.js");
 
-  Prop.assert(Arb.integer(-1000, 1000), (n) => {
-    if (R.unwrap(R.ok(n)) !== n) return false;
+  Prop.assert(
+    Arb.integer(-1000, 1000),
+    (n) => {
+      if (R.unwrap(R.ok(n)) !== n) return false;
 
-    try {
-      R.unwrap(R.err(new Error("boom")));
-      return false; // should have thrown
-    } catch (e) {
-      if (!(e instanceof Error) || e.message !== "boom") return false;
-    }
+      try {
+        R.unwrap(R.err(new Error("boom")));
+        return false; // should have thrown
+      } catch (e) {
+        if (!(e instanceof Error) || e.message !== "boom") return false;
+      }
 
-    try {
-      R.unwrap(R.err("string error"));
-      return false;
-    } catch (e) {
-      if (!(e instanceof Error)) return false;
-    }
+      try {
+        R.unwrap(R.err("string error"));
+        return false;
+      } catch (e) {
+        if (!(e instanceof Error)) return false;
+      }
 
-    return true;
-  }, { numRuns: 1_000_000 });
+      return true;
+    },
+    { numRuns: 1_000_000 },
+  );
 });
 
 test("Result: fromThrowable captures exceptions", async () => {
   const R = await import("../../Result.js");
 
-  Prop.assert(Arb.integer(-100, 100), (n) => {
-    const good = R.fromThrowable(() => n * 2);
-    if (!R.isOk(good) || good[1] !== n * 2) return false;
+  Prop.assert(
+    Arb.integer(-100, 100),
+    (n) => {
+      const good = R.fromThrowable(() => n * 2);
+      if (!R.isOk(good) || good[1] !== n * 2) return false;
 
-    const bad = R.fromThrowable(() => { throw new Error("fail"); });
-    if (!R.isErr(bad)) return false;
+      const bad = R.fromThrowable(() => {
+        throw new Error("fail");
+      });
+      if (!R.isErr(bad)) return false;
 
-    const mapped = R.fromThrowable(
-      () => { throw "raw"; },
-      (e) => `caught: ${e}`,
-    );
-    if (!R.isErr(mapped) || mapped[1] !== "caught: raw") return false;
+      const mapped = R.fromThrowable(
+        () => {
+          throw "raw";
+        },
+        (e) => `caught: ${e}`,
+      );
+      if (!R.isErr(mapped) || mapped[1] !== "caught: raw") return false;
 
-    return true;
-  }, { numRuns: 1_000_000 });
+      return true;
+    },
+    { numRuns: 1_000_000 },
+  );
 });
 
 test("Result: fromPromise never rejects", async () => {
@@ -141,10 +171,7 @@ test("Result: fromPromise never rejects", async () => {
   assert.equal(R.isErr(err), true);
   assert.equal(err[1], "fail");
 
-  const mapped = await R.fromPromise(
-    Promise.reject("raw"),
-    (e) => `caught: ${e}`,
-  );
+  const mapped = await R.fromPromise(Promise.reject("raw"), (e) => `caught: ${e}`);
   assert.equal(R.isErr(mapped), true);
   assert.equal(mapped[1], "caught: raw");
 });
@@ -273,7 +300,9 @@ test("BufferizedFunction: all items appear in exactly one batch (property)", asy
     Arb.array(Arb.integer(-10000, 10000), { minLength: 1, maxLength: 50 }),
     async (inputs) => {
       const batches: number[][] = [];
-      const buf = BF.make((batch: number[]) => { batches.push([...batch]); });
+      const buf = BF.make((batch: number[]) => {
+        batches.push([...batch]);
+      });
       for (const v of inputs) buf(v);
       await new Promise<void>((r) => setTimeout(r, 0));
       if (batches.length !== 1) return false;
@@ -292,7 +321,9 @@ test("BufferizedFunction: io mode batches all items (property)", async () => {
     Arb.array(Arb.integer(-10000, 10000), { minLength: 1, maxLength: 50 }),
     async (inputs) => {
       const batches: number[][] = [];
-      const buf = BF.make((batch: number[]) => { batches.push([...batch]); }, "io");
+      const buf = BF.make((batch: number[]) => {
+        batches.push([...batch]);
+      }, "io");
       for (const v of inputs) buf(v);
       await new Promise<void>((r) => setImmediate(r));
       await new Promise<void>((r) => setTimeout(r, 0));
@@ -316,7 +347,9 @@ test("TimedFunction: throttle — first call fires, rest dropped in same window 
     (inputs) => {
       const calls: number[] = [];
       // Large window ensures no timer fires during the synchronous test
-      const throttled = TF.throttle((n: number) => { calls.push(n); }, 60_000);
+      const throttled = TF.throttle((n: number) => {
+        calls.push(n);
+      }, 60_000);
       for (const v of inputs) throttled(v);
       // Only the first call should have executed immediately
       return calls.length === 1 && calls[0] === inputs[0];
@@ -332,7 +365,9 @@ test("TimedFunction: debounce — no calls execute synchronously (property)", as
     Arb.array(Arb.integer(-10000, 10000), { minLength: 1, maxLength: 30 }),
     (inputs) => {
       const calls: number[] = [];
-      const debounced = TF.debounce((n: number) => { calls.push(n); }, 60_000);
+      const debounced = TF.debounce((n: number) => {
+        calls.push(n);
+      }, 60_000);
       for (const v of inputs) debounced(v);
       // Debounce never fires synchronously — fn should not have been called yet
       return calls.length === 0;
@@ -350,7 +385,9 @@ test("TimedFunction: throttle — fresh window after timer clears (property)", a
     Arb.array(Arb.integer(1, 100), { minLength: 1, maxLength: 5 }),
     async (inputs) => {
       const calls: number[] = [];
-      const throttled = TF.throttle((n: number) => { calls.push(n); }, 0);
+      const throttled = TF.throttle((n: number) => {
+        calls.push(n);
+      }, 0);
       // First batch — all synchronous, only first fires
       for (const v of inputs) throttled(v);
       if (calls.length !== 1 || calls[0] !== inputs[0]) return false;
@@ -415,15 +452,13 @@ test("PromiseUtils: props rejects when any promise rejects (property)", async ()
   const PU = await import("../../PromiseUtils.js");
 
   await Prop.assertAsync(
-    Arb.tuple(
-      Arb.array(Arb.integer(0, 100), { minLength: 1, maxLength: 5 }),
-      Arb.integer(0, 4),
-    ),
+    Arb.tuple(Arb.array(Arb.integer(0, 100), { minLength: 1, maxLength: 5 }), Arb.integer(0, 4)),
     async ([values, failIdx]) => {
       const idx = failIdx % values.length;
       const record: Record<string, Promise<number>> = {};
       for (let i = 0; i < values.length; i++) {
-        record[`k${i}`] = i === idx ? Promise.reject(new Error("fail")) : Promise.resolve(values[i]!);
+        record[`k${i}`] =
+          i === idx ? Promise.reject(new Error("fail")) : Promise.resolve(values[i]!);
       }
       try {
         await PU.props(record);
@@ -443,29 +478,37 @@ test("PromiseUtils: props rejects when any promise rejects (property)", async ()
 test("PRNG: deterministic — same seed produces same sequence", async () => {
   const P = await import("../../PRNG.js");
 
-  Prop.assert(Arb.bigint(0n, 0xffff_ffff_ffff_ffffn), (rawSeed) => {
-    const s = P.seed(rawSeed);
-    const rng1 = P.make(s);
-    const rng2 = P.make(s);
+  Prop.assert(
+    Arb.bigint(0n, 0xffff_ffff_ffff_ffffn),
+    (rawSeed) => {
+      const s = P.seed(rawSeed);
+      const rng1 = P.make(s);
+      const rng2 = P.make(s);
 
-    for (let i = 0; i < 100; i++) {
-      if (P.next(rng1) !== P.next(rng2)) return false;
-    }
-    return true;
-  }, { numRuns: 1_000_000 });
+      for (let i = 0; i < 100; i++) {
+        if (P.next(rng1) !== P.next(rng2)) return false;
+      }
+      return true;
+    },
+    { numRuns: 1_000_000 },
+  );
 });
 
 test("PRNG: next() always in [0, 1)", async () => {
   const P = await import("../../PRNG.js");
 
-  Prop.assert(Arb.bigint(0n, 0xffff_ffff_ffff_ffffn), (rawSeed) => {
-    const rng = P.make(P.seed(rawSeed));
-    for (let i = 0; i < 100; i++) {
-      const v = P.next(rng);
-      if (v < 0 || v >= 1) return false;
-    }
-    return true;
-  }, { numRuns: 1_000_000 });
+  Prop.assert(
+    Arb.bigint(0n, 0xffff_ffff_ffff_ffffn),
+    (rawSeed) => {
+      const rng = P.make(P.seed(rawSeed));
+      for (let i = 0; i < 100; i++) {
+        const v = P.next(rng);
+        if (v < 0 || v >= 1) return false;
+      }
+      return true;
+    },
+    { numRuns: 1_000_000 },
+  );
 });
 
 test("PRNG: nextInt() always in [min, max]", async () => {
@@ -490,25 +533,32 @@ test("PRNG: nextInt() always in [min, max]", async () => {
 test("PRNG: split() produces independent streams", async () => {
   const P = await import("../../PRNG.js");
 
-  Prop.assert(Arb.bigint(0n, 0xffff_ffff_ffff_ffffn), (rawSeed) => {
-    const rng = P.make(P.seed(rawSeed));
-    const fork = P.split(rng);
+  Prop.assert(
+    Arb.bigint(0n, 0xffff_ffff_ffff_ffffn),
+    (rawSeed) => {
+      const rng = P.make(P.seed(rawSeed));
+      const fork = P.split(rng);
 
-    // After split, both should diverge
-    const seq1: number[] = [];
-    const seq2: number[] = [];
-    for (let i = 0; i < 20; i++) {
-      seq1.push(P.next(rng));
-      seq2.push(P.next(fork));
-    }
+      // After split, both should diverge
+      const seq1: number[] = [];
+      const seq2: number[] = [];
+      for (let i = 0; i < 20; i++) {
+        seq1.push(P.next(rng));
+        seq2.push(P.next(fork));
+      }
 
-    // Sequences should differ (extremely unlikely to be identical for 20 values)
-    let allSame = true;
-    for (let i = 0; i < seq1.length; i++) {
-      if (seq1[i] !== seq2[i]) { allSame = false; break; }
-    }
-    return !allSame;
-  }, { numRuns: 1_000_000 });
+      // Sequences should differ (extremely unlikely to be identical for 20 values)
+      let allSame = true;
+      for (let i = 0; i < seq1.length; i++) {
+        if (seq1[i] !== seq2[i]) {
+          allSame = false;
+          break;
+        }
+      }
+      return !allSame;
+    },
+    { numRuns: 1_000_000 },
+  );
 });
 
 // ============================================================================
@@ -518,25 +568,29 @@ test("PRNG: split() produces independent streams", async () => {
 test("FunctionUtils: pipe composes left-to-right", async () => {
   const FU = await import("../../FunctionUtils.js");
 
-  Prop.assert(Arb.integer(-1000, 1000), (n) => {
-    const double = (x: number) => x * 2;
-    const inc = (x: number) => x + 1;
-    const neg = (x: number) => -x;
+  Prop.assert(
+    Arb.integer(-1000, 1000),
+    (n) => {
+      const double = (x: number) => x * 2;
+      const inc = (x: number) => x + 1;
+      const neg = (x: number) => -x;
 
-    // pipe(2): double then inc
-    const p2 = FU.pipe(double, inc);
-    if (p2(n) !== n * 2 + 1) return false;
+      // pipe(2): double then inc
+      const p2 = FU.pipe(double, inc);
+      if (p2(n) !== n * 2 + 1) return false;
 
-    // pipe(3): double then inc then neg
-    const p3 = FU.pipe(double, inc, neg);
-    if (p3(n) !== -(n * 2 + 1)) return false;
+      // pipe(3): double then inc then neg
+      const p3 = FU.pipe(double, inc, neg);
+      if (p3(n) !== -(n * 2 + 1)) return false;
 
-    // pipe(1): identity wrapper
-    const p1 = FU.pipe(double);
-    if (p1(n) !== n * 2) return false;
+      // pipe(1): identity wrapper
+      const p1 = FU.pipe(double);
+      if (p1(n) !== n * 2) return false;
 
-    return true;
-  }, { numRuns: 1_000_000 });
+      return true;
+    },
+    { numRuns: 1_000_000 },
+  );
 });
 
 test("FunctionUtils: pipe with 4 and 5 functions", async () => {
@@ -548,15 +602,19 @@ test("FunctionUtils: pipe with 4 and 5 functions", async () => {
   const abs = (x: number) => Math.abs(x);
   const str = (x: number) => String(x);
 
-  Prop.assert(Arb.integer(-100, 100), (n) => {
-    const p4 = FU.pipe(add1, mul2, sub3, abs);
-    if (p4(n) !== Math.abs((n + 1) * 2 - 3)) return false;
+  Prop.assert(
+    Arb.integer(-100, 100),
+    (n) => {
+      const p4 = FU.pipe(add1, mul2, sub3, abs);
+      if (p4(n) !== Math.abs((n + 1) * 2 - 3)) return false;
 
-    const p5 = FU.pipe(add1, mul2, sub3, abs, str);
-    if (p5(n) !== String(Math.abs((n + 1) * 2 - 3))) return false;
+      const p5 = FU.pipe(add1, mul2, sub3, abs, str);
+      if (p5(n) !== String(Math.abs((n + 1) * 2 - 3))) return false;
 
-    return true;
-  }, { numRuns: 1_000_000 });
+      return true;
+    },
+    { numRuns: 1_000_000 },
+  );
 });
 
 test("FunctionUtils: pipe variadic (>5 functions)", async () => {
@@ -573,11 +631,15 @@ test("FunctionUtils: pipe variadic (>5 functions)", async () => {
 
   const piped = FU.pipe(...fns);
 
-  Prop.assert(Arb.integer(-10, 10), (n) => {
-    let expected = n;
-    for (const f of fns) expected = f(expected);
-    return piped(n) === expected;
-  }, { numRuns: 1_000_000 });
+  Prop.assert(
+    Arb.integer(-10, 10),
+    (n) => {
+      let expected = n;
+      for (const f of fns) expected = f(expected);
+      return piped(n) === expected;
+    },
+    { numRuns: 1_000_000 },
+  );
 });
 
 test("FunctionUtils: branded number validators", async () => {
@@ -614,27 +676,35 @@ test("FunctionUtils: partial application", async () => {
   const add = (a: number, b: number) => a + b;
   const add5 = FU.partial(add, 5);
 
-  Prop.assert(Arb.integer(-1000, 1000), (n) => {
-    return add5(n) === 5 + n;
-  }, { numRuns: 1_000_000 });
+  Prop.assert(
+    Arb.integer(-1000, 1000),
+    (n) => {
+      return add5(n) === 5 + n;
+    },
+    { numRuns: 1_000_000 },
+  );
 });
 
 test("FunctionUtils: tuple and tupled round-trip", async () => {
   const FU = await import("../../FunctionUtils.js");
 
-  Prop.assert(Arb.tuple(Arb.integer(), Arb.string({ maxLength: 5 }), Arb.boolean()), ([a, b, c]) => {
-    const t = FU.tuple(a, b, c);
-    if (t[0] !== a || t[1] !== b || t[2] !== c) return false;
+  Prop.assert(
+    Arb.tuple(Arb.integer(), Arb.string({ maxLength: 5 }), Arb.boolean()),
+    ([a, b, c]) => {
+      const t = FU.tuple(a, b, c);
+      if (t[0] !== a || t[1] !== b || t[2] !== c) return false;
 
-    const add = (x: number, y: number) => x + y;
-    const tupledAdd = FU.tupled(add);
-    if (tupledAdd([3, 4]) !== 7) return false;
+      const add = (x: number, y: number) => x + y;
+      const tupledAdd = FU.tupled(add);
+      if (tupledAdd([3, 4]) !== 7) return false;
 
-    const spreadAdd = FU.spread(tupledAdd);
-    if (spreadAdd(3, 4) !== 7) return false;
+      const spreadAdd = FU.spread(tupledAdd);
+      if (spreadAdd(3, 4) !== 7) return false;
 
-    return true;
-  }, { numRuns: 1_000_000 });
+      return true;
+    },
+    { numRuns: 1_000_000 },
+  );
 });
 
 // ============================================================================
@@ -656,9 +726,11 @@ test("UUID: uuid() rejects invalid strings", async () => {
   const UUID = await import("../../UUID.js");
 
   const invalid = [
-    "", "not-a-uuid", "12345678-1234-1234-1234-123456789012",  // wrong variant
+    "",
+    "not-a-uuid",
+    "12345678-1234-1234-1234-123456789012", // wrong variant
     "ZZZZZZZZ-ZZZZ-ZZZZ-ZZZZ-ZZZZZZZZZZZZ",
-    "12345678-1234-1234-0234-123456789012",  // variant bits wrong (0 not 8-b)
+    "12345678-1234-1234-0234-123456789012", // variant bits wrong (0 not 8-b)
   ];
 
   for (const s of invalid) {

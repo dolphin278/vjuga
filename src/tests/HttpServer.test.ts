@@ -6,17 +6,16 @@ import * as HttpServer from "../HttpServer.js";
 // ── Helpers ─────────────────────────────────────────────────────────
 
 /** Send raw HTTP data over a TCP connection and collect the response. */
-function rawRequest(
-  port: number,
-  data: string | Buffer,
-): Promise<string> {
+function rawRequest(port: number, data: string | Buffer): Promise<string> {
   return new Promise((resolve, reject) => {
     const socket = net.createConnection({ port, host: "127.0.0.1" }, () => {
       socket.write(data);
     });
     let response = "";
     socket.setEncoding("utf8");
-    socket.on("data", (chunk) => { response += chunk; });
+    socket.on("data", (chunk) => {
+      response += chunk;
+    });
     socket.on("end", () => resolve(response));
     socket.on("error", reject);
     // Close our side after a short delay (server uses keep-alive)
@@ -336,7 +335,9 @@ test("keep-alive: multiple requests on same connection", async () => {
     });
     let data = "";
     socket.setEncoding("utf8");
-    socket.on("data", (chunk) => { data += chunk; });
+    socket.on("data", (chunk) => {
+      data += chunk;
+    });
     socket.on("end", () => resolve(data));
     socket.on("error", reject);
   });
@@ -366,13 +367,15 @@ test("pipelining: multiple requests in one TCP segment", async () => {
     const socket = net.createConnection({ port, host: "127.0.0.1" }, () => {
       socket.write(
         "GET /first HTTP/1.1\r\nHost: localhost\r\n\r\n" +
-        "GET /second HTTP/1.1\r\nHost: localhost\r\n\r\n",
+          "GET /second HTTP/1.1\r\nHost: localhost\r\n\r\n",
       );
       setTimeout(() => socket.end(), 50);
     });
     let data = "";
     socket.setEncoding("utf8");
-    socket.on("data", (chunk) => { data += chunk; });
+    socket.on("data", (chunk) => {
+      data += chunk;
+    });
     socket.on("end", () => resolve(data));
     socket.on("error", reject);
   });
@@ -411,7 +414,9 @@ test("partial request: data split across TCP segments", async () => {
     });
     let data = "";
     socket.setEncoding("utf8");
-    socket.on("data", (chunk) => { data += chunk; });
+    socket.on("data", (chunk) => {
+      data += chunk;
+    });
     socket.on("end", () => resolve(data));
     socket.on("error", reject);
   });
@@ -432,10 +437,7 @@ test("Content-Length: lowercase header variant", async () => {
   await HttpServer.listen(server, 0);
   const port = getPort(server);
 
-  await rawRequest(
-    port,
-    "POST / HTTP/1.1\r\nHost: localhost\r\ncontent-length: 4\r\n\r\ntest",
-  );
+  await rawRequest(port, "POST / HTTP/1.1\r\nHost: localhost\r\ncontent-length: 4\r\n\r\ntest");
 
   assert.equal(capturedBody, "test");
   await HttpServer.close(server);
@@ -549,9 +551,7 @@ test("buffer growth: request larger than initial buffer", async () => {
 // ── Utility ─────────────────────────────────────────────────────────
 
 function getPort(server: HttpServer.HttpServer): number {
-  const sym = Object.getOwnPropertySymbols(server).find(
-    (s) => s.description === "server",
-  )!;
+  const sym = Object.getOwnPropertySymbols(server).find((s) => s.description === "server")!;
   const tcpServer = (server as unknown as Record<symbol, net.Server>)[sym];
   return (tcpServer.address() as net.AddressInfo).port;
 }

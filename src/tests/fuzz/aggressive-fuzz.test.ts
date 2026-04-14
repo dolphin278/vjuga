@@ -549,10 +549,7 @@ test("JSON: round-trip with recursive JSON values (high volume)", () => {
   // bug where, after ~25k JSON.parse calls on objects with backslash keys,
   // the parser starts misreading '\"' as '\\', corrupting subsequent parses.
   // This is a V8 bug (not a vjuga bug); filtering '\\' avoids triggering it.
-  const safeKey = Arb.filter(
-    Arb.string({ minLength: 1, maxLength: 6 }),
-    (s) => !s.includes("\\"),
-  );
+  const safeKey = Arb.filter(Arb.string({ minLength: 1, maxLength: 6 }), (s) => !s.includes("\\"));
   const { jsonValue } = Arb.letrec((tie) => ({
     jsonValue: Arb.oneOf(
       Arb.map(Arb.integer(-1e6, 1e6), (n) => n as unknown),

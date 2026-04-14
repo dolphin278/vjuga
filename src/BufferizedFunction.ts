@@ -67,14 +67,14 @@ export function make<T>(fn: Fn1<T[]>, schedule?: ScheduleMode): Fn<T[]> {
 }
 
 function scheduleMacrotask<T>(
-  queue: Queue.Queue<T>, fn: Fn1<T[]>, scheduled: Ref.RefCell<boolean>,
+  queue: Queue.Queue<T>,
+  fn: Fn1<T[]>,
+  scheduled: Ref.RefCell<boolean>,
 ): void {
   setTimeout(worker, 0, queue, fn, scheduled);
 }
 
-function scheduleIO<T>(
-  queue: Queue.Queue<T>, fn: Fn1<T[]>, scheduled: Ref.RefCell<boolean>,
-): void {
+function scheduleIO<T>(queue: Queue.Queue<T>, fn: Fn1<T[]>, scheduled: Ref.RefCell<boolean>): void {
   setImmediate(worker, queue, fn, scheduled);
 }
 

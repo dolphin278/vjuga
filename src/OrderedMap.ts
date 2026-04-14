@@ -275,7 +275,7 @@ function insertNode<K, V>(
 // Non-reentrant: del() must not be called from within a del() callback.
 // (The tree mutation itself is non-reentrant regardless of this optimisation.)
 let _delDeleted = false; // set by deleteNode, read by del()
-let _delMinIdx = 0;      // set by deleteMin, read by deleteNode()
+let _delMinIdx = 0; // set by deleteMin, read by deleteNode()
 
 // Returns new root for the subtree. Sets _delMinIdx to the detached minimum.
 function deleteMin<K, V>(m: OrderedMap<K, V>, root: number): number {
@@ -295,7 +295,10 @@ function deleteNode<K, V>(
   key: K,
   cmp: (a: K, b: K) => number,
 ): number {
-  if (root === NULL) { _delDeleted = false; return NULL; }
+  if (root === NULL) {
+    _delDeleted = false;
+    return NULL;
+  }
   const c = cmp(key, m[kKeys][root] as K);
   if (c < 0) {
     const newLeft = deleteNode(m, m[kLeft][root], key, cmp);
@@ -626,11 +629,7 @@ export function forRange<K, V>(
  *
  * **Do not call `set` or `del` on the map during iteration** — see `keys()`.
  */
-export function* range<K, V>(
-  m: OrderedMap<K, V>,
-  lo: K,
-  hi: K,
-): IterableIterator<[K, V]> {
+export function* range<K, V>(m: OrderedMap<K, V>, lo: K, hi: K): IterableIterator<[K, V]> {
   const cmp = m[kCmp];
   const left = m[kLeft];
   const right = m[kRight];

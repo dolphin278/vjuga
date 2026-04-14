@@ -385,7 +385,10 @@ test("check() timeoutMs: stops before numRuns when deadline passes", () => {
   let count = 0;
   const result = Prop.check(
     Arb.integer(),
-    () => { count++; return true; },
+    () => {
+      count++;
+      return true;
+    },
     { numRuns: 10_000_000, timeoutMs: 1 },
   );
   assert.equal(result.ok, true);
@@ -393,11 +396,11 @@ test("check() timeoutMs: stops before numRuns when deadline passes", () => {
 });
 
 test("check() timeoutMs: reports full numRuns when ample time", () => {
-  const result = Prop.check(
-    Arb.integer(),
-    () => true,
-    { numRuns: 50, timeoutMs: 30_000, seed: fixedSeed },
-  );
+  const result = Prop.check(Arb.integer(), () => true, {
+    numRuns: 50,
+    timeoutMs: 30_000,
+    seed: fixedSeed,
+  });
   assert.equal(result.ok, true);
   assert.equal(result.numRuns, 50);
 });

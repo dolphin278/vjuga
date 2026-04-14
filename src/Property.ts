@@ -35,7 +35,7 @@
  */
 
 import type { Fn1 } from "./FunctionUtils.js";
-import { type Seed, type PRNG, seed as makeSeed, make, split, randomSeed } from "./PRNG.js";
+import { type Seed, make, split, randomSeed } from "./PRNG.js";
 import type { Tree, Arbitrary } from "./Arbitrary.js";
 
 // ---------------------------------------------------------------------------

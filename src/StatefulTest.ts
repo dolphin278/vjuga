@@ -34,10 +34,9 @@
  * ```
  */
 
-import type { Fn1 } from "./FunctionUtils.js";
 import { type PRNG, type Seed, split, randomSeed, make } from "./PRNG.js";
-import { type Tree, type Arbitrary, array, oneOf, constant, filter } from "./Arbitrary.js";
-import { type CheckConfig, type CheckResult } from "./Property.js";
+import { type Tree, type Arbitrary } from "./Arbitrary.js";
+import { type CheckResult } from "./Property.js";
 import { nextInt } from "./PRNG.js";
 
 // ---------------------------------------------------------------------------

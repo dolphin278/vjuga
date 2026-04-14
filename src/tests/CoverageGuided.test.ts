@@ -114,17 +114,15 @@ test("fuzzAsync() respects maxDuration", async () => {
 test("fuzzAsync() uses coverage guidance when inspector is available", async () => {
   // This test verifies the coverage-guided path runs without errors.
   // The inspector session should be created and used.
-  let branchHit = false;
   const result = await CG.fuzzAsync(
     Arb.integer(0, 100),
     async (n) => {
       // A branch that coverage guidance can discover
       if (n === 42) {
-        branchHit = true;
+        void (n * 2);
       }
     },
     { seed: fixedSeed, maxDuration: 1000, maxSize: 100 },
   );
   assert.equal(result.ok, true);
-  // Whether branchHit is true depends on generation — not a strict assertion
 });

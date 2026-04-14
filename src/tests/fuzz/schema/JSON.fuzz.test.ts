@@ -1,5 +1,4 @@
 import { test } from "node:test";
-import * as assert from "node:assert/strict";
 import * as S from "../../../schema/Schema.js";
 import * as SJ from "../../../schema/JSON.js";
 import * as Arb from "../../../Arbitrary.js";

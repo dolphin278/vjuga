@@ -44,10 +44,7 @@ test("heapify then pop all equals sort", () => {
 });
 
 test("size tracks correctly through random push/pop interleaving", () => {
-  const opArb = Arb.tuple(
-    Arb.constantFrom("push", "pop"),
-    Arb.integer(-10000, 10000),
-  );
+  const opArb = Arb.tuple(Arb.constantFrom("push", "pop"), Arb.integer(-10000, 10000));
 
   Prop.assert(
     Arb.array(opArb, { minLength: 0, maxLength: 80 }),

@@ -80,7 +80,11 @@ const clearCmd: ST.CommandArbitrary<BFModel, BFReal> = (_model) =>
       // All bits are 0 after clear — mightContain must return false for everything.
       // (The filter needs ALL k probe positions set; a fresh zero array fails on probe 1.)
       for (const item of prevItems) {
-        assert.equal(BF.mightContain(real, item), false, `mightContain("${item}") true after clear`);
+        assert.equal(
+          BF.mightContain(real, item),
+          false,
+          `mightContain("${item}") true after clear`,
+        );
       }
     },
   });

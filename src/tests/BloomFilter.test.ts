@@ -125,10 +125,7 @@ test("make() satisfies fpr guarantee for adversarial capacity=427 fpr=0.1 (criti
     if (BF.mightContain(bf, `item-${i}`)) fp++;
   }
   const measured = fp / 1000;
-  assert.ok(
-    measured <= 0.1 * 2,
-    `FPR ${measured.toFixed(4)} exceeds 2× configured fpr 0.1`,
-  );
+  assert.ok(measured <= 0.1 * 2, `FPR ${measured.toFixed(4)} exceeds 2× configured fpr 0.1`);
   // Verify the theoretical guarantee holds (bitCount and hashCount reflect correct k/m).
   assert.ok(BF.bitCount(bf) >= 32, "bitCount must be ≥ 32");
   assert.ok(BF.hashCount(bf) >= 1, "hashCount must be ≥ 1");
@@ -151,8 +148,5 @@ test("false-positive rate is approximately ≤ 2× configured fpr", () => {
   }
 
   const measured = fp / n;
-  assert.ok(
-    measured <= fpr * 2,
-    `FPR ${measured.toFixed(4)} exceeds 2× configured fpr ${fpr}`,
-  );
+  assert.ok(measured <= fpr * 2, `FPR ${measured.toFixed(4)} exceeds 2× configured fpr ${fpr}`);
 });

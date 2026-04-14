@@ -96,9 +96,15 @@ const JSON_CT = "application/json";
 // Pre-computed response status lines + JSON Content-Type header + keep-alive
 // Format: "HTTP/1.1 {status} {text}\r\nContent-Type: application/json\r\nConnection: keep-alive\r\nContent-Length: "
 const STATUS_TEXT: Record<number, string> = {
-  200: "OK", 201: "Created", 204: "No Content",
-  400: "Bad Request", 401: "Unauthorized", 403: "Forbidden",
-  404: "Not Found", 405: "Method Not Allowed", 500: "Internal Server Error",
+  200: "OK",
+  201: "Created",
+  204: "No Content",
+  400: "Bad Request",
+  401: "Unauthorized",
+  403: "Forbidden",
+  404: "Not Found",
+  405: "Method Not Allowed",
+  500: "Internal Server Error",
 };
 
 // Cache of status→prefix strings, lazily populated
@@ -210,11 +216,7 @@ export function make(handler: Handler): HttpServer {
 // ── Lifecycle ───────────────────────────────────────────────────────
 
 /** Start listening on the given port. Resolves when the server is ready. */
-export function listen(
-  server: HttpServer,
-  port: number,
-  host?: string,
-): Promise<void> {
+export function listen(server: HttpServer, port: number, host?: string): Promise<void> {
   return new Promise<void>((resolve) => {
     server[kServer].listen(port, host ?? "127.0.0.1", () => resolve());
   });
@@ -287,11 +289,7 @@ export function respondBuffer(
  * Pre-compute a complete HTTP response as a single Buffer.
  * Call once at startup, then use respondRaw() per request.
  */
-export function precompute(
-  status: number,
-  body: string,
-  contentType?: string,
-): Buffer {
+export function precompute(status: number, body: string, contentType?: string): Buffer {
   const ct = contentType ?? JSON_CT;
   const text = STATUS_TEXT[status] ?? "Unknown";
   const bodyLen = Buffer.byteLength(body);
@@ -317,7 +315,7 @@ export function getHeader(req: Request, name: string): string | null {
   let pos = start;
   while (pos < end) {
     // Find end of current header line (\r)
-    const cr = buf.indexOf(0x0D, pos);
+    const cr = buf.indexOf(0x0d, pos);
     if (cr === -1 || cr >= end) break;
 
     // Check if this line starts with the target header name (case-insensitive)
@@ -329,7 +327,10 @@ export function getHeader(req: Request, name: string): string | null {
         let c = buf[pos + i];
         // ASCII toLowerCase: if uppercase (65–90), add 32
         if (c >= 65 && c <= 90) c += 32;
-        if (c !== nameLower.charCodeAt(i)) { match = false; break; }
+        if (c !== nameLower.charCodeAt(i)) {
+          match = false;
+          break;
+        }
       }
       if (match && buf[pos + nameLen] === 58 /* ':' */) {
         // Skip colon and optional whitespace (OWS per RFC 7230 §3.2.3)
@@ -351,18 +352,17 @@ export function getHeader(req: Request, name: string): string | null {
  * Process all complete requests in the connection buffer.
  * Supports HTTP pipelining — multiple requests may arrive in one chunk.
  */
-function processBuffer(
-  conn: ConnState,
-  socket: net.Socket,
-  handler: Handler,
-): void {
+function processBuffer(conn: ConnState, socket: net.Socket, handler: Handler): void {
   let offset = 0;
 
   while (offset < conn.used) {
     const consumed = tryParse(conn.buf, offset, conn.used, conn.req);
     if (consumed === -1) break; // incomplete request — wait for more data
     // Guard against oversized headers (tryParse returns -2)
-    if (consumed === -2) { socket.destroy(); return; }
+    if (consumed === -2) {
+      socket.destroy();
+      return;
+    }
     handler(conn.req, socket);
     offset = consumed;
   }
@@ -382,12 +382,7 @@ function processBuffer(
  * Parser avoids object allocation: method is a numeric enum, URL is a single
  * substring, headers are stored as a buffer reference for lazy access.
  */
-function tryParse(
-  buf: Buffer,
-  offset: number,
-  end: number,
-  req: Request,
-): number {
+function tryParse(buf: Buffer, offset: number, end: number, req: Request): number {
   // Guard: need at least "GET / HTTP/1.1\r\n\r\n" = 18 bytes
   if (end - offset < 18) return -1;
 
@@ -408,7 +403,7 @@ function tryParse(
     req.method = GET;
   } else if (b0 === 0x50) {
     // P: distinguish POST (PO) from PUT (PU)
-    req.method = buf[offset + 1] === 0x4F ? POST : PUT;
+    req.method = buf[offset + 1] === 0x4f ? POST : PUT;
   } else if (b0 === 0x44) {
     req.method = DELETE;
   } else {
@@ -433,7 +428,7 @@ function tryParse(
   // ── Store header region for lazy getHeader() ──────────────────
 
   // Headers start after the first \r\n (end of request line)
-  const firstLF = buf.indexOf(0x0A, offset);
+  const firstLF = buf.indexOf(0x0a, offset);
   req[kHdrBuf] = buf;
   req[kHdrStart] = firstLF + 1;
   req[kHdrEnd] = headerEnd;
@@ -461,11 +456,7 @@ function tryParse(
  * Checks both "Content-Length:" (common) and "content-length:" (curl).
  * Returns 0 if not found.
  */
-function findContentLength(
-  buf: Buffer,
-  start: number,
-  end: number,
-): number {
+function findContentLength(buf: Buffer, start: number, end: number): number {
   // Try title case first (most clients), then lowercase
   let idx = buf.indexOf(CL_TITLE, start);
   if (idx === -1 || idx >= end) {

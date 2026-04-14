@@ -39,27 +39,37 @@ test("push N then shift N returns FIFO order", () => {
 });
 
 test("size equals pushes minus pops and shifts", () => {
-  const arb = Arb.array(
-    Arb.constantFrom<"push" | "pop" | "shift">("push", "pop", "shift"),
-    { minLength: 0, maxLength: 100 },
-  );
+  const arb = Arb.array(Arb.constantFrom<"push" | "pop" | "shift">("push", "pop", "shift"), {
+    minLength: 0,
+    maxLength: 100,
+  });
 
-  Prop.assert(arb, (ops) => {
-    const q = Queue.make<number>();
-    let expected = 0;
-    let counter = 0;
-    for (const op of ops) {
-      if (op === "push") {
-        Queue.push(q, counter++);
-        expected++;
-      } else if (op === "pop") {
-        if (expected > 0) { Queue.pop(q); expected--; }
-      } else {
-        if (expected > 0) { Queue.shift(q); expected--; }
+  Prop.assert(
+    arb,
+    (ops) => {
+      const q = Queue.make<number>();
+      let expected = 0;
+      let counter = 0;
+      for (const op of ops) {
+        if (op === "push") {
+          Queue.push(q, counter++);
+          expected++;
+        } else if (op === "pop") {
+          if (expected > 0) {
+            Queue.pop(q);
+            expected--;
+          }
+        } else {
+          if (expected > 0) {
+            Queue.shift(q);
+            expected--;
+          }
+        }
       }
-    }
-    return Queue.size(q) === expected;
-  }, { numRuns: 1_000_000 });
+      return Queue.size(q) === expected;
+    },
+    { numRuns: 1_000_000 },
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -74,7 +84,11 @@ type Real = Queue.Queue<number>;
 
 /** Placeholder command skipped via `check: () => false` when the queue is empty. */
 const skipCmd = (tag: string) =>
-  Arb.constant<ST.Command<Model, Real>>({ name: `${tag}(skip)`, check: () => false, run: () => {} });
+  Arb.constant<ST.Command<Model, Real>>({
+    name: `${tag}(skip)`,
+    check: () => false,
+    run: () => {},
+  });
 
 test("stateful: Queue matches array model under random operations", () => {
   ST.assertStateful<Model, Real>({

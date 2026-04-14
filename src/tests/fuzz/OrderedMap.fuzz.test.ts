@@ -179,11 +179,7 @@ const entriesCmd: ST.CommandArbitrary<OMModel, OMReal> = (_model) =>
     name: "entries",
     check: () => true,
     run: (m: OMModel, real: OMReal) => {
-      assert.deepEqual(
-        [...OM.entries(real)],
-        m.entries,
-        "full sorted entries mismatch",
-      );
+      assert.deepEqual([...OM.entries(real)], m.entries, "full sorted entries mismatch");
     },
   });
 

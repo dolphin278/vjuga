@@ -141,8 +141,14 @@ export function make(capacity: number, fpr: number = 0.01): BloomFilter {
     const kExact = (m / capacity) * LN2;
     const kF = Math.max(1, Math.floor(kExact));
     const kC = Math.ceil(kExact);
-    if (actualFpr(m, kF, capacity) <= fpr) { k = kF; break; }
-    if (actualFpr(m, kC, capacity) <= fpr) { k = kC; break; }
+    if (actualFpr(m, kF, capacity) <= fpr) {
+      k = kF;
+      break;
+    }
+    if (actualFpr(m, kC, capacity) <= fpr) {
+      k = kC;
+      break;
+    }
     // Neither floor nor ceil of kExact satisfies the constraint at this m —
     // double m (one more power-of-2 step) and retry. This occurs extremely
     // rarely: only when kExact ≈ half-integer AND the theoretical minimum FPR
@@ -206,7 +212,7 @@ export function mightContain(bf: BloomFilter, item: string): boolean {
   for (let i = 0; i < k; i++) {
     const pos = acc & mask;
     // Early-exit on first unset bit — most misses exit after 1 probe.
-    if ((bits[pos >>> 5] >>> (pos & 31) & 1) === 0) return false;
+    if (((bits[pos >>> 5] >>> (pos & 31)) & 1) === 0) return false;
     acc = (acc + h2) >>> 0;
   }
   return true;

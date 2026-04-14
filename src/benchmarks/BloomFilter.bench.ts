@@ -14,10 +14,15 @@ import { reportOptimizationStatus } from "./_v8.js";
 import * as BF from "../BloomFilter.js";
 
 const _req = createRequire(import.meta.url);
-const { BloomFilter: BFLib } = _req("bloomfilter") as { BloomFilter: new (m: number, k: number) => {
-  add(s: string): void;
-  test(s: string): boolean;
-}};
+const { BloomFilter: BFLib } = _req("bloomfilter") as {
+  BloomFilter: new (
+    m: number,
+    k: number,
+  ) => {
+    add(s: string): void;
+    test(s: string): boolean;
+  };
+};
 
 const CAPACITY = 10_000;
 const FPR = 0.01;
@@ -59,7 +64,7 @@ const missKeys: string[] = Array.from({ length: 1000 }, (_, i) => `item-${CAPACI
 // make / construction
 // ---------------------------------------------------------------------------
 bench(`vjuga  BloomFilter.make (${CAPACITY}, ${FPR})`, () => BF.make(CAPACITY, FPR));
-bench(`bflib  new BloomFilter(${BF_M}, ${BF_K})`,     () => new BFLib(BF_M, BF_K));
+bench(`bflib  new BloomFilter(${BF_M}, ${BF_K})`, () => new BFLib(BF_M, BF_K));
 
 // ---------------------------------------------------------------------------
 // add — 1000 items

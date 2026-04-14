@@ -91,9 +91,7 @@ const nestedObj = {
 // Schemas — large array of objects
 // ---------------------------------------------------------------------------
 
-const arraySchema = S.array(
-  S.object({ id: S.integer(), name: S.string(), role: S.string() }),
-);
+const arraySchema = S.array(S.object({ id: S.integer(), name: S.string(), role: S.string() }));
 const arrayFJS = fastJsonStringify({
   type: "array",
   items: {

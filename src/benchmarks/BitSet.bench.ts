@@ -124,7 +124,8 @@ bench("vjuga  BitSet.xor — 1024 bits", () => BitSet.xor(hotFull, hotHalf));
 bench("vjuga  BitSet.not — full 1024-bit set", () => BitSet.not(hotFull));
 bench("fbs    FastBitSet.new_intersection — 1024 bits", () => fbFull.new_intersection(fbHalf));
 bench("fbs    FastBitSet.new_union        — 1024 bits", () => fbFull.new_union(fbHalf));
-bench("fbs    FastBitSet.new_difference   — 1024 bits (XOR approx)", () => fbFull.new_difference(fbHalf));
+bench("fbs    FastBitSet.new_difference   — 1024 bits (XOR approx)", () =>
+  fbFull.new_difference(fbHalf));
 
 await run();
 

@@ -10,7 +10,9 @@ import * as ST from "../../StatefulTest.js";
 // ---------------------------------------------------------------------------
 
 let counter = 0;
-interface Obj { id: number }
+interface Obj {
+  id: number;
+}
 
 function makePool(maxSize = 10): Pool.MemoryPool<Obj> {
   counter = 0;
@@ -115,18 +117,15 @@ test("stateful: MemoryPool matches model under random operations", () => {
             run: () => {},
           });
         }
-        return Arb.map(
-          Arb.integer(0, Math.max(0, model.acquired.length - 1)),
-          (idx) => ({
-            name: `release(idx=${idx})`,
-            check: (m: Model) => m.acquired.length > 0,
-            run: (m, r) => {
-              const safeIdx = Math.min(idx, m.acquired.length - 1);
-              const obj = m.acquired.splice(safeIdx, 1)[0]!;
-              Pool.release(r.pool, obj);
-            },
-          }),
-        );
+        return Arb.map(Arb.integer(0, Math.max(0, model.acquired.length - 1)), (idx) => ({
+          name: `release(idx=${idx})`,
+          check: (m: Model) => m.acquired.length > 0,
+          run: (m, r) => {
+            const safeIdx = Math.min(idx, m.acquired.length - 1);
+            const obj = m.acquired.splice(safeIdx, 1)[0]!;
+            Pool.release(r.pool, obj);
+          },
+        }));
       },
 
       // withAcquire

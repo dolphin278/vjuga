@@ -27,33 +27,47 @@ const { jsonValue } = Arb.letrec((tie) => ({
 // ---------------------------------------------------------------------------
 
 test("stringify/parse round-trip: JSON.parse(VJSON.stringify(v)) deep-equals v", () => {
-  Prop.assert(jsonValue, (v) => {
-    const str = VJSON.stringify(v);
-    assert.notEqual(str, undefined);
-    const parsed = JSON.parse(str!);
-    assert.deepEqual(parsed, v);
-  }, { numRuns: 1_000_000 });
+  Prop.assert(
+    jsonValue,
+    (v) => {
+      const str = VJSON.stringify(v);
+      assert.notEqual(str, undefined);
+      const parsed = JSON.parse(str!);
+      assert.deepEqual(parsed, v);
+    },
+    { numRuns: 1_000_000 },
+  );
 });
 
 test("stringify/parseExn round-trip: VJSON.parseExn(VJSON.stringify(v)) deep-equals v", () => {
-  Prop.assert(jsonValue, (v) => {
-    const str = VJSON.stringify(v);
-    assert.notEqual(str, undefined);
-    const parsed = VJSON.parseExn(str!);
-    assert.deepEqual(parsed, v);
-  }, { numRuns: 1_000_000 });
+  Prop.assert(
+    jsonValue,
+    (v) => {
+      const str = VJSON.stringify(v);
+      assert.notEqual(str, undefined);
+      const parsed = VJSON.parseExn(str!);
+      assert.deepEqual(parsed, v);
+    },
+    { numRuns: 1_000_000 },
+  );
 });
 
 test("parse returns undefined for invalid JSON", () => {
-  const invalidArb = Arb.filter(
-    Arb.string({ minLength: 1, maxLength: 20 }),
+  const invalidArb = Arb.filter(Arb.string({ minLength: 1, maxLength: 20 }), (s) => {
+    try {
+      JSON.parse(s);
+      return false;
+    } catch {
+      return true;
+    }
+  });
+  Prop.assert(
+    invalidArb,
     (s) => {
-      try { JSON.parse(s); return false; } catch { return true; }
+      return VJSON.parse(s) === undefined;
     },
+    { numRuns: 1_000_000 },
   );
-  Prop.assert(invalidArb, (s) => {
-    return VJSON.parse(s) === undefined;
-  }, { numRuns: 1_000_000 });
 });
 
 test("safeParse strips __proto__ and constructor keys at any depth", () => {
@@ -66,10 +80,7 @@ test("safeParse strips __proto__ and constructor keys at any depth", () => {
 
   /** Build JSON strings with dangerous keys embedded at various depths. */
   const dangerousJsonArb = Arb.map(
-    Arb.tuple(
-      Arb.array(dangerousKeyArb, { minLength: 1, maxLength: 4 }),
-      Arb.integer(0, 100),
-    ),
+    Arb.tuple(Arb.array(dangerousKeyArb, { minLength: 1, maxLength: 4 }), Arb.integer(0, 100)),
     ([keys, val]) => {
       // Build a nested object with keys: {"k1": {"k2": ... val}}
       let json = String(val);
@@ -80,33 +91,41 @@ test("safeParse strips __proto__ and constructor keys at any depth", () => {
     },
   );
 
-  Prop.assert(dangerousJsonArb, (json) => {
-    const result = VJSON.safeParse(json);
-    if (result[0] === false) return; // invalid JSON is fine, skip
-    // Walk the value tree — no __proto__ or constructor keys should remain
-    const stack: unknown[] = [result[1]];
-    let current: unknown;
-    while ((current = stack.pop()) !== undefined) {
-      if (current === null || typeof current !== "object") continue;
-      if (Array.isArray(current)) {
-        for (const item of current) stack.push(item);
-      } else {
-        const obj = current as Record<string, unknown>;
-        for (const key of Object.keys(obj)) {
-          assert.notEqual(key, "__proto__", "found __proto__ key after safeParse");
-          assert.notEqual(key, "constructor", "found constructor key after safeParse");
-          stack.push(obj[key]);
+  Prop.assert(
+    dangerousJsonArb,
+    (json) => {
+      const result = VJSON.safeParse(json);
+      if (result[0] === false) return; // invalid JSON is fine, skip
+      // Walk the value tree — no __proto__ or constructor keys should remain
+      const stack: unknown[] = [result[1]];
+      let current: unknown;
+      while ((current = stack.pop()) !== undefined) {
+        if (current === null || typeof current !== "object") continue;
+        if (Array.isArray(current)) {
+          for (const item of current) stack.push(item);
+        } else {
+          const obj = current as Record<string, unknown>;
+          for (const key of Object.keys(obj)) {
+            assert.notEqual(key, "__proto__", "found __proto__ key after safeParse");
+            assert.notEqual(key, "constructor", "found constructor key after safeParse");
+            stack.push(obj[key]);
+          }
         }
       }
-    }
-  }, { numRuns: 1_000_000 });
+    },
+    { numRuns: 1_000_000 },
+  );
 });
 
 test("stringify produces JSON parseable by native JSON.parse", () => {
-  Prop.assert(jsonValue, (v) => {
-    const str = VJSON.stringify(v);
-    assert.notEqual(str, undefined);
-    // Should not throw
-    JSON.parse(str!);
-  }, { numRuns: 1_000_000 });
+  Prop.assert(
+    jsonValue,
+    (v) => {
+      const str = VJSON.stringify(v);
+      assert.notEqual(str, undefined);
+      // Should not throw
+      JSON.parse(str!);
+    },
+    { numRuns: 1_000_000 },
+  );
 });

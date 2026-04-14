@@ -175,11 +175,7 @@ test("BitSet property: not(not(a)) deepEquals a", () => {
       const a = BitSet.make(64);
       for (const i of indices) BitSet.set(a, i);
       const b = BitSet.not(BitSet.not(a));
-      assert.deepEqual(
-        BitSet.toArray(b),
-        BitSet.toArray(a),
-        "not(not(a)) should equal a",
-      );
+      assert.deepEqual(BitSet.toArray(b), BitSet.toArray(a), "not(not(a)) should equal a");
     },
     { numRuns: 1_000_000 },
   );

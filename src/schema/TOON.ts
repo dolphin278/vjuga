@@ -524,17 +524,17 @@ function emitArrayStringify(
   if (isPrimitive(schema.meta.items)) {
     // Inline the array serialization loop directly — eliminates a compiled
     // helper function call, keeping everything in one function for Turbofan.
-    emit(
-      ctx.buf,
-      `s += ${pad} + ${escapeJsonString(header)} + "[" + ${accessor}.length + "]: ";`,
-    );
+    emit(ctx.buf, `s += ${pad} + ${escapeJsonString(header)} + "[" + ${accessor}.length + "]: ";`);
     const idx = freshVar(ctx.buf);
     const elemExpr0 = inlineExpr(schema.meta.items, `${accessor}[0]`);
     const elemExprI = inlineExpr(schema.meta.items, `${accessor}[${idx}]`);
     emit(ctx.buf, `if (${accessor}.length > 0) {`);
     ctx.buf.indent++;
     emit(ctx.buf, `s += ${elemExpr0};`);
-    emit(ctx.buf, `for (var ${idx} = 1; ${idx} < ${accessor}.length; ${idx}++) s += _delim + ${elemExprI};`);
+    emit(
+      ctx.buf,
+      `for (var ${idx} = 1; ${idx} < ${accessor}.length; ${idx}++) s += _delim + ${elemExprI};`,
+    );
     ctx.buf.indent--;
     emit(ctx.buf, "}");
     emit(ctx.buf, `s += "\\n";`);
@@ -675,7 +675,6 @@ function emitUnionStringify(
   }
 }
 
-
 // ---------------------------------------------------------------------------
 // Parse helpers — captured by generated code via emitRef.
 // Each is small (~5 lines) and monomorphic — individually Turbofan-eligible.
@@ -722,7 +721,11 @@ function splitRecordLine(line: string): [string, string] | null {
         i++; // skip escaped char
       } else if (line.charCodeAt(i) === 0x22) {
         // Expect ": " immediately after closing quote
-        if (i + 2 < line.length && line.charCodeAt(i + 1) === 0x3a && line.charCodeAt(i + 2) === 0x20) {
+        if (
+          i + 2 < line.length &&
+          line.charCodeAt(i + 1) === 0x3a &&
+          line.charCodeAt(i + 2) === 0x20
+        ) {
           return [line.slice(0, i + 1), line.slice(i + 3)];
         }
         return null; // malformed

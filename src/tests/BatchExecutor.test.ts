@@ -1,6 +1,9 @@
 import * as assert from "node:assert";
 import { test } from "node:test";
-import { setTimeout as setTimeoutPromise, setImmediate as setImmediatePromise } from "node:timers/promises";
+import {
+  setTimeout as setTimeoutPromise,
+  setImmediate as setImmediatePromise,
+} from "node:timers/promises";
 import { make } from "../BatchExecutor.js";
 
 test("BatchExecutor batches function invocation and delivers corresponding results", async () => {
@@ -98,5 +101,8 @@ test("io schedule mode: batches via setImmediate with lower latency", async () =
   const result = [...(await result1), ...(await result2)];
 
   assert.deepEqual(result, [3, 6, 9, 12, 15]);
-  assert.deepEqual(invocationArgs, [[1, 2, 3], [4, 5]]);
+  assert.deepEqual(invocationArgs, [
+    [1, 2, 3],
+    [4, 5],
+  ]);
 });

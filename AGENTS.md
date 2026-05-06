@@ -11,7 +11,7 @@ npm install @dolphin278/vjuga
 ```
 
 - Zero runtime dependencies
-- ESM-only (`"type": "module"`) — always use `.js` extensions when importing
+- ESM-only (`"type": "module"`) — extensionless subpaths are supported; `.js` subpaths remain compatible
 - Node.js >= 22
 - No default exports — all modules use named exports
 - Module-level API style: create with `make(...)`, operate with free functions
@@ -114,22 +114,22 @@ npm install @dolphin278/vjuga
 
 ```typescript
 // Namespace imports (most common — preserves module identity)
-import * as Result from "@dolphin278/vjuga/Result.js";
-import * as LRUCache from "@dolphin278/vjuga/LRUCache.js";
-import * as S from "@dolphin278/vjuga/schema/Schema.js";
+import * as Result from "@dolphin278/vjuga/Result";
+import * as LRUCache from "@dolphin278/vjuga/LRUCache";
+import * as S from "@dolphin278/vjuga/schema/Schema";
 
 // Named imports also work
-import { ok, err, isOk, type Result as ResultType } from "@dolphin278/vjuga/Result.js";
-import { variant, match } from "@dolphin278/vjuga/TaggedUnion.js";
+import { ok, err, isOk, type Result as ResultType } from "@dolphin278/vjuga/Result";
+import { variant, match } from "@dolphin278/vjuga/TaggedUnion";
 
 // Schema sub-paths
-import { validate } from "@dolphin278/vjuga/schema/Validate.js";
-import * as SJ from "@dolphin278/vjuga/schema/JSON.js";
-import * as ST from "@dolphin278/vjuga/schema/TOON.js";
+import { validate } from "@dolphin278/vjuga/schema/Validate";
+import * as SJ from "@dolphin278/vjuga/schema/JSON";
+import * as ST from "@dolphin278/vjuga/schema/TOON";
 ```
 
-The `.js` extension is **required** — this is an ESM-only package. Omitting `.js`
-will cause a `MODULE_NOT_FOUND` error in Node.js.
+Extensionless subpaths are recommended for package consumers. `.js` subpaths
+remain supported for compatibility.
 
 ---
 
@@ -138,8 +138,8 @@ will cause a `MODULE_NOT_FOUND` error in Node.js.
 ### Result + Schema validation
 
 ```typescript
-import * as S from "@dolphin278/vjuga/schema/Schema.js";
-import { validate } from "@dolphin278/vjuga/schema/Validate.js";
+import * as S from "@dolphin278/vjuga/schema/Schema";
+import { validate } from "@dolphin278/vjuga/schema/Validate";
 
 const UserSchema = S.object({ id: S.integer(), name: S.string() });
 const checkUser = validate(UserSchema); // compile once at module scope
@@ -153,8 +153,8 @@ if (!ok) return sendError(userOrErr); // userOrErr is SchemaError
 ### LRUCache + Memoization
 
 ```typescript
-import * as LRUCache from "@dolphin278/vjuga/LRUCache.js";
-import { memoize } from "@dolphin278/vjuga/Memoization.js";
+import * as LRUCache from "@dolphin278/vjuga/LRUCache";
+import { memoize } from "@dolphin278/vjuga/Memoization";
 
 // Bounded memoization: keep at most 1000 cached results
 const cache = LRUCache.make<string, User>(1000);
@@ -164,7 +164,7 @@ const getUser = memoize(fetchUser, { cache });
 ### BatchExecutor for database fan-out
 
 ```typescript
-import { make } from "@dolphin278/vjuga/BatchExecutor.js";
+import { make } from "@dolphin278/vjuga/BatchExecutor";
 
 const getUser = make(async (ids: string[]): Promise<PromiseSettledResult<User>[]> => {
   const rows = await db.users.findMany({ where: { id: { in: ids } } });
@@ -190,7 +190,7 @@ export default function processImage(data: { buffer: ArrayBuffer }): ArrayBuffer
 }
 
 // main.ts
-import * as WorkerPool from "@dolphin278/vjuga/WorkerPool.js";
+import * as WorkerPool from "@dolphin278/vjuga/WorkerPool";
 const pool = WorkerPool.make<{ buffer: ArrayBuffer }, ArrayBuffer>({
   filename: new URL("./worker.js", import.meta.url),
   maxThreads: 4,
@@ -202,7 +202,7 @@ await WorkerPool.destroy(pool);
 ### TaggedUnion for multi-variant state
 
 ```typescript
-import { variant, match, type TaggedUnion } from "@dolphin278/vjuga/TaggedUnion.js";
+import { variant, match, type TaggedUnion } from "@dolphin278/vjuga/TaggedUnion";
 
 type State = TaggedUnion<{
   idle: void;
@@ -224,8 +224,8 @@ const handle = (state: State): string =>
 
 ```typescript
 import { test } from "node:test";
-import * as Arb from "@dolphin278/vjuga/Arbitrary.js";
-import * as Prop from "@dolphin278/vjuga/Property.js";
+import * as Arb from "@dolphin278/vjuga/Arbitrary";
+import * as Prop from "@dolphin278/vjuga/Property";
 
 test("encode/decode roundtrip", () => {
   Prop.assert(
@@ -242,7 +242,7 @@ test("encode/decode roundtrip", () => {
 
 1. **No default exports** — all modules use named exports. Always use namespace
    imports (`import * as X`) or named destructuring.
-2. **`.js` extension required** in every import path, even when source files are `.ts`.
+2. **Import subpaths** can be extensionless or use `.js`; extensionless is recommended for consumers.
 3. **Module-level API style** — modules export free functions operating on plain
    objects/interfaces. Create with `make(...)`, operate with `Module.fn(handle, ...)`.
    There are no classes (except `WorkerPoolDestroyedError`).

@@ -47,7 +47,7 @@ Property.check() runs property-based tests - generates random input, shrinks to 
 - Named exports only, no default exports - always use namespace imports or named destructuring
 - Make + free functions, no classes (except WorkerPoolDestroyedError)
 - ESM-only, zero runtime dependencies
-- .js extension required in every import (ESM-only package)
+- Extensionless subpath imports are supported; `.js` subpaths remain compatible
 - Works identically on Node.js and Bun
 
 See [CLAUDE.md](./CLAUDE.md) for contributor conventions.

@@ -2,7 +2,7 @@
 
 > Zero-dependency, ESM-only TypeScript utility library. Node >=22.
 > Install: `npm install @dolphin278/vjuga`
-> Import: `import * as LRUCache from "@dolphin278/vjuga/LRUCache.js"`
+> Import: `import * as LRUCache from "@dolphin278/vjuga/LRUCache"`
 > All modules are standalone ESM files — import only what you need.
 
 ## Error Handling
@@ -72,7 +72,7 @@
 ## Key Constraints
 
 - Zero external dependencies — no npm packages at runtime.
-- ESM-only (`"type": "module"`) — `.js` extension **required** in all imports.
+- ESM-only (`"type": "module"`) — extensionless subpaths are supported; `.js` subpaths remain compatible.
 - Node.js >=22 required.
 - All modules are standalone files — import only what you use.
 - `WorkerPool` and `HttpServer` use Node.js built-ins — not available in browsers or edge runtimes.

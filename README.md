@@ -50,4 +50,5 @@ Property.check() runs property-based tests - generates random input, shrinks to 
 - Extensionless subpath imports are supported; `.js` subpaths remain compatible
 - Works identically on Node.js and Bun
 
-See [CLAUDE.md](./CLAUDE.md) for contributor conventions.
+See [CONTRIBUTING-AGENTS.md](./CONTRIBUTING-AGENTS.md) for contributor
+conventions and [AGENTS.md](./AGENTS.md) for the agent-facing quick reference.

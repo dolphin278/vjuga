@@ -1,8 +1,15 @@
-# AGENTS.md — vjuga Quick Reference for AI Coding Assistants
+# AGENTS.md — vjuga Agent Entry Point
 
-This file helps AI coding tools find the right module and use it correctly.
-See `CLAUDE.md` for contributor conventions (testing, coverage, benchmarking,
-docstring format). See `llms.txt` for the full module index with descriptions.
+This is the cross-agent landing page for coding assistants working in this
+repository.
+
+Start here:
+
+- Use [CONTRIBUTING-AGENTS.md](./CONTRIBUTING-AGENTS.md) for repo-wide
+  contributor rules, testing gates, benchmarking expectations, and docstring
+  requirements.
+- Use [llms.txt](./llms.txt) for the full public module index with descriptions.
+- Use the quick reference below when you need to find the right module fast.
 
 ## Package at a glance
 
@@ -15,6 +22,14 @@ npm install @dolphin278/vjuga
 - Node.js >= 22
 - No default exports — all modules use named exports
 - Module-level API style: create with `make(...)`, operate with free functions
+
+## Working In This Repo
+
+- Shared contributor policy lives in
+  [CONTRIBUTING-AGENTS.md](./CONTRIBUTING-AGENTS.md).
+- `CLAUDE.md` is retained as a compatibility entrypoint for Claude-specific
+  discovery, but it is not the source of truth for repo rules.
+- `.claude/` contains Claude tool settings only.
 
 ---
 

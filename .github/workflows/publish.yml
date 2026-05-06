@@ -21,4 +21,5 @@ jobs:
         with:
           bun-version: latest
       - run: npm ci
+      - run: npm run verify
       - run: npm publish --provenance --access public

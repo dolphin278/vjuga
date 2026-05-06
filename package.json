@@ -28,7 +28,6 @@
     "coverage:bun": "bash -c 'bun test $(ls src/tests/*.test.js | grep -v CoverageGuided) src/tests/schema/*.test.js'",
     "coverage:all": "bash -c 'npm run coverage & P1=$!; npm run coverage:bun & P2=$!; wait $P1; R1=$?; wait $P2; R2=$?; exit $((R1|R2))'",
     "lint:docs": "node scripts/lint-docs.js",
-    "prepare": "npm run clean && tsc --project tsconfig.json",
     "verify": "npm run lint && oxfmt --check 'src/**/*.ts' '!src/**/*.d.ts' && npm run coverage:all && npm run lint:docs",
     "format": "oxfmt 'src/**/*.ts' '!src/**/*.d.ts'",
     "bench:bun": "bun src/benchmarks/all.bench.ts",

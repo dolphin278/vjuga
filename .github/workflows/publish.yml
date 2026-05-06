@@ -23,4 +23,7 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm run verify
-      - run: npm publish --provenance --access public
+      - run: |
+          echo "npm version: $(npm --version)"
+          echo "ACTIONS_ID_TOKEN_REQUEST_URL set: ${ACTIONS_ID_TOKEN_REQUEST_URL:+yes}"
+          npm publish --provenance --access public

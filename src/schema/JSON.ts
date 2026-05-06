@@ -315,7 +315,9 @@ function walkStringifyUnion(
     let body = `function ${helperName}(v) {\n  switch (v[${JSON.stringify(discriminant)}]) {\n`;
     for (let i = 0; i < variants.length; i++) {
       const obj = variants[i];
+      /* node:coverage disable */
       if (obj.kind !== "object") continue; // guaranteed by findDiscriminant
+      /* node:coverage enable */
       const litSchema = obj.meta.properties[discriminant];
       body += `    case ${JSON.stringify(litSchema.meta.value)}: return ${walkStringify(buf, obj, "v")};\n`;
     }

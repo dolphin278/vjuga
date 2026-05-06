@@ -37,11 +37,38 @@ test("get() returns undefined for missing key", () => {
   assert.equal(OM.get(m, "missing"), undefined);
 });
 
+test("get() traverses left and right subtrees correctly", () => {
+  const m = OM.make<string, number>();
+  OM.set(m, "c", 3);
+  OM.set(m, "a", 1);
+  OM.set(m, "e", 5);
+  OM.set(m, "b", 2);
+  OM.set(m, "d", 4);
+  // Requires going left from root to find "a" and "b"
+  assert.equal(OM.get(m, "a"), 1);
+  assert.equal(OM.get(m, "b"), 2);
+  // Requires going right from root to find "d" and "e"
+  assert.equal(OM.get(m, "d"), 4);
+  assert.equal(OM.get(m, "e"), 5);
+  // Missing key that requires traversal
+  assert.equal(OM.get(m, "z"), undefined);
+});
+
 test("has() returns correct presence", () => {
   const m = OM.make<string, number>();
   OM.set(m, "x", 10);
   assert.equal(OM.has(m, "x"), true);
   assert.equal(OM.has(m, "y"), false);
+});
+
+test("has() traverses left subtree correctly", () => {
+  const m = OM.make<string, number>();
+  OM.set(m, "m", 1);
+  OM.set(m, "e", 2);
+  OM.set(m, "z", 3);
+  // "b" < "e" < "m": requires traversing left from root and then left again
+  assert.equal(OM.has(m, "e"), true);
+  assert.equal(OM.has(m, "b"), false); // goes left, not found
 });
 
 test("has() returns true when value is undefined", () => {
@@ -90,6 +117,26 @@ test("del() removes the entry and returns true", () => {
 test("del() returns false for missing key", () => {
   const m = OM.make<string, number>();
   assert.equal(OM.del(m, "nope"), false);
+});
+
+test("del() returns false for missing key requiring left traversal", () => {
+  const m = OM.make<string, number>();
+  OM.set(m, "m", 1);
+  OM.set(m, "e", 2);
+  OM.set(m, "z", 3);
+  // "b" < "e" — traverses left, key not found
+  assert.equal(OM.del(m, "b"), false);
+  assert.equal(OM.size(m), 3);
+});
+
+test("del() returns false for missing key requiring right traversal", () => {
+  const m = OM.make<string, number>();
+  OM.set(m, "m", 1);
+  OM.set(m, "e", 2);
+  OM.set(m, "z", 3);
+  // "p" > "m" — traverses right, key not found between "m" and "z"
+  assert.equal(OM.del(m, "p"), false);
+  assert.equal(OM.size(m), 3);
 });
 
 test("del() on empty map returns false", () => {

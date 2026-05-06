@@ -38,6 +38,11 @@ function modelPopcount(m: BitSetModel): number {
   for (let i = 0; i < m.capacity; i++) if (m.bits[i]) n++;
   return n;
 }
+function modelToArray(m: BitSetModel): number[] {
+  const result: number[] = [];
+  for (let i = 0; i < m.capacity; i++) if (m.bits[i]) result.push(i);
+  return result;
+}
 
 // ---------------------------------------------------------------------------
 // Command generators
@@ -48,7 +53,6 @@ type BSReal = BitSet.BitSet;
 const setCmd: ST.CommandArbitrary<BitSetModel, BSReal> = (_model) =>
   Arb.map(indexArb, (i) => ({
     name: `set(${i})`,
-    check: () => true,
     run: (m: BitSetModel, real: BSReal) => {
       BitSet.set(real, i);
       modelSet(m, i);
@@ -60,7 +64,6 @@ const setCmd: ST.CommandArbitrary<BitSetModel, BSReal> = (_model) =>
 const clearCmd: ST.CommandArbitrary<BitSetModel, BSReal> = (_model) =>
   Arb.map(indexArb, (i) => ({
     name: `clear(${i})`,
-    check: () => true,
     run: (m: BitSetModel, real: BSReal) => {
       BitSet.clear(real, i);
       modelClear(m, i);
@@ -71,7 +74,6 @@ const clearCmd: ST.CommandArbitrary<BitSetModel, BSReal> = (_model) =>
 const toggleCmd: ST.CommandArbitrary<BitSetModel, BSReal> = (_model) =>
   Arb.map(indexArb, (i) => ({
     name: `toggle(${i})`,
-    check: () => true,
     run: (m: BitSetModel, real: BSReal) => {
       const before = modelGet(m, i);
       BitSet.toggle(real, i);
@@ -80,10 +82,9 @@ const toggleCmd: ST.CommandArbitrary<BitSetModel, BSReal> = (_model) =>
     },
   }));
 
-const getCmd: ST.CommandArbitrary<BitSetModel, BSReal> = (model) =>
+const getCmd: ST.CommandArbitrary<BitSetModel, BSReal> = (_model) =>
   Arb.map(indexArb, (i) => ({
     name: `get(${i})`,
-    check: () => true,
     run: (m: BitSetModel, real: BSReal) => {
       assert.equal(BitSet.get(real, i), modelGet(m, i), `get(${i}) mismatch`);
     },
@@ -92,27 +93,41 @@ const getCmd: ST.CommandArbitrary<BitSetModel, BSReal> = (model) =>
 const popcountCmd: ST.CommandArbitrary<BitSetModel, BSReal> = (_model) =>
   Arb.constant<ST.Command<BitSetModel, BSReal>>({
     name: "popcount",
-    check: () => true,
     run: (m: BitSetModel, real: BSReal) => {
       assert.equal(BitSet.popcount(real), modelPopcount(m), "popcount mismatch");
     },
   });
 
+const toArrayCmd: ST.CommandArbitrary<BitSetModel, BSReal> = (_model) =>
+  Arb.constant<ST.Command<BitSetModel, BSReal>>({
+    name: "toArray",
+    run: (m: BitSetModel, real: BSReal) => {
+      assert.deepEqual(BitSet.toArray(real), modelToArray(m), "toArray mismatch");
+    },
+  });
+
+const capacityCmd: ST.CommandArbitrary<BitSetModel, BSReal> = (_model) =>
+  Arb.constant<ST.Command<BitSetModel, BSReal>>({
+    name: "capacity",
+    run: (m: BitSetModel, real: BSReal) => {
+      assert.equal(BitSet.capacity(real), m.capacity, "capacity mismatch");
+    },
+  });
+
 // ---------------------------------------------------------------------------
-// Stateful model-based test
+// Stateful model-based test — 1M runs, 50 commands per sequence
 // ---------------------------------------------------------------------------
 
-test("BitSet stateful model-based fuzz test", () => {
+test("BitSet stateful model-based fuzz test", { timeout: 300_000 }, () => {
   ST.assertStateful({
     initialModel: (): BitSetModel => ({
       bits: Array(CAPACITY).fill(false) as boolean[],
       capacity: CAPACITY,
     }),
     initialReal: () => BitSet.make(CAPACITY),
-    commands: [setCmd, clearCmd, toggleCmd, getCmd, popcountCmd],
+    commands: [setCmd, clearCmd, toggleCmd, getCmd, popcountCmd, toArrayCmd, capacityCmd],
     numRuns: 1_000_000,
     maxCommands: 50,
-    timeoutMs: 300_000,
   });
 });
 
@@ -176,6 +191,89 @@ test("BitSet property: not(not(a)) deepEquals a", () => {
       for (const i of indices) BitSet.set(a, i);
       const b = BitSet.not(BitSet.not(a));
       assert.deepEqual(BitSet.toArray(b), BitSet.toArray(a), "not(not(a)) should equal a");
+    },
+    { numRuns: 1_000_000 },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Property: xor(a, b) deepEqual xor(b, a) — commutativity
+// ---------------------------------------------------------------------------
+
+test("BitSet property: xor is commutative", () => {
+  const indicesArb = Arb.array(Arb.integer(0, 63), { minLength: 0, maxLength: 20 });
+  const arb = Arb.tuple(indicesArb, indicesArb);
+  Prop.assert(
+    arb,
+    ([ai, bi]) => {
+      const a = BitSet.make(64);
+      const b = BitSet.make(64);
+      for (const i of ai) BitSet.set(a, i);
+      for (const i of bi) BitSet.set(b, i);
+      assert.deepEqual(
+        BitSet.toArray(BitSet.xor(a, b)),
+        BitSet.toArray(BitSet.xor(b, a)),
+        "xor(a,b) !== xor(b,a)",
+      );
+    },
+    { numRuns: 1_000_000 },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Property: and(a, a) equals a; or(a, a) equals a — idempotence
+// ---------------------------------------------------------------------------
+
+test("BitSet property: and and or are idempotent", () => {
+  const indicesArb = Arb.array(Arb.integer(0, 63), { minLength: 0, maxLength: 30 });
+  Prop.assert(
+    indicesArb,
+    (indices) => {
+      const a = BitSet.make(64);
+      for (const i of indices) BitSet.set(a, i);
+      const arr = BitSet.toArray(a);
+      assert.deepEqual(BitSet.toArray(BitSet.and(a, a)), arr, "and(a,a) !== a");
+      assert.deepEqual(BitSet.toArray(BitSet.or(a, a)), arr, "or(a,a) !== a");
+    },
+    { numRuns: 1_000_000 },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Property: xor(a, a) popcount === 0 (self-xor is zero)
+// ---------------------------------------------------------------------------
+
+test("BitSet property: xor(a, a) is empty", () => {
+  const indicesArb = Arb.array(Arb.integer(0, 63), { minLength: 0, maxLength: 30 });
+  Prop.assert(
+    indicesArb,
+    (indices) => {
+      const a = BitSet.make(64);
+      for (const i of indices) BitSet.set(a, i);
+      assert.equal(BitSet.popcount(BitSet.xor(a, a)), 0, "xor(a,a) should be empty");
+    },
+    { numRuns: 1_000_000 },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Property: and(a, not(a)) popcount === 0; or(a, not(a)) popcount === capacity
+// ---------------------------------------------------------------------------
+
+test("BitSet property: complement laws", () => {
+  const indicesArb = Arb.array(Arb.integer(0, 63), { minLength: 0, maxLength: 30 });
+  Prop.assert(
+    indicesArb,
+    (indices) => {
+      const a = BitSet.make(64);
+      for (const i of indices) BitSet.set(a, i);
+      const notA = BitSet.not(a);
+      assert.equal(BitSet.popcount(BitSet.and(a, notA)), 0, "and(a, not(a)) should be empty");
+      assert.equal(
+        BitSet.popcount(BitSet.or(a, notA)),
+        64,
+        "or(a, not(a)) should be full (capacity = 64)",
+      );
     },
     { numRuns: 1_000_000 },
   );

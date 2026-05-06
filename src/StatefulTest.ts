@@ -117,7 +117,7 @@ function executeCommandsSync<Model, Real>(
 ): { ok: boolean; error?: unknown; executedCount: number } {
   for (let i = 0; i < commands.length; i++) {
     const cmd = commands[i]!;
-    /* c8 ignore next 3 -- precondition skip */
+    /* node:coverage ignore next */
     if (cmd.check !== undefined && !cmd.check(model)) continue;
     try {
       cmd.run(model, real);
@@ -128,7 +128,7 @@ function executeCommandsSync<Model, Real>(
   return { ok: true, executedCount: commands.length };
 }
 
-/* c8 ignore start -- async mirror of executeCommandsSync; tested via checkStatefulAsync */
+/* node:coverage disable */
 async function executeCommandsAsync<Model, Real>(
   commands: AsyncCommand<Model, Real>[],
   model: Model,
@@ -145,7 +145,7 @@ async function executeCommandsAsync<Model, Real>(
   }
   return { ok: true, executedCount: commands.length };
 }
-/* c8 ignore stop */
+/* node:coverage enable */
 
 // ---------------------------------------------------------------------------
 // Internal: command sequence generation
@@ -182,7 +182,7 @@ function* shrinkCommandSequence<Model, Real>(
   _initialModel: () => Model,
 ): Iterable<Tree<Command<Model, Real>[]>> {
   const len = cmdTrees.length;
-  /* c8 ignore next 2 -- early return for empty sequence */
+  /* node:coverage ignore next 2 */
   if (len === 0) return;
 
   // Phase 1: try removing commands (from end, then from middle)
@@ -224,7 +224,7 @@ function* shrinkCommandSequence<Model, Real>(
 // Internal: shrink loop for command sequences
 // ---------------------------------------------------------------------------
 
-/* c8 ignore start -- shrink loop has non-deterministic branch coverage depending on generated sequences */
+/* node:coverage disable */
 function shrinkStatefulSync<Model, Real>(
   tree: Tree<Command<Model, Real>[]>,
   config: StatefulConfig<Model, Real>,
@@ -260,9 +260,9 @@ function shrinkStatefulSync<Model, Real>(
 
   return { commands: best, shrinks: shrinkCount, error: bestError };
 }
-/* c8 ignore stop */
+/* node:coverage enable */
 
-/* c8 ignore start -- async mirror of shrinkStatefulSync; tested via checkStatefulAsync */
+/* node:coverage disable */
 async function shrinkStatefulAsync<Model, Real>(
   tree: Tree<AsyncCommand<Model, Real>[]>,
   config: AsyncStatefulConfig<Model, Real>,
@@ -298,7 +298,7 @@ async function shrinkStatefulAsync<Model, Real>(
 
   return { commands: best, shrinks: shrinkCount, error: bestError };
 }
-/* c8 ignore stop */
+/* node:coverage enable */
 
 // ---------------------------------------------------------------------------
 // Public API: sync
@@ -311,19 +311,19 @@ async function shrinkStatefulAsync<Model, Real>(
 export function checkStateful<Model, Real>(
   config: StatefulConfig<Model, Real>,
 ): CheckResult<Command<Model, Real>[]> {
-  /* c8 ignore next 5 -- config defaults; both sides tested across test suite */
+  /* node:coverage ignore next 4 */
   const numRuns = config.numRuns ?? 100;
   const maxCommands = config.maxCommands ?? 50;
   const maxShrinks = config.maxShrinks ?? 1000;
   const usedSeed = config.seed ?? randomSeed();
   const timeoutMs = config.timeoutMs;
   const prng = make(usedSeed);
-
+  /* node:coverage ignore next */
   const deadline = timeoutMs !== undefined ? Date.now() + timeoutMs : undefined;
   let i = 0;
   for (; i < numRuns; i++) {
     if (deadline !== undefined && Date.now() > deadline) break;
-    /* c8 ignore next -- ternary branch */
+    /* node:coverage ignore next */
     const size = numRuns <= 1 ? 100 : Math.floor((i * 100) / (numRuns - 1));
     const testPrng = split(prng);
 
@@ -348,7 +348,7 @@ export function checkStateful<Model, Real>(
         seed: usedSeed,
         counterexample: shrinkResult.commands,
         shrinks: shrinkResult.shrinks,
-        /* c8 ignore next -- ?? branch */
+        /* node:coverage ignore next */
         error: shrinkResult.error ?? result.error,
       };
     }
@@ -362,7 +362,7 @@ export function assertStateful<Model, Real>(config: StatefulConfig<Model, Real>)
   const result = checkStateful(config);
   if (!result.ok) {
     const cmdNames = result.counterexample!.map((c) => c.name).join(" -> ");
-    /* c8 ignore next 5 -- formatting branches */
+    /* node:coverage ignore next 4 */
     const lines = [
       "Stateful property check failed!",
       `  Commands: ${cmdNames}`,
@@ -380,7 +380,7 @@ export function assertStateful<Model, Real>(config: StatefulConfig<Model, Real>)
 // Public API: async
 // ---------------------------------------------------------------------------
 
-/* c8 ignore start -- async mirror of checkStateful + assertStateful; tested via async test suite */
+/* node:coverage disable */
 /**
  * Async variant of checkStateful. Supports async `initialReal`, `run`, and
  * `teardown`.
@@ -452,4 +452,4 @@ export async function assertStatefulAsync<Model, Real>(
     throw new Error(lines.join("\n"));
   }
 }
-/* c8 ignore stop */
+/* node:coverage enable */

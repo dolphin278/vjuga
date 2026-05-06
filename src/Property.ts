@@ -164,7 +164,7 @@ function shrinkSync<T>(
     let childIdx = 0;
     let found = false;
     for (const child of current.shrinks) {
-      /* c8 ignore next 2 -- guard reachable only when maxShrinks exhausted mid-iteration */
+      /* node:coverage ignore next 2 */
       if (shrinkCount >= maxShrinks) break outer;
       try {
         const result = predicate(child.value);
@@ -194,7 +194,7 @@ function shrinkSync<T>(
   return { counterexample: best, shrinks: shrinkCount, error: bestError, pathIndices };
 }
 
-/* c8 ignore start -- async mirror of shrinkSync; identical logic with await; tested via checkAsync/assertAsync */
+/* node:coverage disable */
 async function shrinkAsync<T>(
   tree: Tree<T>,
   predicate: (value: T) => Promise<boolean | void>,
@@ -238,7 +238,7 @@ async function shrinkAsync<T>(
 
   return { counterexample: best, shrinks: shrinkCount, error: bestError, pathIndices };
 }
-/* c8 ignore stop */
+/* node:coverage enable */
 
 // ---------------------------------------------------------------------------
 // Internal: replay from path
@@ -257,7 +257,7 @@ function replayPath<T>(tree: Tree<T>, indices: number[]): Tree<T> {
       }
       childIdx++;
     }
-    /* c8 ignore next 2 -- defensive guard; path indices always valid from encodePath */
+    /* node:coverage ignore next 2 */
     if (!found) break;
   }
   return current;
@@ -267,7 +267,7 @@ function replayPath<T>(tree: Tree<T>, indices: number[]): Tree<T> {
 // Internal: resolve config defaults
 // ---------------------------------------------------------------------------
 
-/* c8 ignore next 11 -- config defaults create implicit ?? branches; both sides tested across test suite */
+/* node:coverage ignore next */
 function resolveConfig(config?: CheckConfig) {
   return {
     numRuns: config?.numRuns ?? 100,
@@ -303,7 +303,7 @@ export function check<T>(
     for (let i = 0; i < testIdx; i++) {
       split(prng); // discard
     }
-    /* c8 ignore next 4 -- ternary branch */
+    /* node:coverage ignore next 4 */
     const size =
       cfg.numRuns <= 1
         ? cfg.maxSize
@@ -325,7 +325,7 @@ export function check<T>(
   let i = 0;
   for (; i < cfg.numRuns; i++) {
     if (deadline !== undefined && Date.now() > deadline) break;
-    /* c8 ignore next -- ternary branch */
+    /* node:coverage ignore next */
     const size = cfg.numRuns <= 1 ? cfg.maxSize : Math.floor((i * cfg.maxSize) / (cfg.numRuns - 1));
     const testPrng = split(prng);
     const tree = arb(testPrng, size);
@@ -379,7 +379,7 @@ export function assert<T>(
 // Public API: async
 // ---------------------------------------------------------------------------
 
-/* c8 ignore start -- async mirror of check/assert; identical logic with await; tested via assertAsync */
+/* node:coverage disable */
 /**
  * Runs a property check with an async predicate. Returns a detailed result.
  */
@@ -398,7 +398,7 @@ export async function checkAsync<T>(
     for (let i = 0; i < testIdx; i++) {
       split(prng);
     }
-    /* c8 ignore next 4 -- ternary branch */
+    /* node:coverage ignore next */
     const size =
       cfg.numRuns <= 1
         ? cfg.maxSize
@@ -420,7 +420,7 @@ export async function checkAsync<T>(
   let i = 0;
   for (; i < cfg.numRuns; i++) {
     if (deadline !== undefined && Date.now() > deadline) break;
-    /* c8 ignore next -- ternary branch */
+    /* node:coverage ignore next */
     const size = cfg.numRuns <= 1 ? cfg.maxSize : Math.floor((i * cfg.maxSize) / (cfg.numRuns - 1));
     const testPrng = split(prng);
     const tree = arb(testPrng, size);
@@ -469,14 +469,14 @@ export async function assertAsync<T>(
     throwFailure(result);
   }
 }
-/* c8 ignore stop */
+/* node:coverage enable */
 
 // ---------------------------------------------------------------------------
 // Internal: failure formatting
 // ---------------------------------------------------------------------------
 
 function throwFailure<T>(result: CheckResult<T>): never {
-  /* c8 ignore next 6 -- formatting; ?? branches */
+  /* node:coverage ignore next 6 */
   const lines = [
     "Property check failed!",
     `  Counterexample: ${stringify(result.counterexample)}`,

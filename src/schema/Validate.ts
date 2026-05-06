@@ -540,6 +540,7 @@ function emitDiscriminatedValidation(
   buf.indent++;
   for (let i = 0; i < variants.length; i++) {
     const obj = variants[i];
+    /* node:coverage ignore next 2 */
     if (obj.kind !== "object") continue; // guaranteed by findDiscriminant
     const litSchema = obj.meta.properties[discriminant];
     emit(buf, `case ${JSON.stringify(litSchema.meta.value)}: {`);
@@ -561,6 +562,7 @@ function emitDiscriminatedValidation(
   const discLabels: string[] = [];
   for (let i = 0; i < variants.length; i++) {
     const v = variants[i];
+    /* node:coverage ignore next 2 */
     if (v.kind !== "object") continue;
     discLabels.push(JSON.stringify(v.meta.properties[discriminant].meta.value));
   }

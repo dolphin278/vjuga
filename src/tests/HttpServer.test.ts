@@ -548,6 +548,108 @@ test("buffer growth: request larger than initial buffer", async () => {
   await HttpServer.close(server);
 });
 
+test("respond: unknown status code with custom content type", async () => {
+  const server = HttpServer.make((_req, socket) => {
+    HttpServer.respond(socket, 418, "teapot", "text/plain");
+  });
+
+  await HttpServer.listen(server, 0);
+  const port = getPort(server);
+
+  const r = await rawRequest(port, "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n");
+  assert.ok(r.startsWith("HTTP/1.1 418 Unknown"));
+  assert.equal(parseBody(r), "teapot");
+  await HttpServer.close(server);
+});
+
+test("respondBuffer: unknown status code uses 'Unknown' text", async () => {
+  const body = Buffer.from("teapot");
+
+  const server = HttpServer.make((_req, socket) => {
+    HttpServer.respondBuffer(socket, 418, body, "text/plain");
+  });
+
+  await HttpServer.listen(server, 0);
+  const port = getPort(server);
+
+  const r = await rawRequest(port, "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n");
+  assert.ok(r.startsWith("HTTP/1.1 418 Unknown"));
+  assert.equal(parseBody(r), "teapot");
+  await HttpServer.close(server);
+});
+
+test("partial second request after pipelined first: buffer compaction", async () => {
+  const urls: string[] = [];
+
+  const server = HttpServer.make((req, socket) => {
+    urls.push(req.url);
+    HttpServer.respond(socket, 200, "{}");
+  });
+
+  await HttpServer.listen(server, 0);
+  const port = getPort(server);
+
+  // Send one complete request + an incomplete second request in one TCP write.
+  // After processing the first, the incomplete second stays in the buffer → compaction.
+  // Then we send the rest of the second request.
+  const response = await new Promise<string>((resolve, reject) => {
+    const socket = net.createConnection({ port, host: "127.0.0.1" }, () => {
+      // One complete GET + partial second GET (only the first 10 bytes of it)
+      socket.write("GET /first HTTP/1.1\r\nHost: localhost\r\n\r\nGET /seco");
+      setTimeout(() => {
+        // Complete the second request
+        socket.write("nd HTTP/1.1\r\nHost: localhost\r\n\r\n");
+        setTimeout(() => socket.end(), 50);
+      }, 30);
+    });
+    let data = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => {
+      data += chunk;
+    });
+    socket.on("end", () => resolve(data));
+    socket.on("error", reject);
+  });
+
+  assert.deepEqual(urls, ["/first", "/second"]);
+  assert.ok(response.includes("{}"));
+  await HttpServer.close(server);
+});
+
+test("very short request data (< 18 bytes): waits for more", async () => {
+  let capturedUrl: string | null = null;
+
+  const server = HttpServer.make((req, socket) => {
+    capturedUrl = req.url;
+    HttpServer.respond(socket, 200, "{}");
+  });
+
+  await HttpServer.listen(server, 0);
+  const port = getPort(server);
+
+  // Send < 18 bytes initially, then complete the request
+  const response = await new Promise<string>((resolve, reject) => {
+    const socket = net.createConnection({ port, host: "127.0.0.1" }, () => {
+      socket.write("GET /");
+      setTimeout(() => {
+        socket.write("tiny HTTP/1.1\r\nHost: localhost\r\n\r\n");
+        setTimeout(() => socket.end(), 50);
+      }, 30);
+    });
+    let data = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => {
+      data += chunk;
+    });
+    socket.on("end", () => resolve(data));
+    socket.on("error", reject);
+  });
+
+  assert.equal(capturedUrl, "/tiny");
+  assert.equal(parseStatus(response), 200);
+  await HttpServer.close(server);
+});
+
 // ── Utility ─────────────────────────────────────────────────────────
 
 function getPort(server: HttpServer.HttpServer): number {

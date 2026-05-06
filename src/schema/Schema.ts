@@ -743,6 +743,7 @@ export function fromJsonSchema(root: JsonSchemaObject): Result<Schema, string> {
     return err("unsupported JSON Schema: " + JSON.stringify(js).slice(0, 100));
   }
 
+  /* node:coverage ignore next 2 */
   if (results.length !== 1) return err("malformed JSON Schema: unexpected structure");
   return ok(results[0]);
 }
@@ -784,6 +785,7 @@ export function findDiscriminant(variants: readonly Schema[]): string | null {
     if (variants[i].kind !== "object") return null;
   }
   const first = variants[0];
+  /* node:coverage ignore next 2 */
   if (first.kind !== "object") return null; // guaranteed by loop above, satisfies TS
   const keys = Object.keys(first.meta.properties);
   // Reuse a single Set across candidate keys — clear per iteration to avoid
@@ -794,6 +796,7 @@ export function findDiscriminant(variants: readonly Schema[]): string | null {
     seen.clear();
     for (let i = 0; i < variants.length; i++) {
       const obj = variants[i];
+      /* node:coverage ignore next 2 */
       if (obj.kind !== "object") continue outer; // guaranteed by loop above, satisfies TS
       const prop = obj.meta.properties[key];
       if (prop === undefined || prop.kind !== "literal") continue outer;

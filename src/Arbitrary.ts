@@ -138,7 +138,7 @@ export function filter<T>(arb: Arbitrary<T>, pred: Predicate<T>, maxRetries = 10
   };
 }
 
-/* c8 ignore start -- implicit else branch on pred(child.value) false */
+/* node:coverage disable */
 function* filterShrinks<T>(shrinks: Iterable<Tree<T>>, pred: Predicate<T>): Iterable<Tree<T>> {
   for (const child of shrinks) {
     if (pred(child.value)) {
@@ -146,7 +146,7 @@ function* filterShrinks<T>(shrinks: Iterable<Tree<T>>, pred: Predicate<T>): Iter
     }
   }
 }
-/* c8 ignore stop */
+/* node:coverage enable */
 
 // ---------------------------------------------------------------------------
 // Shrink helpers (internal)
@@ -156,7 +156,7 @@ function* filterShrinks<T>(shrinks: Iterable<Tree<T>>, pred: Predicate<T>): Iter
  * Binary-search shrink toward `target` from `current`.
  * Converges in O(log |current - target|) steps.
  */
-/* c8 ignore start -- generator early-return branches */
+/* node:coverage disable */
 function* shrinkNumber(target: number, current: number): Iterable<Tree<number>> {
   if (target === current) return;
   // Try target directly first
@@ -187,7 +187,7 @@ function* shrinkBigInt(target: bigint, current: bigint): Iterable<Tree<bigint>> 
     lo = mid;
   }
 }
-/* c8 ignore stop */
+/* node:coverage enable */
 
 /**
  * Shrink an array by removing elements (binary search on length), then
@@ -250,7 +250,7 @@ export function nat(max = 0x7fff_ffff): Arbitrary<number> {
 
 /** Generates floating-point numbers in [min, max). Shrinks toward 0. */
 export function float(min = -1e10, max = 1e10): Arbitrary<number> {
-  /* c8 ignore next -- ternary branches */
+  /* node:coverage ignore next */
   const target = min <= 0 && max >= 0 ? 0 : min > 0 ? min : max;
   return function floatArb(prng: PRNG, _size: number): Tree<number> {
     const value = min + next(prng) * (max - min);
@@ -258,7 +258,7 @@ export function float(min = -1e10, max = 1e10): Arbitrary<number> {
   };
 }
 
-/* c8 ignore start -- generator branches */
+/* node:coverage disable */
 function* shrinkFloat(target: number, current: number): Iterable<Tree<number>> {
   if (target === current) return;
   yield { value: target, shrinks: NO_SHRINKS };
@@ -277,7 +277,7 @@ function* shrinkFloat(target: number, current: number): Iterable<Tree<number>> {
     lo = mid;
   }
 }
-/* c8 ignore stop */
+/* node:coverage enable */
 
 /** Generates booleans. Shrinks toward false. */
 export function boolean(): Arbitrary<boolean> {
@@ -311,7 +311,7 @@ export function constantFrom<T>(...values: [T, ...T[]]): Arbitrary<T> {
  * characters, then by replacing characters with 'a'.
  */
 export function string(opts?: { minLength?: number; maxLength?: number }): Arbitrary<string> {
-  /* c8 ignore next 2 -- opts defaults */
+  /* node:coverage ignore next */
   const minLen = opts?.minLength ?? 0;
   const maxLen = opts?.maxLength ?? 10;
   return function stringArb(prng: PRNG, size: number): Tree<string> {
@@ -326,7 +326,7 @@ export function string(opts?: { minLength?: number; maxLength?: number }): Arbit
   };
 }
 
-/* c8 ignore start -- generator branches */
+/* node:coverage disable */
 function* shrinkString(current: string, minLength: number): Iterable<Tree<string>> {
   if (current.length <= minLength) return;
   // Try empty string
@@ -350,7 +350,7 @@ function* shrinkString(current: string, minLength: number): Iterable<Tree<string
     }
   }
 }
-/* c8 ignore stop */
+/* node:coverage enable */
 
 /**
  * Generates arrays of values from `arb`. Shrinks by removing elements, then
@@ -360,7 +360,7 @@ export function array<T>(
   arb: Arbitrary<T>,
   opts?: { minLength?: number; maxLength?: number },
 ): Arbitrary<T[]> {
-  /* c8 ignore next 2 -- opts defaults */
+  /* node:coverage ignore next */
   const minLen = opts?.minLength ?? 0;
   const maxLen = opts?.maxLength ?? 10;
   return function arrayArb(prng: PRNG, size: number): Tree<T[]> {
@@ -390,7 +390,7 @@ export function tuple<T extends readonly unknown[]>(
   };
 }
 
-/* c8 ignore start -- generator closing braces counted as uncovered by c8 */
+/* node:coverage disable */
 function* shrinkTuple(trees: Tree<unknown>[]): Iterable<Tree<unknown[]>> {
   for (let i = 0; i < trees.length; i++) {
     for (const childTree of trees[i]!.shrinks) {
@@ -403,7 +403,7 @@ function* shrinkTuple(trees: Tree<unknown>[]): Iterable<Tree<unknown[]>> {
     }
   }
 }
-/* c8 ignore stop */
+/* node:coverage enable */
 
 /**
  * Generates objects matching a shape of arbitraries. Shrinks field-wise.
@@ -422,7 +422,7 @@ export function record<T extends Record<string, unknown>>(shape: {
   };
 }
 
-/* c8 ignore start -- generator closing brace counted as uncovered by c8 */
+/* node:coverage disable */
 function* shrinkRecord(pairs: [string, Tree<unknown>][]): Iterable<Tree<Record<string, unknown>>> {
   for (let i = 0; i < pairs.length; i++) {
     const [key, tree] = pairs[i]!;
@@ -436,7 +436,7 @@ function* shrinkRecord(pairs: [string, Tree<unknown>][]): Iterable<Tree<Record<s
     }
   }
 }
-/* c8 ignore stop */
+/* node:coverage enable */
 
 /**
  * Picks one of the provided arbitraries uniformly. Shrinks using the chosen
@@ -481,12 +481,12 @@ export function bigint(
   min = -0x7fff_ffff_ffff_ffffn,
   max = 0x7fff_ffff_ffff_ffffn,
 ): Arbitrary<bigint> {
-  /* c8 ignore next -- ternary branches */
+  /* node:coverage ignore next */
   const target = min <= 0n && max >= 0n ? 0n : min > 0n ? min : max;
   return function bigintArb(prng: PRNG, size: number): Tree<bigint> {
     // Scale range by size
     const sizeN = BigInt(size);
-    /* c8 ignore next 2 -- ternary branches */
+    /* node:coverage ignore next */
     const sizedMin = min < target - sizeN ? target - sizeN : min;
     const sizedMax = max > target + sizeN ? target + sizeN : max;
     const range = sizedMax - sizedMin;
@@ -496,7 +496,7 @@ export function bigint(
     } else {
       const raw = nextBigInt(prng);
       // Map raw 64-bit value into [sizedMin, sizedMax]
-      /* c8 ignore next -- ternary branch for abs(raw) */
+      /* node:coverage ignore next */
       value = sizedMin + ((raw < 0n ? -raw : raw) % (range + 1n));
     }
     return { value, shrinks: shrinkBigInt(target, value) };
@@ -522,7 +522,7 @@ export function uniqueArray<T>(
   arb: Arbitrary<T>,
   opts?: { minLength?: number; maxLength?: number; key?: Fn1<T, unknown> },
 ): Arbitrary<T[]> {
-  /* c8 ignore next 3 -- opts defaults */
+  /* node:coverage ignore next 3 */
   const minLen = opts?.minLength ?? 0;
   const maxLen = opts?.maxLength ?? 10;
   const keyFn = opts?.key ?? ((x: T) => x);
@@ -573,7 +573,7 @@ export function dictionary<V>(
 ): Arbitrary<Record<string, V>> {
   const pairArb = tuple<[string, V]>(keyArb, valueArb);
   const arrArb = uniqueArray(pairArb, {
-    /* c8 ignore next 2 -- opts defaults */
+    /* node:coverage ignore next 2 */
     minLength: opts?.minSize ?? 0,
     maxLength: opts?.maxSize ?? 10,
     key: ([k]) => k,
@@ -653,7 +653,7 @@ export function subarray<T>(items: readonly T[]): Arbitrary<T[]> {
 }
 
 function* shrinkSubarray<T>(current: T[], _source: readonly T[]): Iterable<Tree<T[]>> {
-  /* c8 ignore next 2 -- early return for empty */
+  /* node:coverage ignore next 2 */
   if (current.length === 0) return;
   // Try empty
   yield leaf([]);
@@ -686,7 +686,7 @@ export function letrec<Shape extends Record<string, Arbitrary<unknown>>>(
   const ref = (name: string): Arbitrary<unknown> => {
     return function lazyArb(prng: PRNG, size: number): Tree<unknown> {
       const resolved = cache.get(name);
-      /* c8 ignore next 2 -- defensive guard; tested via dedicated test */
+      /* node:coverage ignore next 2 */
       if (!resolved) throw new Error(`letrec: unresolved reference "${name}"`);
       // Reduce size to ensure termination of recursive structures
       return resolved(prng, Math.max(0, size - 1));

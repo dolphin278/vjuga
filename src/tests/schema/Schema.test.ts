@@ -118,6 +118,11 @@ test("object() with additionalProperties: true", () => {
   assert.equal(s.meta.additionalProperties, true);
 });
 
+test("object() with empty opts defaults additionalProperties to false", () => {
+  const s = S.object({ name: S.string() }, {});
+  assert.equal(s.meta.additionalProperties, false);
+});
+
 test("array() returns ArraySchema", () => {
   const s = S.array(S.string());
   assert.equal(s.kind, "array");
@@ -130,6 +135,12 @@ test("array() with size constraints", () => {
   const s = S.array(S.integer(), { minItems: 1, maxItems: 10 });
   assert.equal(s.meta.minItems, 1);
   assert.equal(s.meta.maxItems, 10);
+});
+
+test("array() with empty opts leaves minItems and maxItems undefined", () => {
+  const s = S.array(S.string(), {});
+  assert.equal(s.meta.minItems, undefined);
+  assert.equal(s.meta.maxItems, undefined);
 });
 
 test("tuple() returns TupleSchema", () => {
@@ -590,6 +601,17 @@ test("fromJsonSchema — object without properties", () => {
   assert.equal(r[1].kind, "object");
 });
 
+test("fromJsonSchema — object with no properties key (defaults to empty)", () => {
+  // Covers the js.properties ?? {} branch: when no "properties" key is present
+  // and additionalProperties is not a schema object (e.g. boolean true).
+  const r = S.fromJsonSchema({ type: "object", additionalProperties: true });
+  assert.equal(r[0], true);
+  assert.equal(r[1].kind, "object");
+  const s = r[1] as S.ObjectSchema<Record<string, S.Schema>>;
+  assert.equal(Object.keys(s.meta.properties).length, 0);
+  assert.equal(s.meta.additionalProperties, true);
+});
+
 test("fromJsonSchema — object with default additionalProperties", () => {
   const r = S.fromJsonSchema({ type: "object", properties: {} });
   assert.equal(r[0], true);
@@ -791,4 +813,35 @@ test("fromJsonSchema — nullable with null variant first", () => {
   assert.equal(r[0], true);
   assert.equal(r[1].kind, "nullable");
   assert.equal(r[1].meta.inner.kind, "string");
+});
+
+// ---------------------------------------------------------------------------
+// findDiscriminant — branch coverage
+// ---------------------------------------------------------------------------
+
+test("findDiscriminant — returns null when a property is not a literal (non-literal candidate)", () => {
+  // Both variants are objects with key "type", but one uses string() not literal()
+  const variants = [
+    S.object({ type: S.literal("circle"), radius: S.number() }),
+    S.object({ type: S.string(), w: S.number() }),
+  ];
+  assert.equal(S.findDiscriminant(variants), null);
+});
+
+test("findDiscriminant — returns null when two variants share the same discriminant value (duplicate)", () => {
+  // Both use literal("circle") — not a valid discriminant
+  const variants = [
+    S.object({ type: S.literal("circle"), r: S.number() }),
+    S.object({ type: S.literal("circle"), w: S.number() }),
+  ];
+  assert.equal(S.findDiscriminant(variants), null);
+});
+
+test("findDiscriminant — returns null when a candidate key is absent in one variant", () => {
+  // Second variant lacks "type"
+  const variants = [
+    S.object({ type: S.literal("circle"), r: S.number() }),
+    S.object({ w: S.number() }),
+  ];
+  assert.equal(S.findDiscriminant(variants), null);
 });

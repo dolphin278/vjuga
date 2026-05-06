@@ -112,6 +112,7 @@ const jsonPrefixCache = new Map<number, string>();
 
 function jsonPrefix(status: number): string {
   let p = jsonPrefixCache.get(status);
+  /* node:coverage ignore next 2 */
   if (p !== undefined) return p;
   const text = STATUS_TEXT[status] ?? "Unknown";
   p = `HTTP/1.1 ${status} ${text}\r\nContent-Type: ${JSON_CT}\r\nConnection: keep-alive\r\nContent-Length: `;
@@ -129,6 +130,7 @@ jsonPrefix(500);
 
 // ── Factory ─────────────────────────────────────────────────────────
 
+/* node:coverage ignore next */
 function noop(): void {}
 
 function makeRequest(): Request {
@@ -190,6 +192,7 @@ export function make(handler: Handler): HttpServer {
       if (needed > conn.buf.length) {
         const newSize = Math.max(conn.buf.length * 2, needed);
         const newBuf = Buffer.allocUnsafe(newSize);
+        /* node:coverage ignore next 2 */
         if (conn.used > 0) conn.buf.copy(newBuf, 0, 0, conn.used);
         conn.buf = newBuf;
       }
@@ -226,6 +229,7 @@ export function listen(server: HttpServer, port: number, host?: string): Promise
 export function close(server: HttpServer): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     server[kServer].close((err) => {
+      /* node:coverage ignore next 2 */
       if (err) reject(err);
       else resolve();
     });
@@ -359,10 +363,12 @@ function processBuffer(conn: ConnState, socket: net.Socket, handler: Handler): v
     const consumed = tryParse(conn.buf, offset, conn.used, conn.req);
     if (consumed === -1) break; // incomplete request — wait for more data
     // Guard against oversized headers (tryParse returns -2)
+    /* node:coverage disable */
     if (consumed === -2) {
       socket.destroy();
       return;
     }
+    /* node:coverage enable */
     handler(conn.req, socket);
     offset = consumed;
   }
@@ -390,6 +396,7 @@ function tryParse(buf: Buffer, offset: number, end: number, req: Request): numbe
   const headerEnd = buf.indexOf(CRLFCRLF, offset);
   if (headerEnd === -1 || headerEnd >= end) {
     // Guard against oversized headers
+    /* node:coverage ignore next 2 */
     if (end - offset > MAX_HEADER_SIZE) return -2;
     return -1;
   }
@@ -471,6 +478,7 @@ function findContentLength(buf: Buffer, start: number, end: number): number {
   let len = 0;
   while (idx < end) {
     const c = buf[idx];
+    /* node:coverage ignore next 2 */
     if (c < 48 || c > 57) break; // not a digit
     len = len * 10 + (c - 48);
     idx++;

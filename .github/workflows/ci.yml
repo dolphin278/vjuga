@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - run: npm run lint
+      - run: npx oxfmt --check 'src/**/*.ts' '!src/**/*.d.ts'
+      - run: npm run lint:docs
+
+  test:
+    name: Test (${{ matrix.runtime }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - runtime: node-22
+            node-version: '22'
+          - runtime: node-25
+            node-version: '25'
+          - runtime: bun
+    steps:
+      - uses: actions/checkout@v4
+      - if: matrix.runtime != 'bun'
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+      - if: matrix.runtime == 'bun'
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - if: matrix.runtime != 'bun'
+        run: npm ci
+      - if: matrix.runtime != 'bun'
+        run: npm run build
+      - if: matrix.runtime != 'bun'
+        run: npm run coverage
+      - if: matrix.runtime == 'bun'
+        run: bun install
+      - if: matrix.runtime == 'bun'
+        run: bun run coverage:bun

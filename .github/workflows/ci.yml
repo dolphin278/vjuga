@@ -20,7 +20,7 @@ jobs:
           node-version: '22'
       - run: npm ci
       - run: npm run lint
-      - run: npx oxfmt --check 'src/**/*.ts' '!src/**/*.d.ts'
+      - run: npx --no-install oxfmt --check 'src/**/*.ts' '!src/**/*.d.ts'
       - run: npm run lint:docs
 
   test:

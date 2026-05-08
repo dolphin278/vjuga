@@ -7,6 +7,9 @@ Agent-executable guide for releasing `@dolphin278/vjuga`.
 - `gh` CLI authenticated (`gh auth status`)
 - Push access to `origin` (git@github.com:dolphin278/vjuga.git)
 - Trusted Publisher configured on npmjs.com (see [One-Time Setup](#one-time-setup))
+- Repo visibility is **public**. `npm publish --provenance` rejects publishes
+  from private source repos with `422 Unsupported ... visibility: "private"` —
+  the SLSA attestation must be verifiable against a public commit.
 - Node 22+, `npm ci` succeeds
 
 ---
@@ -202,3 +205,24 @@ gh release create "v8.1.0" --title "v8.1.0" --notes-file /tmp/release-notes.md
 gh run list --workflow=publish.yml --limit 1
 npm view @dolphin278/vjuga version
 ```
+
+---
+
+## Troubleshooting
+
+If `npm publish --provenance` fails with `422 Unprocessable Entity` and
+`Error verifying sigstore provenance bundle`, **read the rest of the message**
+— it names the precise cause (repository visibility, missing trusted
+publisher, branch protection, etc.). Don't assume an OIDC/auth problem: in
+the publish flow, OIDC token exchange and sigstore signing run *before*
+provenance verification, so by the time you see a 422 the auth path has
+already succeeded.
+
+Known causes seen on this repo:
+
+- **`Unsupported ... visibility: "private"`** — flip the GitHub repo to public
+  (`gh repo edit <owner>/<repo> --visibility public --accept-visibility-change-consequences`).
+  npm provenance requires a public source repo.
+- **npm 10.9.7 OIDC bug** — Node 22's bundled npm has a known publish-side
+  OIDC issue. The workflow uses `npx --yes npm@^11 publish` to bypass it; do
+  not "simplify" this back to plain `npm publish` without re-testing.

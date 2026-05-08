@@ -44,6 +44,15 @@ When in doubt, read the diff: `git diff ${LAST_TAG}..HEAD -- src/`
 
 ## Step 3 — Write release notes
 
+Compute the target version now (substitute the bump type from Step 2) so the changelog URL is correct when you write the notes:
+
+```bash
+LAST_TAG=$(git describe --tags --abbrev=0)
+BUMP=[patch|minor|major]
+NEW_VERSION=$(npx --yes semver -i ${BUMP} $(node -p "require('./package.json').version"))
+echo "Releasing: ${LAST_TAG} → v${NEW_VERSION}"
+```
+
 Use this structure:
 
 ```
@@ -72,17 +81,29 @@ Guidelines:
 - Skip sections with no entries
 - Make it informative — a user upgrading should understand what changed and why it matters
 
----
-
-## Step 4 — Bump version
+Write the notes to `/tmp/release-notes.md` (Step 4 reads this path):
 
 ```bash
-npm version [patch|minor|major] -m "chore: release v%s"
+cat > /tmp/release-notes.md << 'EOF'
+<release notes here>
+EOF
 ```
 
-This updates `package.json`, commits with that message, and creates git tag `v{version}`.
+---
 
-Verify: `git log --oneline -3` and `git tag --sort=-version:refname | head -3`
+## Step 4 — Bump version and tag with release notes
+
+```bash
+npm version [patch|minor|major] --no-git-tag-version
+NEW_VERSION=$(node -p "require('./package.json').version")
+git add package.json package-lock.json
+git commit -m "chore: release v${NEW_VERSION}"
+git tag -a "v${NEW_VERSION}" -F /tmp/release-notes.md
+```
+
+`--no-git-tag-version` bumps `package.json` and `package-lock.json` (no automatic commit or tag). The manual `git tag -a` creates an annotated tag whose message is the release notes from Step 3 — making the tag the single source of truth for release content.
+
+Verify: `git log --oneline -3` and `git show "v${NEW_VERSION}" | head -30`
 
 ---
 
@@ -102,19 +123,10 @@ The `prepare` script (tsc, lint, coverage, fuzz) runs automatically before pack 
 
 ```bash
 NEW_VERSION=$(node -p "require('./package.json').version")
-gh release create "v${NEW_VERSION}" \
-  --title "v${NEW_VERSION}" \
-  --notes "$(cat <<'NOTES'
-<paste release notes from Step 3 here>
-NOTES
-)"
+gh release create "v${NEW_VERSION}" --title "v${NEW_VERSION}" --notes-from-tag
 ```
 
-Or pass notes via a temp file:
-
-```bash
-gh release create "v${NEW_VERSION}" --title "v${NEW_VERSION}" --notes-file /tmp/release-notes.md
-```
+`--notes-from-tag` reads the annotated tag message created in Step 4 and uses it as the release body. No separate notes argument needed.
 
 ---
 
@@ -192,14 +204,18 @@ cat > /tmp/release-notes.md << 'EOF'
 **Full changelog**: https://github.com/dolphin278/vjuga/compare/v8.0.0...v8.1.0
 EOF
 
-# 4. Bump
-npm version minor -m "chore: release v%s"
+# 4. Bump version and tag with release notes
+npm version minor --no-git-tag-version
+NEW_VERSION=$(node -p "require('./package.json').version")
+git add package.json package-lock.json
+git commit -m "chore: release v${NEW_VERSION}"
+git tag -a "v${NEW_VERSION}" -F /tmp/release-notes.md
 
 # 5. Push
 git push origin master --follow-tags
 
-# 6. Create release
-gh release create "v8.1.0" --title "v8.1.0" --notes-file /tmp/release-notes.md
+# 6. Create release from tag annotation
+gh release create "v8.1.0" --title "v8.1.0" --notes-from-tag
 
 # 7. Verify (give workflow ~2 min to complete)
 gh run list --workflow=publish.yml --limit 1

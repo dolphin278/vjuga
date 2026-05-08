@@ -382,11 +382,7 @@ test("assert() formats large TypedArray counterexample with truncation", () => {
 // ---------------------------------------------------------------------------
 
 test("check() timeoutMs: stops before numRuns when deadline passes", () => {
-  const result = Prop.check(
-    Arb.integer(),
-    () => true,
-    { numRuns: 10_000_000, timeoutMs: 1 },
-  );
+  const result = Prop.check(Arb.integer(), () => true, { numRuns: 10_000_000, timeoutMs: 1 });
   assert.equal(result.ok, true);
   assert.ok(result.numRuns < 10_000_000, `should stop early, got ${result.numRuns}`);
 });

@@ -11,14 +11,11 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as Queue from "../../Queue.js";
 import * as LRU from "../../LRUCache.js";
-import * as PQ from "../../PriorityQueue.js";
 import * as RadixTree from "../../RadixTree.js";
-import * as SOA from "../../SOA.js";
 import * as HTML from "../../HTML.js";
 import * as VJSON from "../../JSON.js";
 import * as Arb from "../../Arbitrary.js";
 import * as Prop from "../../Property.js";
-import * as ST from "../../StatefulTest.js";
 import * as CG from "../../CoverageGuided.js";
 
 // ============================================================================
@@ -315,7 +312,7 @@ test("Memoization: import and fuzz", async () => {
 
   // Test memoize basic correctness
   let callCount = 0;
-  const fn = Memo.memoize((x: number) => {
+  const _fn = Memo.memoize((x: number) => {
     callCount++;
     return x * 2;
   });

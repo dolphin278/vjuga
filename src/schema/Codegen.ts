@@ -113,7 +113,9 @@ export function compileHelper<T>(buf: CodeBuffer, source: string): T {
 /** Build param name and value arrays in a single pass with pre-allocated length. */
 function extractRefs(buf: CodeBuffer): [string[], unknown[]] {
   const size = buf.refs.size;
+  // eslint-disable-next-line unicorn/no-new-array
   const names = new Array<string>(size);
+  // eslint-disable-next-line unicorn/no-new-array
   const values = new Array<unknown>(size);
   let i = 0;
   for (const [k, v] of buf.refs) {

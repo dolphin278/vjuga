@@ -648,11 +648,11 @@ export function subarray<T>(items: readonly T[]): Arbitrary<T[]> {
     }
     const selected = indices.slice(0, len).sort((a, b) => a - b);
     const value = selected.map((i) => items[i]!);
-    return { value, shrinks: shrinkSubarray(value, items) };
+    return { value, shrinks: shrinkSubarray(value) };
   };
 }
 
-function* shrinkSubarray<T>(current: T[], _source: readonly T[]): Iterable<Tree<T[]>> {
+function* shrinkSubarray<T>(current: T[]): Iterable<Tree<T[]>> {
   /* node:coverage ignore next 2 */
   if (current.length === 0) return;
   // Try empty
@@ -660,7 +660,7 @@ function* shrinkSubarray<T>(current: T[], _source: readonly T[]): Iterable<Tree<
   // Remove elements one at a time
   for (let i = current.length - 1; i >= 0; i--) {
     const shorter = [...current.slice(0, i), ...current.slice(i + 1)];
-    yield { value: shorter, shrinks: shrinkSubarray(shorter, _source) };
+    yield { value: shorter, shrinks: shrinkSubarray(shorter) };
   }
 }
 

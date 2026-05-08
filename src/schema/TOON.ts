@@ -269,6 +269,7 @@ function splitByDelimiter(s: string, delim: string, expected?: number): string[]
   const dc = delim.charCodeAt(0);
   if (expected !== undefined) {
     // Pre-allocated path: indexed assignment instead of push
+    // eslint-disable-next-line unicorn/no-new-array
     const result = new Array<string>(expected);
     let idx = 0;
     let start = 0;

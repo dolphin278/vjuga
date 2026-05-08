@@ -139,6 +139,7 @@ export function toArray(bs: BitSet): number[] {
   // This eliminates the push() overhead (length check + possible realloc)
   // and produces a dense SMI array that V8 can store without boxing.
   const n = popcount(bs);
+  // eslint-disable-next-line unicorn/no-new-array
   const result = new Array<number>(n);
   let j = 0;
   for (let w = 0; w < bits.length; w++) {

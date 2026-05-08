@@ -700,6 +700,7 @@ test("fromJsonSchema — not rejected", () => {
 });
 
 test("fromJsonSchema — if/then/else rejected", () => {
+  // eslint-disable-next-line unicorn/no-thenable
   const r = S.fromJsonSchema({ if: { type: "string" }, then: { type: "number" } });
   assert.equal(r[0], false);
 });

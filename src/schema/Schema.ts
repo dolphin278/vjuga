@@ -457,6 +457,7 @@ function buildJsonSchemaNode(s: Schema, built: Map<Schema, JsonSchemaObject>): J
     }
     case "tuple": {
       const items = s.meta.items;
+      // eslint-disable-next-line unicorn/no-new-array
       const prefixItems: JsonSchemaObject[] = new Array(items.length);
       for (let i = 0; i < items.length; i++) prefixItems[i] = built.get(items[i])!;
       return { type: "array", prefixItems, items: false };
@@ -465,6 +466,7 @@ function buildJsonSchemaNode(s: Schema, built: Map<Schema, JsonSchemaObject>): J
       return { type: "object", additionalProperties: built.get(s.meta.values)! };
     case "union": {
       const variants = s.meta.variants;
+      // eslint-disable-next-line unicorn/no-new-array
       const anyOf: JsonSchemaObject[] = new Array(variants.length);
       for (let i = 0; i < variants.length; i++) anyOf[i] = built.get(variants[i])!;
       return { anyOf };
@@ -556,6 +558,7 @@ export function fromJsonSchema(root: JsonSchemaObject): Result<Schema, string> {
           break;
         case 3: {
           // union
+          // eslint-disable-next-line unicorn/no-new-array
           const schemas: Schema[] = new Array(item.count);
           for (let i = item.count - 1; i >= 0; i--) schemas[i] = results.pop()!;
           results.push(union(...schemas));
@@ -563,6 +566,7 @@ export function fromJsonSchema(root: JsonSchemaObject): Result<Schema, string> {
         }
         case 4: {
           // tuple
+          // eslint-disable-next-line unicorn/no-new-array
           const schemas: Schema[] = new Array(item.count);
           for (let i = item.count - 1; i >= 0; i--) schemas[i] = results.pop()!;
           results.push(tuple(...schemas));

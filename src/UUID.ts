@@ -33,6 +33,8 @@ import { randomUUID, getRandomValues } from "node:crypto";
 /** Branded string guaranteed to be a valid UUID. */
 export type UUID = Branded<string, "UUID">;
 
+declare const Bun: { randomUUIDv7: () => string } | undefined;
+
 /**
  * RFC 4122 structural regex with variant-1 constraint.
  * 8-4-4-4-12 hex groups, group 4 starts with 8/9/a/b.
@@ -61,14 +63,7 @@ export function v4(): UUID {
   return randomUUID() as UUID;
 }
 
-/**
- * Generates a v7 UUID (timestamp-sortable) per RFC 9562.
- *
- * Layout (128 bits):
- *   48-bit ms timestamp | 4-bit version (0111) | 12-bit random |
- *   2-bit variant (10)  | 62-bit random
- */
-export function v7(): UUID {
+function _v7Impl(): UUID {
   const ms = Date.now();
   const bytes = new Uint8Array(16);
   getRandomValues(bytes);
@@ -108,6 +103,23 @@ export function v7(): UUID {
     HEX[bytes[14]] +
     HEX[bytes[15]]) as UUID;
 }
+
+/**
+ * Generates a v7 UUID (timestamp-sortable) per RFC 9562.
+ *
+ * Layout (128 bits):
+ *   48-bit ms timestamp | 4-bit version (0111) | 12-bit random |
+ *   2-bit variant (10)  | 62-bit random
+ *
+ * Delegates to `Bun.randomUUIDv7` when running under Bun; falls back to a
+ * manual implementation otherwise.
+ */
+// Bun path is exercised by `npm run test:bun`; Node tests always take _v7Impl.
+/* node:coverage ignore next 4 */
+export const v7: () => UUID =
+  typeof Bun !== "undefined" && typeof Bun.randomUUIDv7 === "function"
+    ? () => Bun.randomUUIDv7() as UUID
+    : _v7Impl;
 
 /** Extracts the version number (4-bit nibble at position 12) from a UUID. */
 export function version(id: UUID): number {

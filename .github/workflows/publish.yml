@@ -20,12 +20,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
-      - run: npm install -g npm@11
-      - name: Confirm npm version
-        run: |
-          which npm
-          npm --version
       - run: npm ci
       - run: npm run build
       - run: npm run verify
-      - run: npm publish --provenance --access public
+      - run: npx --yes npm@^11 publish --provenance --access public

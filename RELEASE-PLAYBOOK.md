@@ -16,7 +16,11 @@ Agent-executable guide for releasing `@dolphin278/vjuga`.
 
 ## Step 1 — Gather changes since last release
 
+Pull tags from the remote before inspecting history — local clones often
+lack remote tags, causing `git describe` to fail:
+
 ```bash
+git fetch --tags origin
 LAST_TAG=$(git describe --tags --abbrev=0)
 echo "Last release: $LAST_TAG"
 git log ${LAST_TAG}..HEAD --format="%H %s%n%b" --no-merges

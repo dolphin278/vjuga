@@ -63,13 +63,6 @@ export function v4(): UUID {
   return randomUUID() as UUID;
 }
 
-/**
- * Generates a v7 UUID (timestamp-sortable) per RFC 9562.
- *
- * Layout (128 bits):
- *   48-bit ms timestamp | 4-bit version (0111) | 12-bit random |
- *   2-bit variant (10)  | 62-bit random
- */
 function _v7Impl(): UUID {
   const ms = Date.now();
   const bytes = new Uint8Array(16);
@@ -111,8 +104,18 @@ function _v7Impl(): UUID {
     HEX[bytes[15]]) as UUID;
 }
 
+/**
+ * Generates a v7 UUID (timestamp-sortable) per RFC 9562.
+ *
+ * Layout (128 bits):
+ *   48-bit ms timestamp | 4-bit version (0111) | 12-bit random |
+ *   2-bit variant (10)  | 62-bit random
+ *
+ * Delegates to `Bun.randomUUIDv7` when running under Bun; falls back to a
+ * manual implementation otherwise.
+ */
 // Bun path is exercised by `npm run test:bun`; Node tests always take _v7Impl.
-/* node:coverage ignore next 2 */
+/* node:coverage ignore next 4 */
 export const v7: () => UUID =
   typeof Bun !== "undefined" && typeof Bun.randomUUIDv7 === "function"
     ? () => Bun.randomUUIDv7() as UUID

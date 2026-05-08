@@ -11,14 +11,11 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as Queue from "../../Queue.js";
 import * as LRU from "../../LRUCache.js";
-import * as PQ from "../../PriorityQueue.js";
 import * as RadixTree from "../../RadixTree.js";
-import * as SOA from "../../SOA.js";
 import * as HTML from "../../HTML.js";
 import * as VJSON from "../../JSON.js";
 import * as Arb from "../../Arbitrary.js";
 import * as Prop from "../../Property.js";
-import * as ST from "../../StatefulTest.js";
 import * as CG from "../../CoverageGuided.js";
 
 // ============================================================================
@@ -313,13 +310,7 @@ test("CoverageGuided: fuzz RadixTree operations never crash", () => {
 test("Memoization: import and fuzz", async () => {
   const Memo = await import("../../Memoization.js");
 
-  // Test memoize basic correctness
   let callCount = 0;
-  const fn = Memo.memoize((x: number) => {
-    callCount++;
-    return x * 2;
-  });
-
   Prop.assert(
     Arb.array(Arb.integer(0, 50), { minLength: 1, maxLength: 100 }),
     (inputs) => {

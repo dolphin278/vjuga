@@ -132,7 +132,7 @@ test("stateful: RadixTree matches Map under random operations", () => {
     initialReal: () => ({ tree: RadixTree.make() }),
     commands: [
       // Insert
-      (model) =>
+      (_model) =>
         Arb.map(Arb.tuple(keyArb, Arb.integer(0, 10000)), ([k, v]) => ({
           name: `insert(${JSON.stringify(k)}, ${v})`,
           check: () => true,

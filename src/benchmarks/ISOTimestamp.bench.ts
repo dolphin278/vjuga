@@ -1,5 +1,3 @@
-declare const Bun: any;
-
 import { bench, run } from "mitata";
 import { reportOptimizationStatus } from "./_v8.js";
 import { now, isoTimestamp, fromDate, toDate, validator } from "../ISOTimestamp.js";

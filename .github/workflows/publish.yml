@@ -20,7 +20,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
-      - run: corepack enable
+      - run: npm install -g npm@11
       - name: Confirm npm version
         run: |
           which npm

@@ -72,6 +72,14 @@ Guidelines:
 - Skip sections with no entries
 - Make it informative — a user upgrading should understand what changed and why it matters
 
+Write the notes to `/tmp/release-notes.md` (Step 4 reads this path):
+
+```bash
+cat > /tmp/release-notes.md << 'EOF'
+<release notes here>
+EOF
+```
+
 ---
 
 ## Step 4 — Bump version and tag with release notes
@@ -84,7 +92,7 @@ git commit -m "chore: release v${NEW_VERSION}"
 git tag -a "v${NEW_VERSION}" -F /tmp/release-notes.md
 ```
 
-`--no-git-tag-version` bumps `package.json` only (no automatic commit or tag). The manual `git tag -a` creates an annotated tag whose message is the release notes from Step 3 — making the tag the single source of truth for release content.
+`--no-git-tag-version` bumps `package.json` and `package-lock.json` (no automatic commit or tag). The manual `git tag -a` creates an annotated tag whose message is the release notes from Step 3 — making the tag the single source of truth for release content.
 
 Verify: `git log --oneline -3` and `git show "v${NEW_VERSION}" | head -30`
 

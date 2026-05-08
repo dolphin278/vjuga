@@ -44,6 +44,15 @@ When in doubt, read the diff: `git diff ${LAST_TAG}..HEAD -- src/`
 
 ## Step 3 — Write release notes
 
+Compute the target version now (substitute the bump type from Step 2) so the changelog URL is correct when you write the notes:
+
+```bash
+LAST_TAG=$(git describe --tags --abbrev=0)
+BUMP=[patch|minor|major]
+NEW_VERSION=$(npx --yes semver -i ${BUMP} $(node -p "require('./package.json').version"))
+echo "Releasing: ${LAST_TAG} → v${NEW_VERSION}"
+```
+
 Use this structure:
 
 ```

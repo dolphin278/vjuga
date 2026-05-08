@@ -3,6 +3,7 @@ name: Publish to npm
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -19,15 +20,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
-      - name: Install npm 11+ via corepack for OIDC Trusted Publishers
-        run: |
-          corepack enable
-          COREPACK_ENABLE_STRICT=0 corepack prepare npm@latest --activate
-          echo "npm version: $(npm --version)"
-      - run: npm set registry https://registry.npmjs.org/
+      - run: corepack enable
       - run: npm ci
       - run: npm run build
       - run: npm run verify
       - run: npm publish --provenance --access public
-        env:
-          NPM_CONFIG_LOGLEVEL: silly

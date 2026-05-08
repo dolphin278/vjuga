@@ -21,6 +21,10 @@ jobs:
         with:
           bun-version: latest
       - run: corepack enable
+      - name: Confirm npm version
+        run: |
+          which npm
+          npm --version
       - run: npm ci
       - run: npm run build
       - run: npm run verify

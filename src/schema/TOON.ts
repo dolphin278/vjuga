@@ -269,7 +269,7 @@ function splitByDelimiter(s: string, delim: string, expected?: number): string[]
   const dc = delim.charCodeAt(0);
   if (expected !== undefined) {
     // Pre-allocated path: indexed assignment instead of push
-    const result = new Array<string>(expected);
+    const result = Array<string>(expected);
     let idx = 0;
     let start = 0;
     let inQuote = false;

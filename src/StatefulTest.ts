@@ -173,13 +173,12 @@ function generateCommandSequence<Model, Real>(
 
   return {
     value: cmdTrees.map((t) => t.value),
-    shrinks: shrinkCommandSequence(cmdTrees, initialModel),
+    shrinks: shrinkCommandSequence(cmdTrees),
   };
 }
 
 function* shrinkCommandSequence<Model, Real>(
   cmdTrees: Tree<Command<Model, Real>>[],
-  _initialModel: () => Model,
 ): Iterable<Tree<Command<Model, Real>[]>> {
   const len = cmdTrees.length;
   /* node:coverage ignore next 2 */
@@ -192,7 +191,7 @@ function* shrinkCommandSequence<Model, Real>(
     const prefix = cmdTrees.slice(0, half);
     yield {
       value: prefix.map((t) => t.value),
-      shrinks: shrinkCommandSequence(prefix, _initialModel),
+      shrinks: shrinkCommandSequence(prefix),
     };
   }
 
@@ -202,7 +201,7 @@ function* shrinkCommandSequence<Model, Real>(
     if (without.length > 0) {
       yield {
         value: without.map((t) => t.value),
-        shrinks: shrinkCommandSequence(without, _initialModel),
+        shrinks: shrinkCommandSequence(without),
       };
     }
   }
@@ -214,7 +213,7 @@ function* shrinkCommandSequence<Model, Real>(
       copy[i] = childTree;
       yield {
         value: copy.map((t) => t.value),
-        shrinks: shrinkCommandSequence(copy, _initialModel),
+        shrinks: shrinkCommandSequence(copy),
       };
     }
   }

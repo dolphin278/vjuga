@@ -113,8 +113,8 @@ export function compileHelper<T>(buf: CodeBuffer, source: string): T {
 /** Build param name and value arrays in a single pass with pre-allocated length. */
 function extractRefs(buf: CodeBuffer): [string[], unknown[]] {
   const size = buf.refs.size;
-  const names = new Array<string>(size);
-  const values = new Array<unknown>(size);
+  const names = Array<string>(size);
+  const values = Array<unknown>(size);
   let i = 0;
   for (const [k, v] of buf.refs) {
     names[i] = k;

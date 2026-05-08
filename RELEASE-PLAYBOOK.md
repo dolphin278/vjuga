@@ -181,6 +181,7 @@ any stored secret.
 
 ```bash
 # 1. Check what changed
+git fetch --tags origin
 LAST_TAG=$(git describe --tags --abbrev=0)
 git log ${LAST_TAG}..HEAD --oneline --no-merges
 # Output:

@@ -102,10 +102,10 @@ npm version [patch|minor|major] --no-git-tag-version
 NEW_VERSION=$(node -p "require('./package.json').version")
 git add package.json package-lock.json
 git commit -m "chore: release v${NEW_VERSION}"
-git tag -a "v${NEW_VERSION}" -F /tmp/release-notes.md
+git tag -a "v${NEW_VERSION}" -F /tmp/release-notes.md --cleanup=whitespace
 ```
 
-`--no-git-tag-version` bumps `package.json` and `package-lock.json` (no automatic commit or tag). The manual `git tag -a` creates an annotated tag whose message is the release notes from Step 3 — making the tag the single source of truth for release content.
+`--no-git-tag-version` bumps `package.json` and `package-lock.json` (no automatic commit or tag). The manual `git tag -a` creates an annotated tag whose message is the release notes from Step 3 — making the tag the single source of truth for release content. `--cleanup=whitespace` prevents git from stripping lines that start with `#` (Markdown headers) as if they were comments.
 
 Verify: `git log --oneline -3` and `git show "v${NEW_VERSION}" | head -30`
 
@@ -214,7 +214,7 @@ npm version minor --no-git-tag-version
 NEW_VERSION=$(node -p "require('./package.json').version")
 git add package.json package-lock.json
 git commit -m "chore: release v${NEW_VERSION}"
-git tag -a "v${NEW_VERSION}" -F /tmp/release-notes.md
+git tag -a "v${NEW_VERSION}" -F /tmp/release-notes.md --cleanup=whitespace
 
 # 5. Push
 git push origin master --follow-tags

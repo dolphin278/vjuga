@@ -310,13 +310,7 @@ test("CoverageGuided: fuzz RadixTree operations never crash", () => {
 test("Memoization: import and fuzz", async () => {
   const Memo = await import("../../Memoization.js");
 
-  // Test memoize basic correctness
   let callCount = 0;
-  const _fn = Memo.memoize((x: number) => {
-    callCount++;
-    return x * 2;
-  });
-
   Prop.assert(
     Arb.array(Arb.integer(0, 50), { minLength: 1, maxLength: 100 }),
     (inputs) => {

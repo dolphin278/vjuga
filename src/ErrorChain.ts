@@ -11,7 +11,7 @@
  *
  * @example
  * ```ts
- * import * as ErrorChain from "vjuga/ErrorChain";
+ * import * as ErrorChain from "@dolphin278/vjuga/ErrorChain";
  * const root = new Error("root", { cause: new Error("inner") });
  * ErrorChain.toArray(root);  // [Error("root"), Error("inner")]
  * ErrorChain.find(root, (e) => e.message === "inner"); // Error("inner")

@@ -17,6 +17,12 @@
  * shorter than ~1ms. For I/O-bound concurrency, async/await +
  * `PromiseUtils.props` is simpler. The worker module must export a `default`
  * function and be a separate file.
+ *
+ * @example
+ * ```ts
+ * import * as WorkerPool from "@dolphin278/vjuga/WorkerPool";
+ * const pool = WorkerPool.make({ filename: new URL("./worker.js", import.meta.url) });
+ * ```
  */
 
 import { Worker, type Transferable } from "node:worker_threads";

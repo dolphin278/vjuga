@@ -26,7 +26,7 @@
  *
  * @example Basic usage — define schema, infer TypeScript type
  * ```ts
- * import * as S from "vjuga/schema/Schema";
+ * import * as S from "@dolphin278/vjuga/schema/Schema";
  * const User = S.object({ id: S.integer(), name: S.string() });
  * type User = S.Infer<typeof User>; // { id: number; name: string }
  * ```

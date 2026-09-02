@@ -20,8 +20,8 @@
  * @example
  * ```ts
  * import { test } from "node:test";
- * import * as Arb from "vjuga/Arbitrary.js";
- * import * as Prop from "vjuga/Property.js";
+ * import * as Arb from "@dolphin278/vjuga/Arbitrary";
+ * import * as Prop from "@dolphin278/vjuga/Property";
  *
  * test("sort is idempotent", () => {
  *   Prop.assert(Arb.array(Arb.integer()), (xs) => {

@@ -14,7 +14,7 @@
  *
  * @example
  * ```ts
- * import { variant, match, is, type TaggedUnion } from "vjuga/TaggedUnion";
+ * import { variant, match, is, type TaggedUnion } from "@dolphin278/vjuga/TaggedUnion";
  *
  * type Shape = TaggedUnion<{ circle: { r: number }; rect: { w: number; h: number } }>;
  * const s: Shape = variant("circle", { r: 5 });

@@ -17,6 +17,14 @@
  * heaps, rate-limited queues. For simple FIFO/LIFO, use `Queue` (lower
  * overhead). For top-k extraction from a large set, `heapify` + k pops is
  * O(n + k log n) — faster than sorting the full array.
+ *
+ * @example
+ * ```ts
+ * import * as PQ from "@dolphin278/vjuga/PriorityQueue";
+ * const q = PQ.make<number>((a, b) => a - b);
+ * PQ.push(q, 3);
+ * PQ.pop(q);
+ * ```
  */
 
 const kItems: unique symbol = Symbol("items");

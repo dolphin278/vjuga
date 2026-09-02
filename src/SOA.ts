@@ -16,7 +16,7 @@
  *
  * @example
  * ```ts
- * import * as SOA from "vjuga/SOA";
+ * import * as SOA from "@dolphin278/vjuga/SOA";
  * const soa: SOA.SOA<{x: number; y: number}> = { x: [1, 2, 3], y: [4, 5, 6] };
  * const view = SOA.createView(soa, 0);
  * view.x;       // 1

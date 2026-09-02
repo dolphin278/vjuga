@@ -17,7 +17,7 @@
  *
  * @example
  * ```ts
- * import { unixTimestamp, fromDate, toDate, now } from "vjuga/UnixTimestamp";
+ * import { unixTimestamp, fromDate, toDate, now } from "@dolphin278/vjuga/UnixTimestamp";
  * const ts = unixTimestamp(1705312200);   // branded
  * const date = toDate(ts);                // Date object
  * const back = fromDate(date);            // UnixTimestamp (floored)

@@ -20,8 +20,8 @@
  *
  * @example
  * ```ts
- * import * as Arb from "vjuga/Arbitrary.js";
- * import * as ST from "vjuga/StatefulTest.js";
+ * import * as Arb from "@dolphin278/vjuga/Arbitrary";
+ * import * as ST from "@dolphin278/vjuga/StatefulTest";
  *
  * ST.assertStateful({
  *   initialModel: () => ({ count: 0 }),

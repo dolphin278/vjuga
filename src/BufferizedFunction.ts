@@ -24,7 +24,7 @@
  *
  * @example
  * ```ts
- * import * as BufferizedFunction from "vjuga/BufferizedFunction";
+ * import * as BufferizedFunction from "@dolphin278/vjuga/BufferizedFunction";
  * const log = BufferizedFunction.make((batch: string[]) => sendLogs(batch));
  * log("a");
  * log("b");

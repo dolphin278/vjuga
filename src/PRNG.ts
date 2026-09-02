@@ -21,7 +21,7 @@
  *
  * @example
  * ```ts
- * import { seed, make, next, nextInt, split } from "vjuga/PRNG.js";
+ * import { seed, make, next, nextInt, split } from "@dolphin278/vjuga/PRNG";
  * const rng = make(seed(42n));
  * const f = next(rng);         // [0, 1) float64
  * const i = nextInt(rng, 1, 6); // 1–6 inclusive

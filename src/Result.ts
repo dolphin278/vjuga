@@ -21,6 +21,13 @@
  * `fromThrowable` / `fromPromise` to wrap third-party APIs that throw. For
  * 3+ variants or when exhaustive pattern matching is more readable, use
  * `TaggedUnion` instead.
+ *
+ * @example
+ * ```ts
+ * import { ok, isOk } from "@dolphin278/vjuga/Result";
+ * const r = ok(1);
+ * if (isOk(r)) r[1];
+ * ```
  */
 
 export type Ok<T> = readonly [true, T];

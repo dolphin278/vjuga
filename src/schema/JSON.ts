@@ -27,8 +27,8 @@
  *
  * @example Compile once at init, call on hot path
  * ```ts
- * import * as S from "vjuga/schema/Schema";
- * import * as SJ from "vjuga/schema/JSON";
+ * import * as S from "@dolphin278/vjuga/schema/Schema";
+ * import * as SJ from "@dolphin278/vjuga/schema/JSON";
  * const User = S.object({ id: S.integer(), name: S.string() });
  * const toJson = SJ.stringify(User);
  * const fromJson = SJ.parse(User);

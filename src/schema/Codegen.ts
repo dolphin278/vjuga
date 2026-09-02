@@ -17,7 +17,7 @@
  *
  * @example Build and compile a simple function
  * ```ts
- * import { createBuffer, emit, emitRef, compileFunction } from "vjuga/schema/Codegen";
+ * import { createBuffer, emit, emitRef, compileFunction } from "@dolphin278/vjuga/schema/Codegen";
  * const buf = createBuffer();
  * emitRef(buf, "_double", (n: number) => n * 2);
  * emit(buf, "return function transform(v) {");

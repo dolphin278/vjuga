@@ -21,7 +21,7 @@
  *
  * @example
  * ```ts
- * import * as HTML from "vjuga/HTML";
+ * import * as HTML from "@dolphin278/vjuga/HTML";
  * HTML.escape('<script>alert("xss")</script>');
  * // "&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;"
  * ```

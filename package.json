@@ -1,6 +1,6 @@
 {
   "name": "@dolphin278/vjuga",
-  "version": "8.2.0",
+  "version": "8.3.0",
   "packageManager": "npm@11.14.0",
   "license": "MIT",
   "repository": {
@@ -8,6 +8,23 @@
     "url": "https://github.com/dolphin278/vjuga.git"
   },
   "exports": {
+    ".": null,
+    "./WorkerPool.worker.js": null,
+    "./WorkerPool.worker": null,
+    "./WorkerPool.protocol.js": null,
+    "./WorkerPool.protocol": null,
+    "./benchmarks/*.js": null,
+    "./benchmarks/*": null,
+    "./tests/*.js": null,
+    "./tests/*": null,
+    "./schema/*.js": {
+      "types": "./src/schema/*.d.ts",
+      "default": "./src/schema/*.js"
+    },
+    "./schema/*": {
+      "types": "./src/schema/*.d.ts",
+      "default": "./src/schema/*.js"
+    },
     "./*.js": {
       "types": "./src/*.d.ts",
       "default": "./src/*.js"
@@ -45,6 +62,7 @@
     "profile:cpu:bun": "bun --cpu-prof --cpu-prof-md",
     "profile:heap:bun": "bun --heap-prof --heap-prof-md",
     "profile:mem:bun": "MIMALLOC_SHOW_STATS=1 bun",
+    "prepack": "npm run build",
     "postpack": "npm run clean"
   },
   "devDependencies": {
@@ -62,6 +80,8 @@
     "node": ">=22.0.0"
   },
   "files": [
+    "AGENTS.md",
+    "llms.txt",
     "src/*.js",
     "src/*.d.ts",
     "src/schema/*.js",

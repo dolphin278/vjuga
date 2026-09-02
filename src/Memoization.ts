@@ -18,7 +18,7 @@
  *
  * @example
  * ```ts
- * import * as Memoization from "vjuga/Memoization";
+ * import * as Memoization from "@dolphin278/vjuga/Memoization";
  * const expensive = Memoization.memoize((n: number) => fibonacci(n));
  * expensive(40); // computed
  * expensive(40); // cached

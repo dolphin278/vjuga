@@ -29,7 +29,7 @@
  *
  * @example
  * ```ts
- * import * as BF from "vjuga/BloomFilter.js";
+ * import * as BF from "@dolphin278/vjuga/BloomFilter";
  * const bf = BF.make(10_000, 0.01);   // 10k items, 1% FPR
  * BF.add(bf, "user:42");
  * BF.mightContain(bf, "user:42");     // true (always)

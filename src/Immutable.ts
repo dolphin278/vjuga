@@ -14,7 +14,7 @@
  *
  * @example
  * ```ts
- * import * as Immutable from "vjuga/Immutable";
+ * import * as Immutable from "@dolphin278/vjuga/Immutable";
  * const config = Immutable.make({ host: "localhost", port: 3000 });
  * // config.port = 8080;  // TS error: Cannot assign to 'port' — readonly
  * ```

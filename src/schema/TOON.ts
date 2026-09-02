@@ -18,8 +18,8 @@
  *
  * @example Basic object — key: value format, one field per line
  * ```ts
- * import * as S from "vjuga/schema/Schema";
- * import * as ST from "vjuga/schema/TOON";
+ * import * as S from "@dolphin278/vjuga/schema/Schema";
+ * import * as ST from "@dolphin278/vjuga/schema/TOON";
  * const User = S.object({ id: S.integer(), name: S.string() });
  * const toToon = ST.stringify(User);
  * const fromToon = ST.parse(User);

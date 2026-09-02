@@ -17,7 +17,7 @@
  *
  * @example
  * ```ts
- * import { uuid, v4, v7, version } from "vjuga/UUID";
+ * import { uuid, v4, v7, version } from "@dolphin278/vjuga/UUID";
  * const id = uuid("550e8400-e29b-41d4-a716-446655440000"); // validated
  * const random = v4();                                      // crypto.randomUUID()
  * const timeSorted = v7();                                  // timestamp-sortable

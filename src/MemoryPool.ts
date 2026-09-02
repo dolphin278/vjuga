@@ -20,7 +20,7 @@
  *
  * @example
  * ```ts
- * import * as MemoryPool from "vjuga/MemoryPool";
+ * import * as MemoryPool from "@dolphin278/vjuga/MemoryPool";
  * const pool = MemoryPool.make({ factory: () => [], reset: (a) => { a.length = 0; } });
  * const arr = MemoryPool.acquire(pool);
  * arr.push(1, 2, 3);

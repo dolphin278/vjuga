@@ -16,7 +16,7 @@
  *
  * @example
  * ```ts
- * import * as FunctionReference from "vjuga/FunctionReference";
+ * import * as FunctionReference from "@dolphin278/vjuga/FunctionReference";
  * const fn = await FunctionReference.resolve("./handlers.ts#processItem");
  * await fn(data);
  * ```

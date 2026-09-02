@@ -24,7 +24,7 @@
  *
  * @example
  * ```ts
- * import * as HttpServer from "vjuga/HttpServer";
+ * import * as HttpServer from "@dolphin278/vjuga/HttpServer";
  * const server = HttpServer.make((req, socket) => {
  *   if (req.method === HttpServer.GET && req.url === "/health")
  *     HttpServer.respond(socket, 200, '{"ok":true}');

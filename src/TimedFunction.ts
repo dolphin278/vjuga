@@ -1,6 +1,3 @@
-import * as Ref from "./Ref.js";
-import type { Fn } from "./FunctionUtils.js";
-
 /**
  * TimedFunction — leading-edge throttle and trailing-edge debounce.
  *
@@ -16,11 +13,14 @@ import type { Fn } from "./FunctionUtils.js";
  *
  * @example
  * ```ts
- * import * as TimedFunction from "vjuga/TimedFunction";
+ * import * as TimedFunction from "@dolphin278/vjuga/TimedFunction";
  * const throttled = TimedFunction.throttle(onScroll, 100);
  * const debounced = TimedFunction.debounce(onSearchInput, 300);
  * ```
  */
+
+import * as Ref from "./Ref.js";
+import type { Fn } from "./FunctionUtils.js";
 
 /**
  * Returns a throttled version of `fn` that fires at most once per `ms`

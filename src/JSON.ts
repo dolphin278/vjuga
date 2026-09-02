@@ -15,7 +15,7 @@
  *
  * @example
  * ```ts
- * import * as JSON from "vjuga/JSON";
+ * import * as JSON from "@dolphin278/vjuga/JSON";
  * const result = JSON.safeParse('{"a":1}');     // Ok<JSONValue>
  * const value  = JSON.parse('{"a":1}');         // JSONValue | undefined
  * const str    = JSON.stringify({ a: 1 });      // string

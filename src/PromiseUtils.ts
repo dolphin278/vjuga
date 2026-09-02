@@ -8,7 +8,7 @@
  *
  * @example
  * ```ts
- * import * as PromiseUtils from "vjuga/PromiseUtils";
+ * import * as PromiseUtils from "@dolphin278/vjuga/PromiseUtils";
  * const { user, posts } = await PromiseUtils.props({
  *   user: fetchUser(id),
  *   posts: fetchPosts(id),

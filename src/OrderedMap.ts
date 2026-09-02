@@ -28,7 +28,7 @@
  *
  * @example
  * ```ts
- * import * as OM from "vjuga/OrderedMap.js";
+ * import * as OM from "@dolphin278/vjuga/OrderedMap";
  * const m = OM.make<string, number>();
  * OM.set(m, "b", 2); OM.set(m, "a", 1); OM.set(m, "c", 3);
  * [...OM.keys(m)];                // ["a", "b", "c"]

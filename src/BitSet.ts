@@ -19,7 +19,7 @@
  *
  * @example
  * ```ts
- * import * as BitSet from "vjuga/BitSet.js";
+ * import * as BitSet from "@dolphin278/vjuga/BitSet";
  * const bs = BitSet.make(64);
  * BitSet.set(bs, 5);
  * BitSet.set(bs, 63);

@@ -23,8 +23,8 @@
  *
  * @example
  * ```ts
- * import * as Arb from "vjuga/Arbitrary.js";
- * import * as CG from "vjuga/CoverageGuided.js";
+ * import * as Arb from "@dolphin278/vjuga/Arbitrary";
+ * import * as CG from "@dolphin278/vjuga/CoverageGuided";
  *
  * const result = CG.fuzz(Arb.string(), (input) => {
  *   myParser(input); // crashes on certain inputs

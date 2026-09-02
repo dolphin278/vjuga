@@ -30,6 +30,12 @@
  * cache hits — entries can disappear at any GC cycle once all external
  * references are dropped. For deterministic capacity-bounded caching, use
  * `LRUCache`. Values must be objects; primitives are rejected by `WeakRef`.
+ *
+ * @example
+ * ```ts
+ * import * as WeakCache from "@dolphin278/vjuga/WeakCache";
+ * const cache = WeakCache.make<string, object>();
+ * ```
  */
 
 const kEntries: unique symbol = Symbol("entries");

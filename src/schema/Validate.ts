@@ -18,8 +18,8 @@
  *
  * @example Compile once, validate many
  * ```ts
- * import * as S from "vjuga/schema/Schema";
- * import { validate } from "vjuga/schema/Validate";
+ * import * as S from "@dolphin278/vjuga/schema/Schema";
+ * import { validate } from "@dolphin278/vjuga/schema/Validate";
  *
  * const checkUser = validate(S.object({
  *   id: S.integer(),

@@ -24,7 +24,7 @@
  *
  * @example
  * ```ts
- * import * as Queue from "vjuga/Queue";
+ * import * as Queue from "@dolphin278/vjuga/Queue";
  * const q = Queue.make<number>();
  * Queue.push(q, 1);
  * Queue.push(q, 2);

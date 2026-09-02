@@ -16,6 +16,14 @@
  *
  * Contract: the batch function must return exactly as many `PromiseSettledResult`
  * items as it received — a length mismatch throws at runtime.
+ *
+ * @example
+ * ```ts
+ * import { make } from "@dolphin278/vjuga/BatchExecutor";
+ * const getUser = make(async (ids: string[]) =>
+ *   ids.map((id) => ({ status: "fulfilled" as const, value: id })),
+ * );
+ * ```
  */
 
 import { make as makeBufferizedFn, type ScheduleMode } from "./BufferizedFunction.js";

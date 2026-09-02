@@ -22,10 +22,6 @@
  * and are plain arrays (not typed arrays) to support arbitrary K and V types
  * while remaining monomorphic at each call site.
  *
- * detach() and insertAfterSentinel() are module-level free functions (not per-
- * instance closures) so V8 ICs for those call sites remain monomorphic across
- * all LRUCache instances — every instance has the same struct shape.
- *
  * When to use: bounded caches where recency proxies usefulness — memoized
  * computations, DNS results, rendered templates, parsed queries. Always set
  * `capacity` explicitly; an unbounded `Map` is simpler when the key space is
@@ -33,6 +29,13 @@
  * released under memory pressure, prefer `WeakCache`. To memoize with a
  * bounded LRU cache, pass an LRUCache-backed `Map` to `Memoization.memoize`
  * via `opts.cache`.
+ *
+ * @example
+ * ```ts
+ * import * as LRUCache from "@dolphin278/vjuga/LRUCache";
+ * const cache = LRUCache.make<string, number>(100);
+ * LRUCache.set(cache, "a", 1);
+ * ```
  */
 
 const kPrev: unique symbol = Symbol("prev");

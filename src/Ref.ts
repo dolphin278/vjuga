@@ -13,7 +13,7 @@
  *
  * @example
  * ```ts
- * import * as Ref from "vjuga/Ref";
+ * import * as Ref from "@dolphin278/vjuga/Ref";
  * const counter = Ref.make(0);
  * Ref.set(counter, Ref.get(counter) + 1);
  * Ref.get(counter); // 1

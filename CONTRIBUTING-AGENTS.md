@@ -12,10 +12,18 @@ and resource management utilities.
 
 ## Start Here
 
-- Use [AGENTS.md](./AGENTS.md) for repo orientation and module selection.
+- Use [AGENTS.md](./AGENTS.md) for package orientation and module selection.
 - Use [llms.txt](./llms.txt) for the full public module index.
 - Treat `.claude/` as Claude-specific tool configuration only, not project
   policy.
+- `CLAUDE.md` is a Claude-specific discovery file. It is not the source of
+  truth for repo rules.
+
+`AGENTS.md` and `llms.txt` ship in the npm tarball. Do not link unpublished
+repo files (this document, `CLAUDE.md`) from them or from `README.md`. Keep
+those two files valid for an agent that only has `node_modules/@dolphin278/vjuga`.
+When editing this repository, the source of truth is `src/<Module>.ts` (and
+`src/schema/<Module>.ts`), not the generated `.d.ts`.
 
 ## Optional Skill
 
@@ -47,7 +55,8 @@ npx skills add dolphin278/prj-4187-skills --skill dolphin278-craft -y
   with a JSDoc block before imports or code.
 - **Keep AI-facing docs in sync** when public modules change. Update
   [llms.txt](./llms.txt) and the relevant tables in [AGENTS.md](./AGENTS.md) in
-  the same change as any public module addition or removal.
+  the same change as any public module addition or removal. JSDoc `@example`
+  imports must use `@dolphin278/vjuga/<Module>`, not `vjuga/<Module>`.
 
 ## Testing
 

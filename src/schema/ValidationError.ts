@@ -10,8 +10,8 @@
  *
  * @example Custom validator function
  * ```ts
- * import { ValidationError, type Validator } from "vjuga/schema/ValidationError";
- * import { ok, err } from "vjuga/Result";
+ * import { ValidationError, type Validator } from "@dolphin278/vjuga/schema/ValidationError";
+ * import { ok, err } from "@dolphin278/vjuga/Result";
  * const isEmail: Validator<string> = (value) => {
  *   if (typeof value !== "string") return err(new ValidationError("email string", value));
  *   if (!value.includes("@")) return err(new ValidationError("valid email", value));

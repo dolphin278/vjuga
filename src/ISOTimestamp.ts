@@ -21,7 +21,7 @@
  *
  * @example
  * ```ts
- * import { isoTimestamp, fromDate, toDate, now } from "vjuga/ISOTimestamp";
+ * import { isoTimestamp, fromDate, toDate, now } from "@dolphin278/vjuga/ISOTimestamp";
  * const ts = isoTimestamp("2024-01-15T10:30:00.000Z"); // branded
  * const date = toDate(ts);                              // Date object
  * const back = fromDate(date);                          // ISOTimestamp

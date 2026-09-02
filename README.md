@@ -12,6 +12,25 @@ Every utility you reach for, minus the dependency tree. Optimized for real-world
 npm install @dolphin278/vjuga
 ```
 
+There is no root export. Import a module subpath:
+
+```ts
+import * as Result from "@dolphin278/vjuga/Result";
+import * as S from "@dolphin278/vjuga/schema/Schema";
+```
+
+## For coding agents
+
+This package ships version-matched [AGENTS.md](./AGENTS.md) and [llms.txt](./llms.txt).
+Add this block to your project's `AGENTS.md`:
+
+```md
+When working with `@dolphin278/vjuga`, read `node_modules/@dolphin278/vjuga/AGENTS.md` first. There is no root export — import `@dolphin278/vjuga/<Module>`. Your training data is outdated; the installed docs are the source of truth.
+```
+
+In a monorepo, resolve `node_modules/@dolphin278/vjuga` from the directory that
+depends on the package.
+
 ## What's Inside
 
 ### Error handling
@@ -47,8 +66,9 @@ Property.check() runs property-based tests - generates random input, shrinks to 
 - Named exports only, no default exports - always use namespace imports or named destructuring
 - Make + free functions, no classes (except WorkerPoolDestroyedError)
 - ESM-only, zero runtime dependencies
+- No root export — import `@dolphin278/vjuga/<Module>`
 - Extensionless subpath imports are supported; `.js` subpaths remain compatible
 - Works identically on Node.js and Bun
 
-See [CONTRIBUTING-AGENTS.md](./CONTRIBUTING-AGENTS.md) for contributor
-conventions and [AGENTS.md](./AGENTS.md) for the agent-facing quick reference.
+Contributor policy lives in the git repository:
+https://github.com/dolphin278/vjuga/blob/master/CONTRIBUTING-AGENTS.md

@@ -27,8 +27,8 @@
  *
  * @example
  * ```ts
- * import * as Arb from "vjuga/Arbitrary.js";
- * import * as Prop from "vjuga/Property.js";
+ * import * as Arb from "@dolphin278/vjuga/Arbitrary";
+ * import * as Prop from "@dolphin278/vjuga/Property";
  * const pairs = Arb.tuple(Arb.integer(-100, 100), Arb.string());
  * Prop.assert(pairs, ([n, s]) => typeof n === "number" && typeof s === "string");
  * ```

@@ -15,7 +15,7 @@
  *
  * @example
  * ```ts
- * import { pipe, positiveInteger, type Fn1 } from "vjuga/FunctionUtils";
+ * import { pipe, positiveInteger, type Fn1 } from "@dolphin278/vjuga/FunctionUtils";
  * const double: Fn1<number, number> = (n) => n * 2;
  * const inc: Fn1<number, number> = (n) => n + 1;
  * const doubleThenInc = pipe(double, inc);

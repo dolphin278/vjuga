@@ -11,7 +11,7 @@ After install, read [AGENTS.md](./AGENTS.md) then one file:
 
 ## Error Handling
 
-- `@dolphin278/vjuga/Result.js`: `Result<T,E>` — tuple-encoded discriminated union `[boolean, T|E]` for fallible operations. `ok(v)` / `err(e)` constructors; `isOk`, `isErr`, `map`, `flatMap`, `unwrapOr`, `fromThrowable`, `fromPromise`. Return errors as values instead of throwing. For 3+ variants use `TaggedUnion`.
+- `@dolphin278/vjuga/Result.js`: `Result<T,E>` — tuple-encoded discriminated union `[boolean, T|E]` for fallible operations. `ok(v)` / `err(e)` constructors (`const` type params, so `ok(true)` is `Ok<true>`); `isOk`, `isErr`, `map`, `flatMap`, `unwrapOr`, `fromThrowable`, `fromPromise`. Return errors as values instead of throwing. For 3+ variants use `TaggedUnion`.
 - `@dolphin278/vjuga/ErrorChain.js`: `ErrorChain` — traverse ES2022 `Error.cause` chains. `chain(e)` → iterator, `toArray(e)`, `find(e, predicate)`. Use when inspecting or searching a wrapped error chain.
 
 ## Data Structures

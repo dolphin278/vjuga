@@ -10,10 +10,36 @@ test("ok() creates an Ok tuple", () => {
   assert.equal(r[1], 42);
 });
 
+test("ok() infers Ok<true> from a true literal and Ok<boolean> from a boolean", () => {
+  const literal = Result.ok(true);
+  const asTrue: Result.Ok<true> = literal;
+  asTrue satisfies Result.Ok<true>;
+  assert.deepEqual(asTrue, [true, true]);
+
+  const flag: boolean = true;
+  const widened = Result.ok(flag);
+  const asBoolean: Result.Ok<boolean> = widened;
+  asBoolean satisfies Result.Ok<boolean>;
+  assert.deepEqual(asBoolean, [true, true]);
+});
+
 test("err() creates an Err tuple", () => {
   const r = Result.err("oops");
   assert.equal(r[0], false);
   assert.equal(r[1], "oops");
+});
+
+test('err() infers Err<"x"> from a string literal and Err<string> from a string', () => {
+  const literal = Result.err("x");
+  const asLiteral: Result.Err<"x"> = literal;
+  asLiteral satisfies Result.Err<"x">;
+  assert.deepEqual(asLiteral, [false, "x"]);
+
+  const message: string = "x";
+  const widened = Result.err(message);
+  const asString: Result.Err<string> = widened;
+  asString satisfies Result.Err<string>;
+  assert.deepEqual(asString, [false, "x"]);
 });
 
 test("isOk() returns true for Ok, false for Err", () => {

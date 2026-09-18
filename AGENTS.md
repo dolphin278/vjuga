@@ -37,7 +37,7 @@ Add that paragraph to your app's `AGENTS.md`. In a monorepo, resolve `node_modul
 
 | Goal | Module | Key exports |
 |---|---|---|
-| Return errors without throwing | `Result` | `ok`, `err`, `isOk`, `isErr`, `map`, `flatMap`, `unwrapOr`, `fromThrowable`, `fromPromise` |
+| Return errors without throwing | `Result` | `ok`, `err` (`const` type params: `ok(true)` is `Ok<true>`), `isOk`, `isErr`, `map`, `flatMap`, `unwrapOr`, `fromThrowable`, `fromPromise` |
 | Model 3+ variants (sum type) | `TaggedUnion` | `variant`, `match`, `is` |
 | Walk a nested `Error.cause` chain | `ErrorChain` | `chain`, `toArray`, `find` |
 

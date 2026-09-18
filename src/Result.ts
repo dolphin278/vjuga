@@ -36,15 +36,17 @@ export type Result<T, E> = Ok<T> | Err<E>;
 
 /**
  * Constructs an Ok result wrapping `value`.
+ * `T` is a const type parameter, so `ok(true)` is `Ok<true>`.
  */
-export function ok<T>(value: T): Ok<T> {
+export function ok<const T>(value: T): Ok<T> {
   return [true, value];
 }
 
 /**
  * Constructs an Err result wrapping `error`.
+ * `E` is a const type parameter, so `err("x")` is `Err<"x">`.
  */
-export function err<E>(error: E): Err<E> {
+export function err<const E>(error: E): Err<E> {
   return [false, error];
 }
 

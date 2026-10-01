@@ -106,3 +106,25 @@ test("io schedule mode: batches via setImmediate with lower latency", async () =
     [4, 5],
   ]);
 });
+
+test("2000 concurrent calls in one batch all resolve (no in-flight limit, no sync throw)", async () => {
+  const batches: number[] = [];
+  const fn = make(async (args: number[]) => {
+    batches.push(args.length);
+    return args.map((v) => ({ status: "fulfilled" as const, value: v + 1 }));
+  });
+  const promises: Promise<number>[] = [];
+  for (let i = 0; i < 2000; i++) promises.push(fn(i));
+  const results = await Promise.all(promises);
+  assert.equal(results.length, 2000);
+  assert.equal(results[1999], 2000);
+  assert.deepEqual(batches, [2000]);
+});
+
+test("batch function that rejects rejects every promise", async () => {
+  const fn = make<number, number>(async () => {
+    throw new Error("down");
+  });
+  const results = await Promise.allSettled([fn(1), fn(2)]);
+  assert.ok(results.every((r) => r.status === "rejected"));
+});

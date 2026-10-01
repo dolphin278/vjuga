@@ -15,7 +15,9 @@
  *   - `"io"`: fires via `setImmediate` after the I/O poll phase (lower latency).
  *
  * Contract: the batch function must return exactly as many `PromiseSettledResult`
- * items as it received — a length mismatch throws at runtime.
+ * items as it received. On a length mismatch, or if the batch function throws or
+ * rejects, every promise of that batch rejects with the error; the returned
+ * function never throws synchronously and has no in-flight call limit.
  *
  * @example
  * ```ts
@@ -27,13 +29,13 @@
  */
 
 import { make as makeBufferizedFn, type ScheduleMode } from "./BufferizedFunction.js";
-import * as MemoryPool from "./MemoryPool.js";
 import type { Fn1 } from "./FunctionUtils.js";
 
 /** Lifted to module scope — no inner interfaces in TS. */
 interface Request<T, R> {
-  arg: T | null;
-  deferred: PromiseWithResolvers<R> | null;
+  readonly arg: T;
+  readonly resolve: (value: R) => void;
+  readonly reject: (reason: unknown) => void;
 }
 
 /**
@@ -56,23 +58,12 @@ export function make<T, R>(
   fn: Fn1<T[], Promise<PromiseSettledResult<R>[]>>,
   schedule?: ScheduleMode,
 ): (arg: T) => Promise<R> {
-  const RequestPool = MemoryPool.make<Request<T, R>>({
-    factory: () => ({
-      arg: null,
-      deferred: null,
-    }),
-    reset: (request) => {
-      request.arg = null;
-      request.deferred = null;
-    },
-  });
-
   const worker = makeBufferizedFn(async (args: Request<T, R>[]): Promise<void> => {
     let i = 0;
     try {
       const invocationArgs = Array<T>(args.length);
       for (let i = 0; i < args.length; i++) {
-        invocationArgs[i] = args[i].arg as T;
+        invocationArgs[i] = args[i].arg;
       }
 
       const result = await Reflect.apply(fn, void 0, [invocationArgs]);
@@ -87,29 +78,22 @@ export function make<T, R>(
         const res = result[i];
         // external API boundary: PromiseSettledResult discriminant
         if (res.status === "fulfilled") {
-          args[i].deferred!.resolve(res.value);
+          args[i].resolve(res.value);
         } else {
-          args[i].deferred!.reject(res.reason);
+          args[i].reject(res.reason);
         }
       }
     } catch (err) {
       // Reject rest of the requests
       for (let k = i; k < args.length; k++) {
-        args[k].deferred!.reject(err);
-      }
-    } finally {
-      for (let i = 0; i < args.length; i++) {
-        MemoryPool.release(RequestPool, args[i]);
+        args[k].reject(err);
       }
     }
   }, schedule);
 
   return function (arg: T): Promise<R> {
-    const deferred = Promise.withResolvers<R>();
-    const request = MemoryPool.acquire(RequestPool);
-    request.arg = arg;
-    request.deferred = deferred;
-    (worker as (req: Request<T, R>) => void)(request);
-    return deferred.promise;
+    return new Promise<R>((resolve, reject) => {
+      (worker as (req: Request<T, R>) => void)({ arg, resolve, reject });
+    });
   };
 }

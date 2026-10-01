@@ -1233,6 +1233,9 @@ function lowerTyped(
   }
 }
 
+/** Pattern constructs that only mean the same thing in unicode mode. */
+const UNICODE_ONLY = /\\[pP]\{|\\u\{|[\uD800-\uDFFF]/;
+
 function lowerString(ctx: LowerCtx, js: Record<string, unknown>): Schema {
   const c: Record<string, unknown> = {};
   let hasConstraints = false;
@@ -1249,7 +1252,14 @@ function lowerString(ctx: LowerCtx, js: Record<string, unknown>): Schema {
   if (Object.hasOwn(js, "pattern")) {
     const pattern = js.pattern;
     if (typeof pattern !== "string") fail(ctx, "pattern must be a string");
+    // Validate compiles without the `u` flag. Require unicode-mode validity
+    // (JSON Schema's dialect) and reject the constructs whose meaning differs
+    // between the two modes, so an Ok schema never silently mismatches.
+    if (UNICODE_ONLY.test(pattern)) {
+      fail(ctx, "pattern needs unicode mode (\\p{..}, \\u{..} or astral characters)");
+    }
     try {
+      new RegExp(pattern, "u");
       new RegExp(pattern);
     } catch {
       fail(ctx, "invalid pattern " + JSON.stringify(pattern));

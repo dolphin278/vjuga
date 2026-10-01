@@ -98,3 +98,47 @@ test("is() narrows correctly in conditional chain", () => {
   assert.equal(TU.is(s, "square"), true);
   assert.equal(TU.is(s, "point"), false);
 });
+
+// --- match: handler lookup safety (G1-7) ---
+
+test("match() throws a clear TypeError for a tag with no handler", () => {
+  const u = TU.variant("nope", 1) as unknown as { tag: "a"; value: number };
+  assert.throws(
+    () => TU.match(u, { a: (v: number) => v }),
+    (e: Error) => e instanceof TypeError && /no handler for tag nope/.test(e.message),
+  );
+});
+
+test("match() does not dispatch inherited Object.prototype members", () => {
+  for (const tag of ["constructor", "toString", "hasOwnProperty", "__proto__"]) {
+    const u = TU.variant(tag, 1) as unknown as { tag: "a"; value: number };
+    assert.throws(() => TU.match(u, { a: (v: number) => v }), TypeError);
+  }
+});
+
+test("match() dispatches an own handler named like an Object.prototype member", () => {
+  const u = TU.variant("constructor", 5) as unknown as { tag: "constructor"; value: number };
+  assert.equal(TU.match(u, { constructor: (v: number) => v * 2 }), 10);
+});
+
+test("match() throws for a symbol tag without handler", () => {
+  const u = TU.variant(Symbol("s"), 1) as unknown as { tag: "a"; value: number };
+  assert.throws(() => TU.match(u, { a: (v: number) => v }), /no handler for tag Symbol\(s\)/);
+});
+
+test("match() throws for a non-function own handler", () => {
+  const u = TU.variant("a", 1) as unknown as { tag: "a"; value: number };
+  assert.throws(() => TU.match(u, { a: 3 as unknown as (v: number) => number }), TypeError);
+});
+
+// --- docstring example compiles (G10-10) ---
+
+test("docstring example", () => {
+  type S = TU.TaggedUnion<{ circle: { r: number }; rect: { w: number; h: number } }>;
+  const s = TU.variant("circle", { r: 5 }) as S;
+  const area = TU.match(s, {
+    circle: (v) => Math.PI * v.r ** 2,
+    rect: (v) => v.w * v.h,
+  });
+  assert.equal(area, Math.PI * 25);
+});

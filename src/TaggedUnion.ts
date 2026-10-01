@@ -17,10 +17,11 @@
  * import { variant, match, is, type TaggedUnion } from "@dolphin278/vjuga/TaggedUnion";
  *
  * type Shape = TaggedUnion<{ circle: { r: number }; rect: { w: number; h: number } }>;
- * const s: Shape = variant("circle", { r: 5 });
+ * // Cast (or take `s: Shape` as a parameter) so TS does not narrow to `circle`.
+ * const s = variant("circle", { r: 5 }) as Shape;
  * const area = match(s, {
  *   circle: (v) => Math.PI * v.r ** 2,
- *   rect:   (v) => v.w * v.h,
+ *   rect: (v) => v.w * v.h,
  * });
  * ```
  */
@@ -53,6 +54,10 @@ export function variant<K extends PropertyKey, V>(
  * The handler map must cover every variant tag — TypeScript will error at
  * compile time if a case is missing. Each handler receives the variant's
  * `value` and must return `R`.
+ *
+ * Handlers must be own properties of `handlers`. A tag without an own handler
+ * function — including one that only resolves to an inherited member such as
+ * `"constructor"` or `"toString"` — throws a TypeError naming the tag.
  */
 export function match<T extends { readonly tag: PropertyKey; readonly value: unknown }, R>(
   union: T,
@@ -60,9 +65,14 @@ export function match<T extends { readonly tag: PropertyKey; readonly value: unk
     [K in T["tag"]]: (value: Extract<T, { readonly tag: K }>["value"]) => R;
   },
 ): R {
-  return Reflect.apply((handlers as Record<PropertyKey, (v: unknown) => R>)[union.tag], undefined, [
-    union.value,
-  ]);
+  const tag = union.tag;
+  const handler = (handlers as Record<PropertyKey, (v: unknown) => R>)[tag];
+  // Own-property check: `handlers["constructor"]` etc. must not hit Object.prototype.
+  // (Measured faster than comparing against Object.prototype[tag], which is a megamorphic load.)
+  if (typeof handler !== "function" || !Object.hasOwn(handlers, tag)) {
+    throw new TypeError(`TaggedUnion.match: no handler for tag ${String(tag)}`);
+  }
+  return Reflect.apply(handler, undefined, [union.value]);
 }
 
 /**

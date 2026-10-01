@@ -239,3 +239,53 @@ test("discriminant at [0] narrows the union correctly", () => {
   }
   /* node:coverage enable */
 });
+
+// --- G1-6: never throw synchronously / never reject (except throwing mapper) ---
+
+test("fromAsyncThrowable() turns a synchronous throw into Err", async () => {
+  const wrapped = Result.fromAsyncThrowable((): Promise<number> => {
+    throw new Error("sync");
+  });
+  const p = wrapped();
+  assert.ok(p instanceof Promise);
+  const r = await p;
+  assert.equal(r[0], false);
+  assert.equal((r[1] as Error).message, "sync");
+});
+
+test("fromAsyncThrowable() accepts a non-thenable return value", async () => {
+  const wrapped = Result.fromAsyncThrowable((() => 5) as unknown as () => Promise<number>);
+  assert.deepEqual(await wrapped(), [true, 5]);
+});
+
+test("fromPromise() accepts a non-thenable value", async () => {
+  assert.deepEqual(await Result.fromPromise(7 as unknown as Promise<number>), [true, 7]);
+});
+
+test("a throwing mapErrFn rejects (is not swallowed), even for sync throws", async () => {
+  const boom = (): never => {
+    throw new Error("mapper");
+  };
+  await assert.rejects(Result.fromPromise(Promise.reject(new Error("x")), boom), /mapper/);
+  const wrapped = Result.fromAsyncThrowable((): Promise<number> => {
+    throw new Error("sync");
+  }, boom);
+  await assert.rejects(wrapped(), /mapper/);
+});
+
+// --- G1-9: unwrap on non-stringifiable payload ---
+
+test("unwrap() on a null-prototype payload throws a generic Error with cause", () => {
+  const payload = Object.create(null) as object;
+  assert.throws(
+    () => Result.unwrap(Result.err(payload)),
+    (e: Error) => e instanceof Error && e.cause === payload && /not stringifiable/.test(e.message),
+  );
+});
+
+// --- G1-10: documented const-T behaviour (type-level) ---
+
+test("ok() with an explicit type argument is assignable to a mutable Result", () => {
+  const r: Result.Result<{ a: number[] }, string> = Result.ok<{ a: number[] }>({ a: [1] });
+  assert.deepEqual(r, [true, { a: [1] }]);
+});

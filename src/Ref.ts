@@ -33,3 +33,13 @@ export interface RefCell<T> {
 export function make<T>(contents: T): RefCell<T> {
   return { contents };
 }
+
+/** Returns the current contents of `ref`. */
+export function get<T>(ref: RefCell<T>): T {
+  return ref.contents;
+}
+
+/** Replaces the contents of `ref` with `value`. */
+export function set<T>(ref: RefCell<T>, value: T): void {
+  ref.contents = value;
+}

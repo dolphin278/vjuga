@@ -620,7 +620,7 @@ test("FunctionUtils: pipe with 4 and 5 functions", async () => {
 test("FunctionUtils: pipe variadic (>5 functions)", async () => {
   const FU = await import("../../FunctionUtils.js");
 
-  const fns = [
+  const fns: [(x: number) => number, ...((x: number) => number)[]] = [
     (x: number) => x + 1,
     (x: number) => x * 2,
     (x: number) => x - 3,

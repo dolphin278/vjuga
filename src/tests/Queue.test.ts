@@ -219,6 +219,49 @@ test("tryToShrinkList shrinks backing array when < 25% occupied (via pop)", () =
   assert.equal(size(queue), N - 14002);
 });
 
+const capacityOf = (q: object): number => {
+  const sym = Object.getOwnPropertySymbols(q).find((s) => s.description === "list")!;
+  return ((q as Record<symbol, unknown[]>)[sym] as unknown[]).length;
+};
+
+test("shrinks while wrapped (tail < head), preserving order", () => {
+  const queue = make<number>();
+  const L = 1 << 16;
+  let next = 0;
+  const model: number[] = [];
+  for (let i = 0; i < L / 2; i++) {
+    push(queue, next);
+    model.push(next++);
+  }
+  // FIFO steady state wraps the buffer.
+  for (let i = 0; i < L - 50; i++) {
+    push(queue, next);
+    model.push(next++);
+    assert.equal(shift(queue), model.shift());
+  }
+  assert.equal(capacityOf(queue), L);
+  // Drain from the back; the buffer stays wrapped yet must shrink.
+  while (size(queue) > 100) {
+    assert.equal(pop(queue), model.pop());
+  }
+  assert.ok(capacityOf(queue) <= 8192, `capacity ${capacityOf(queue)} should have shrunk`);
+  assert.deepEqual(toArray(queue), model);
+  // Still fully functional afterwards.
+  unshift(queue, -1);
+  push(queue, -2);
+  assert.deepEqual(toArray(queue), [-1, ...model, -2]);
+});
+
+test("shrinks when emptied", () => {
+  const queue = make<number>();
+  for (let i = 0; i < 40000; i++) push(queue, i);
+  for (let i = 0; i < 40000; i++) shift(queue);
+  assert.equal(size(queue), 0);
+  assert.ok(capacityOf(queue) <= 10000);
+  push(queue, 7);
+  assert.equal(shift(queue), 7);
+});
+
 test("get returns element at logical index", () => {
   const queue = make([10, 20, 30, 40, 50]);
   assert.equal(get(queue, 0), 10);

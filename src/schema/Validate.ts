@@ -2,70 +2,41 @@
  * Validate — code-generated schema validators via `new Function`.
  *
  * `validate(schema)` compiles a schema into a single optimized function that
- * validates `unknown` values and returns `Result<T, SchemaError>`. The
- * generated code inlines all type checks — no closure chains, no Reflect.apply
- * per field, no intermediate allocations on the success path.
+ * validates `unknown` values and returns `Result<T, SchemaError>`. Checks are
+ * inlined — no closure chains, no per-field calls, no allocations on success.
  *
- * When to use: any hot-path validation of external input (HTTP request bodies,
- * message queue payloads, config files). For one-shot or cold-path validation,
- * the overhead of code generation (~0.1ms per schema) is amortized after a
- * handful of calls.
+ * When to use: hot-path validation of external input (HTTP bodies, queue
+ * payloads, config files). Compile once at module/init scope (~0.1ms); never
+ * call `validate(schema)` per request.
  *
  * Internal design:
  *   `emitValidation` walks the schema tree and emits inline checks into a
- *   `CodeBuffer`. The buffer is then compiled via `new Function`. This emitter
- *   is also used by `schema/JSON.parse` to inline validation after parsing.
+ *   `CodeBuffer`, compiled via `new Function`. Each property / element is read
+ *   once into a local; every schema-derived constant is emitted via
+ *   `jsLiteral`, so untrusted schemas (`fromJsonSchema`) cannot inject code.
+ *   `schema/JSON.parse` reuses the same emitter.
+ *
+ * Semantics: objects are checked against OWN properties only, and reject
+ * undeclared own enumerable keys unless built with `additionalProperties:
+ * true`. Unions accept a value iff some variant fully validates it; tagged
+ * unions dispatch via `switch`. Recursive (cyclic) schemas are unsupported.
  *
  * @example Compile once, validate many
  * ```ts
  * import * as S from "@dolphin278/vjuga/schema/Schema";
  * import { validate } from "@dolphin278/vjuga/schema/Validate";
- *
- * const checkUser = validate(S.object({
- *   id: S.integer(),
- *   name: S.string(),
- *   email: S.string({ format: "email" }),
- * }));
- *
- * const result = checkUser(input); // Result<{ id: number; name: string; email: string }, SchemaError>
- * if (result[0]) {
- *   const user = result[1]; // fully typed
- * } else {
- *   console.error(result[1].path, result[1].expected, result[1].received);
- * }
+ * const checkUser = validate(S.object({ id: S.integer(), name: S.string() }));
+ * const [ok, value] = checkUser(input);
+ * if (!ok) console.error(value.path, value.expected, value.received);
  * ```
  *
- * @example Discriminated union — auto-detected, emits switch statement
+ * @example Discriminated union — `switch` on the shared literal key
  * ```ts
  * const checkEvent = validate(S.union(
  *   S.object({ type: S.literal("click"), x: S.number(), y: S.number() }),
  *   S.object({ type: S.literal("key"), code: S.string() }),
  * ));
- * // Generated code dispatches on event.type via switch — O(1), not O(n).
  * ```
- *
- * @example SchemaError structure
- * ```ts
- * // SchemaError is a plain object, not an Error subclass — cheap to construct.
- * // { path: "user.address.zip", expected: "string", received: 12345 }
- * ```
- *
- * Best practices:
- *   - Compile validators at module/init scope, not inside request handlers.
- *     Compilation costs ~0.1ms; the compiled function runs in nanoseconds.
- *   - Use `Result` destructuring: `const [ok, value] = check(input)`.
- *   - For objects, all properties are required unless wrapped in `optional()`.
- *   - Discriminated unions (shared literal property) get O(1) dispatch
- *     automatically — prefer them over untagged unions.
- *
- * Pitfalls:
- *   - Do NOT call `validate(schema)` inside a loop — each call compiles a
- *     new function via `new Function`. Store the compiled validator.
- *   - The validator trusts its own generated code but validates ALL input
- *     fields. There is no "partial" or "strip unknown keys" mode — extra
- *     keys on input objects are silently accepted.
- *   - SchemaError.received holds the raw input value. Be careful logging it
- *     for large payloads — it is not truncated.
  */
 
 import type { Result } from "../Result.js";
@@ -82,6 +53,9 @@ import {
   compileFunction,
   childPath,
   dynamicChildPath,
+  jsLiteral,
+  eqExpr,
+  neExpr,
 } from "./Codegen.js";
 
 // ---------------------------------------------------------------------------
@@ -91,6 +65,10 @@ import {
 /**
  * Validation/parse error — plain object, no prototype chain, no stack trace.
  * Cheaper to construct than Error subclasses on the failure path.
+ *
+ * `received` holds the raw offending input value (not truncated) — be careful
+ * logging it for large payloads. `path` is dot-separated (`"user.tags.0"`);
+ * `""` means the root value failed.
  */
 export interface SchemaError {
   readonly path: string;
@@ -107,13 +85,28 @@ export function makeError(path: string, expected: string, received: unknown): Sc
 // Standard refs
 // ---------------------------------------------------------------------------
 
-/** Emit standard refs used by validation-emitting compiled functions. */
+/** Read an own property, ignoring anything inherited from the prototype chain. */
+function ownGet(o: object, k: string): unknown {
+  return Object.hasOwn(o, k) ? (o as Record<string, unknown>)[k] : undefined;
+}
+
+/**
+ * Emit standard refs used by validation-emitting compiled functions.
+ *
+ * Every ref that `emitValidation` output may reference is registered here, so
+ * callers (Validate, JSON.parse, TOON) only need this one call.
+ */
 export function emitStandardRefs(buf: CodeBuffer, okFn: unknown, errFn: unknown): void {
   emitRef(buf, "_ok", okFn);
   emitRef(buf, "_err", errFn);
   emitRef(buf, "_me", makeError);
   emitRef(buf, "_isArr", Array.isArray);
   emitRef(buf, "_isSafe", Number.isSafeInteger);
+  emitRef(buf, "_isFin", Number.isFinite);
+  emitRef(buf, "_hasOwn", Object.hasOwn);
+  emitRef(buf, "_own", ownGet);
+  emitRef(buf, "_xk", firstExtraKey);
+  emitRef(buf, "_OP", Object.prototype);
 }
 
 // ---------------------------------------------------------------------------
@@ -125,7 +118,19 @@ export function emitStandardRefs(buf: CodeBuffer, okFn: unknown, errFn: unknown)
  *
  * The returned function validates an `unknown` value against the schema and
  * returns `Result<Infer<S>, SchemaError>`. On the success path, the input
- * value is returned as-is — zero allocations.
+ * value is returned as-is — zero allocations. Objects must not carry
+ * undeclared own keys unless built with `{ additionalProperties: true }`;
+ * there is no "strip unknown keys" mode.
+ *
+ * Throws `SyntaxError` for an invalid `pattern` regex and `TypeError` if a
+ * schema constraint/literal is not a primitive (malformed hand-built schema).
+ *
+ * @example
+ * ```ts
+ * const check = validate(S.object({ id: S.integer() }));
+ * check({ id: 1 });           // [true, { id: 1 }]
+ * check({ id: 1, extra: 0 }); // [false, { path: "extra", ... }]
+ * ```
  */
 export function validate<S extends Schema>(
   schema: S,
@@ -152,10 +157,12 @@ export function validate<S extends Schema>(
  *
  * Handles all 14 schema kinds with recursive descent into objects, arrays,
  * tuples, records, and unions. Used by both `validate()` and `JSON.parse()`.
+ * The buffer must have `emitStandardRefs` registered.
  *
+ * `accessor` should be a variable name (it is referenced several times).
  * `pathExpr` is a JS expression string for error paths. Static paths are
- * `JSON.stringify`'d literals; dynamic paths (array/record loops) use
- * string concatenation with loop variables.
+ * string literals; dynamic paths (array/record loops) use string
+ * concatenation with loop variables.
  */
 export function emitValidation(
   buf: CodeBuffer,
@@ -168,36 +175,41 @@ export function emitValidation(
       emitStringCheck(buf, schema.meta, accessor, pathExpr);
       break;
     case "number":
-      // v !== v is the NaN check — single ucomisd instruction in V8
-      emit(
+      // Number.isFinite rejects NaN and ±Infinity (neither is JSON-representable)
+      emitFail(
         buf,
-        `if (typeof ${accessor} !== "number" || ${accessor} !== ${accessor}) return _err(_me(${pathExpr}, "number", ${accessor}));`,
+        `typeof ${accessor} !== "number" || !_isFin(${accessor})`,
+        pathExpr,
+        "number",
+        accessor,
       );
       emitNumericConstraints(buf, schema.meta, accessor, pathExpr, "number");
       break;
     case "integer":
       // Number.isSafeInteger covers ±2^53. Avoids (v|0)!==v which truncates to ±2^31.
-      emit(
+      emitFail(
         buf,
-        `if (typeof ${accessor} !== "number" || !_isSafe(${accessor})) return _err(_me(${pathExpr}, "integer", ${accessor}));`,
+        `typeof ${accessor} !== "number" || !_isSafe(${accessor})`,
+        pathExpr,
+        "integer",
+        accessor,
       );
       emitNumericConstraints(buf, schema.meta, accessor, pathExpr, "integer");
       break;
     case "boolean":
-      emit(
-        buf,
-        `if (typeof ${accessor} !== "boolean") return _err(_me(${pathExpr}, "boolean", ${accessor}));`,
-      );
+      emitFail(buf, `typeof ${accessor} !== "boolean"`, pathExpr, "boolean", accessor);
       break;
     case "null":
-      emit(buf, `if (${accessor} !== null) return _err(_me(${pathExpr}, "null", ${accessor}));`);
+      emitFail(buf, `${accessor} !== null`, pathExpr, "null", accessor);
       break;
     case "literal": {
-      const ref = freshVar(buf);
-      emitRef(buf, ref, schema.meta.value);
-      emit(
+      const value = schema.meta.value;
+      emitFail(
         buf,
-        `if (${accessor} !== ${ref}) return _err(_me(${pathExpr}, ${JSON.stringify("literal(" + JSON.stringify(schema.meta.value) + ")")}, ${accessor}));`,
+        neExpr(accessor, value),
+        pathExpr,
+        "literal(" + jsLiteral(value) + ")",
+        accessor,
       );
       break;
     }
@@ -238,129 +250,160 @@ export function emitValidation(
   }
 }
 
+/** `if (cond) return _err(_me(path, label, received));` — label is always a safe literal. */
+function emitFail(
+  buf: CodeBuffer,
+  cond: string,
+  pathExpr: string,
+  label: string,
+  received: string,
+): void {
+  emit(buf, `if (${cond}) return _err(_me(${pathExpr}, ${jsLiteral(label)}, ${received}));`);
+}
+
 // ---------------------------------------------------------------------------
 // Per-kind validation emitters
 // ---------------------------------------------------------------------------
 
 // Pre-computed format validation regexes — compiled once at module load,
-// captured via emitRef per compiled validator that needs them.
-const FORMAT_PATTERNS: Record<string, RegExp> = {
+// captured via emitRef per compiled validator that needs them. Looked up with
+// Object.hasOwn so names like "constructor" never resolve to prototype members.
+const FORMAT_PATTERNS: Readonly<Record<string, RegExp>> = {
   email: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
   uri: /^[a-zA-Z][a-zA-Z0-9+\-.]*:\/\/\S+$/,
   uuid: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
   "iso-datetime": /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/,
 };
 
+type StringMeta =
+  | {
+      readonly minLength?: number;
+      readonly maxLength?: number;
+      readonly pattern?: string;
+      readonly format?: string;
+    }
+  | undefined;
+
 function emitStringCheck(
   buf: CodeBuffer,
-  meta:
-    | {
-        readonly minLength?: number;
-        readonly maxLength?: number;
-        readonly pattern?: string;
-        readonly format?: string;
-      }
-    | undefined,
+  meta: StringMeta,
   accessor: string,
   pathExpr: string,
 ): void {
-  emit(
-    buf,
-    `if (typeof ${accessor} !== "string") return _err(_me(${pathExpr}, "string", ${accessor}));`,
-  );
-  if (meta !== undefined) {
-    if (meta.minLength !== undefined) {
-      emit(
-        buf,
-        `if (${accessor}.length < ${meta.minLength}) return _err(_me(${pathExpr}, "string(minLength=${meta.minLength})", ${accessor}));`,
-      );
-    }
-    if (meta.maxLength !== undefined) {
-      emit(
-        buf,
-        `if (${accessor}.length > ${meta.maxLength}) return _err(_me(${pathExpr}, "string(maxLength=${meta.maxLength})", ${accessor}));`,
-      );
-    }
-    if (meta.pattern !== undefined) {
-      const ref = freshVar(buf);
-      emitRef(buf, ref, new RegExp(meta.pattern));
-      emit(
-        buf,
-        `if (!${ref}.test(${accessor})) return _err(_me(${pathExpr}, "string(pattern=${meta.pattern})", ${accessor}));`,
-      );
-    }
-    if (meta.format !== undefined) {
-      const fmtRegex = FORMAT_PATTERNS[meta.format];
-      if (fmtRegex !== undefined) {
-        const ref = freshVar(buf);
-        emitRef(buf, ref, fmtRegex);
-        emit(
-          buf,
-          `if (!${ref}.test(${accessor})) return _err(_me(${pathExpr}, "string(format=${meta.format})", ${accessor}));`,
-        );
-      }
-    }
+  emitFail(buf, `typeof ${accessor} !== "string"`, pathExpr, "string", accessor);
+  if (meta === undefined) return;
+  if (meta.minLength !== undefined) {
+    const n = jsLiteral(meta.minLength);
+    emitFail(buf, `${accessor}.length < ${n}`, pathExpr, `string(minLength=${n})`, accessor);
+  }
+  if (meta.maxLength !== undefined) {
+    const n = jsLiteral(meta.maxLength);
+    emitFail(buf, `${accessor}.length > ${n}`, pathExpr, `string(maxLength=${n})`, accessor);
+  }
+  if (meta.pattern !== undefined) {
+    const ref = freshVar(buf);
+    emitRef(buf, ref, new RegExp(meta.pattern));
+    // The pattern text only ever appears inside the jsLiteral-escaped label
+    emitFail(
+      buf,
+      `!${ref}.test(${accessor})`,
+      pathExpr,
+      `string(pattern=${meta.pattern})`,
+      accessor,
+    );
+  }
+  // Unknown formats are annotation-only (JSON Schema 2020-12 default) and ignored
+  if (meta.format !== undefined && Object.hasOwn(FORMAT_PATTERNS, meta.format)) {
+    const ref = freshVar(buf);
+    emitRef(buf, ref, FORMAT_PATTERNS[meta.format]);
+    emitFail(buf, `!${ref}.test(${accessor})`, pathExpr, `string(format=${meta.format})`, accessor);
   }
 }
 
+/** True when a string schema's checks are exactly `typeof` + length bounds. */
+function stringHasRegex(meta: StringMeta): boolean {
+  return (
+    meta !== undefined &&
+    (meta.pattern !== undefined ||
+      (meta.format !== undefined && Object.hasOwn(FORMAT_PATTERNS, meta.format)))
+  );
+}
+
+type NumericMeta =
+  | {
+      readonly minimum?: number;
+      readonly maximum?: number;
+      readonly exclusiveMinimum?: number;
+      readonly exclusiveMaximum?: number;
+      readonly multipleOf?: number;
+    }
+  | undefined;
+
+function hasNumericConstraints(meta: NumericMeta): boolean {
+  return (
+    meta !== undefined &&
+    (meta.minimum !== undefined ||
+      meta.maximum !== undefined ||
+      meta.exclusiveMinimum !== undefined ||
+      meta.exclusiveMaximum !== undefined ||
+      meta.multipleOf !== undefined)
+  );
+}
+
+// Relative tolerance for non-integer multipleOf: a few ulps of the quotient.
+// Absorbs decimal representation error (0.3 / 0.1 = 2.9999999999999996)
+// without accepting genuinely fractional quotients at any magnitude.
+const MULTIPLE_OF_RTOL = jsLiteral(4 * Number.EPSILON);
+
 function emitNumericConstraints(
   buf: CodeBuffer,
-  meta:
-    | {
-        readonly minimum?: number;
-        readonly maximum?: number;
-        readonly exclusiveMinimum?: number;
-        readonly exclusiveMaximum?: number;
-        readonly multipleOf?: number;
-      }
-    | undefined,
+  meta: NumericMeta,
   accessor: string,
   pathExpr: string,
   label: string,
 ): void {
   if (meta === undefined) return;
   if (meta.minimum !== undefined) {
-    emit(
-      buf,
-      `if (${accessor} < ${meta.minimum}) return _err(_me(${pathExpr}, "${label}(>=${meta.minimum})", ${accessor}));`,
-    );
+    const n = jsLiteral(meta.minimum);
+    emitFail(buf, `${accessor} < ${n}`, pathExpr, `${label}(>=${n})`, accessor);
   }
   if (meta.maximum !== undefined) {
-    emit(
-      buf,
-      `if (${accessor} > ${meta.maximum}) return _err(_me(${pathExpr}, "${label}(<=${meta.maximum})", ${accessor}));`,
-    );
+    const n = jsLiteral(meta.maximum);
+    emitFail(buf, `${accessor} > ${n}`, pathExpr, `${label}(<=${n})`, accessor);
   }
   if (meta.exclusiveMinimum !== undefined) {
-    emit(
-      buf,
-      `if (${accessor} <= ${meta.exclusiveMinimum}) return _err(_me(${pathExpr}, "${label}(>${meta.exclusiveMinimum})", ${accessor}));`,
-    );
+    const n = jsLiteral(meta.exclusiveMinimum);
+    emitFail(buf, `${accessor} <= ${n}`, pathExpr, `${label}(>${n})`, accessor);
   }
   if (meta.exclusiveMaximum !== undefined) {
-    emit(
-      buf,
-      `if (${accessor} >= ${meta.exclusiveMaximum}) return _err(_me(${pathExpr}, "${label}(<${meta.exclusiveMaximum})", ${accessor}));`,
-    );
+    const n = jsLiteral(meta.exclusiveMaximum);
+    emitFail(buf, `${accessor} >= ${n}`, pathExpr, `${label}(<${n})`, accessor);
   }
   if (meta.multipleOf !== undefined) {
     const m = meta.multipleOf;
+    const n = jsLiteral(m);
     if (Number.isInteger(m)) {
       // Integer multipleOf: exact modulo is safe
-      emit(
-        buf,
-        `if (${accessor} % ${m} !== 0) return _err(_me(${pathExpr}, "${label}(%${m})", ${accessor}));`,
-      );
+      emitFail(buf, `${accessor} % ${n} !== 0`, pathExpr, `${label}(%${n})`, accessor);
     } else {
       // Non-integer multipleOf: floating-point % is unreliable (0.3 % 0.1 !== 0).
-      // Use tolerance: check that remainder is near 0 or near the divisor.
-      emit(
+      // Check that the quotient is an integer up to a relative tolerance.
+      const q = freshVar(buf);
+      const d = freshVar(buf);
+      emit(buf, `var ${q} = ${accessor} / ${n}, ${d} = ${q} - Math.round(${q});`);
+      emitFail(
         buf,
-        `{ var _rem = Math.abs(${accessor} % ${m}); if (_rem > 1e-9 && Math.abs(_rem - ${m}) > 1e-9) return _err(_me(${pathExpr}, "${label}(%${m})", ${accessor})); }`,
+        `${d} !== 0 && Math.abs(${d}) > Math.abs(${q}) * ${MULTIPLE_OF_RTOL}`,
+        pathExpr,
+        `${label}(%${n})`,
+        accessor,
       );
     }
   }
 }
+
+/** Enum lists up to this size use an inline `===` chain; larger ones a Set. */
+const ENUM_INLINE_MAX = 8;
 
 function emitEnumCheck(
   buf: CodeBuffer,
@@ -369,19 +412,152 @@ function emitEnumCheck(
   pathExpr: string,
 ): void {
   const labelRef = freshVar(buf);
-  const label = "enum(" + values.map((v) => JSON.stringify(v)).join(",") + ")";
-  emitRef(buf, labelRef, label);
-  if (values.length <= 8) {
-    const checks = values.map((v) => `${accessor} !== ${JSON.stringify(v)}`).join(" && ");
-    emit(buf, `if (${checks}) return _err(_me(${pathExpr}, ${labelRef}, ${accessor}));`);
-  } else {
-    const ref = freshVar(buf);
-    emitRef(buf, ref, new Set(values));
-    emit(
-      buf,
-      `if (!${ref}.has(${accessor})) return _err(_me(${pathExpr}, ${labelRef}, ${accessor}));`,
-    );
+  emitRef(buf, labelRef, "enum(" + values.map(jsLiteral).join(",") + ")");
+  // Both paths use SameValueZero (NaN matches NaN, 0 matches -0)
+  const cond =
+    values.length <= ENUM_INLINE_MAX
+      ? values.map((v) => neExpr(accessor, v)).join(" && ")
+      : `!${emitRef(buf, freshVar(buf), new Set(values))}.has(${accessor})`;
+  emit(buf, `if (${cond}) return _err(_me(${pathExpr}, ${labelRef}, ${accessor}));`);
+}
+
+/** Emit the non-null, non-array object type check shared by object-like kinds. */
+function emitObjectTypeCheck(buf: CodeBuffer, accessor: string, pathExpr: string): void {
+  // Array check required: typeof [] === "object", so without _isArr guard
+  // an array with matching properties (e.g. [1,2,3] has .length) would pass.
+  emitFail(
+    buf,
+    `${accessor} === null || typeof ${accessor} !== "object" || _isArr(${accessor})`,
+    pathExpr,
+    "object",
+    accessor,
+  );
+}
+
+/**
+ * Own-property read strategy for one object value.
+ *
+ * Keys that exist on Object.prototype (`constructor`, `toString`,
+ * `__proto__`, ...) are always read via `_own` (hasOwn + get). Other keys are
+ * read directly when the object's prototype is exactly `Object.prototype` —
+ * then a defined result can only be an own property — and via `_own`
+ * otherwise (class instances, null-prototype objects). The prototype check is
+ * emitted once per object value; `v.__proto__` is inlined by V8, unlike
+ * `Object.getPrototypeOf` (~10ns/call when the latter goes through a ref).
+ */
+function emitPlainFlag(buf: CodeBuffer, accessor: string, keys: readonly string[]): string | null {
+  for (let i = 0; i < keys.length; i++) {
+    if (!(keys[i] in Object.prototype)) {
+      const flag = freshVar(buf);
+      emit(buf, `var ${flag} = ${accessor}.__proto__ === _OP;`);
+      return flag;
+    }
   }
+  return null;
+}
+
+/** Emit `var x = <own read of accessor[key]>;` and return `x`. */
+function emitOwnRead(
+  buf: CodeBuffer,
+  accessor: string,
+  key: string,
+  plainFlag: string | null,
+): string {
+  const local = freshVar(buf);
+  const k = jsLiteral(key);
+  const read =
+    plainFlag === null || key in Object.prototype
+      ? `_own(${accessor}, ${k})`
+      : `${plainFlag} ? ${accessor}[${k}] : _own(${accessor}, ${k})`;
+  emit(buf, `var ${local} = ${read};`);
+  return local;
+}
+
+/** True if `schema` can accept `undefined` (so a required key may be absent). */
+function acceptsUndefined(schema: Schema): boolean {
+  switch (schema.kind) {
+    case "optional":
+      return true;
+    case "nullable":
+      return acceptsUndefined(schema.meta.inner);
+    case "literal":
+      return schema.meta.value === undefined;
+    case "union":
+      return (schema.meta.variants as readonly Schema[]).some(acceptsUndefined);
+    default:
+      return false;
+  }
+}
+
+/**
+ * Validate each declared property (except `skip`) of an object value.
+ *
+ * Returns a JS expression for the number of declared keys known to be present
+ * as own properties once validation passed: keys whose schema rejects
+ * `undefined` count statically; the rest count when their value is defined.
+ */
+function emitProperties(
+  buf: CodeBuffer,
+  properties: Readonly<Record<string, Schema>>,
+  keys: readonly string[],
+  skip: string | null,
+  accessor: string,
+  pathExpr: string,
+  plainFlag: string | null,
+): string {
+  let fixed = skip === null ? 0 : 1;
+  let present = "";
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    if (key === skip) continue;
+    const child = properties[key];
+    const local = emitOwnRead(buf, accessor, key, plainFlag);
+    emitValidation(buf, child, local, childPath(pathExpr, key));
+    if (acceptsUndefined(child)) present += ` + (${local} !== undefined ? 1 : 0)`;
+    else fixed++;
+  }
+  return String(fixed) + present;
+}
+
+/** Slow path of the extra-key check: first own enumerable undeclared key. */
+function firstExtraKey(o: object, declared: ReadonlySet<string>): string | undefined {
+  for (const k in o) {
+    if (!declared.has(k) && Object.hasOwn(o, k)) return k;
+  }
+  return undefined;
+}
+
+/**
+ * Reject own enumerable keys not in `keys` (`additionalProperties: false`).
+ *
+ * Fast path: count `for...in` keys and compare with the number of declared
+ * keys present (`presentExpr`) — equal means no extras, at ~0.5ns/key (a
+ * `switch`/Set membership test per key measured 3–5× slower). On mismatch
+ * (optionals set to `undefined`, inherited enumerables, extras), `_xk` finds
+ * the first undeclared own key exactly. The fast path assumes declared own
+ * properties are enumerable — always true for parsed JSON.
+ */
+function emitExtraKeyCheck(
+  buf: CodeBuffer,
+  keys: readonly string[],
+  presentExpr: string,
+  accessor: string,
+  pathExpr: string,
+): void {
+  const count = freshVar(buf);
+  const k = freshVar(buf);
+  emit(buf, `var ${count} = 0;`);
+  emit(buf, `for (var ${k} in ${accessor}) ${count}++;`);
+  emit(buf, `if (${count} !== ${presentExpr}) {`);
+  buf.indent++;
+  const set = emitRef(buf, freshVar(buf), new Set(keys));
+  emit(buf, `${k} = _xk(${accessor}, ${set});`);
+  emit(
+    buf,
+    `if (${k} !== undefined) return _err(_me(${dynamicChildPath(pathExpr, k)}, "no additional properties", ${accessor}[${k}]));`,
+  );
+  buf.indent--;
+  emit(buf, "}");
 }
 
 function emitObjectValidation(
@@ -390,19 +566,13 @@ function emitObjectValidation(
   accessor: string,
   pathExpr: string,
 ): void {
-  // Array check required: typeof [] === "object", so without _isArr guard
-  // an array with matching properties (e.g. [1,2,3] has .length) would pass.
-  emit(
-    buf,
-    `if (${accessor} === null || typeof ${accessor} !== "object" || _isArr(${accessor})) return _err(_me(${pathExpr}, "object", ${accessor}));`,
-  );
-  const keys = Object.keys(schema.meta.properties);
-  for (let i = 0; i < keys.length; i++) {
-    const key = keys[i];
-    const child = schema.meta.properties[key];
-    const childAccessor = `${accessor}[${JSON.stringify(key)}]`;
-    const childPathExpr = childPath(pathExpr, key);
-    emitValidation(buf, child, childAccessor, childPathExpr);
+  emitObjectTypeCheck(buf, accessor, pathExpr);
+  const properties = schema.meta.properties as Readonly<Record<string, Schema>>;
+  const keys = Object.keys(properties);
+  const plainFlag = emitPlainFlag(buf, accessor, keys);
+  const present = emitProperties(buf, properties, keys, null, accessor, pathExpr, plainFlag);
+  if (!schema.meta.additionalProperties) {
+    emitExtraKeyCheck(buf, keys, present, accessor, pathExpr);
   }
 }
 
@@ -412,26 +582,23 @@ function emitArrayValidation(
   accessor: string,
   pathExpr: string,
 ): void {
-  emit(buf, `if (!_isArr(${accessor})) return _err(_me(${pathExpr}, "array", ${accessor}));`);
-  if (schema.meta.minItems !== undefined) {
-    emit(
-      buf,
-      `if (${accessor}.length < ${schema.meta.minItems}) return _err(_me(${pathExpr}, "array(minItems=${schema.meta.minItems})", ${accessor}));`,
-    );
+  emitFail(buf, `!_isArr(${accessor})`, pathExpr, "array", accessor);
+  const { minItems, maxItems } = schema.meta;
+  if (minItems !== undefined) {
+    const n = jsLiteral(minItems);
+    emitFail(buf, `${accessor}.length < ${n}`, pathExpr, `array(minItems=${n})`, accessor);
   }
-  if (schema.meta.maxItems !== undefined) {
-    emit(
-      buf,
-      `if (${accessor}.length > ${schema.meta.maxItems}) return _err(_me(${pathExpr}, "array(maxItems=${schema.meta.maxItems})", ${accessor}));`,
-    );
+  if (maxItems !== undefined) {
+    const n = jsLiteral(maxItems);
+    emitFail(buf, `${accessor}.length > ${n}`, pathExpr, `array(maxItems=${n})`, accessor);
   }
   const idx = freshVar(buf);
   const len = freshVar(buf);
   emit(buf, `for (var ${idx} = 0, ${len} = ${accessor}.length; ${idx} < ${len}; ${idx}++) {`);
   buf.indent++;
-  const elemAccessor = `${accessor}[${idx}]`;
-  const elemPathExpr = dynamicChildPath(pathExpr, idx);
-  emitValidation(buf, schema.meta.items, elemAccessor, elemPathExpr);
+  const elem = freshVar(buf);
+  emit(buf, `var ${elem} = ${accessor}[${idx}];`);
+  emitValidation(buf, schema.meta.items, elem, dynamicChildPath(pathExpr, idx));
   buf.indent--;
   emit(buf, "}");
 }
@@ -442,15 +609,18 @@ function emitTupleValidation(
   accessor: string,
   pathExpr: string,
 ): void {
-  const items = schema.meta.items;
-  emit(
+  const items = schema.meta.items as readonly Schema[];
+  emitFail(
     buf,
-    `if (!_isArr(${accessor}) || ${accessor}.length !== ${items.length}) return _err(_me(${pathExpr}, "tuple[${items.length}]", ${accessor}));`,
+    `!_isArr(${accessor}) || ${accessor}.length !== ${items.length}`,
+    pathExpr,
+    `tuple[${items.length}]`,
+    accessor,
   );
   for (let i = 0; i < items.length; i++) {
-    const childAccessor = `${accessor}[${i}]`;
-    const childPathExpr = childPath(pathExpr, String(i));
-    emitValidation(buf, items[i], childAccessor, childPathExpr);
+    const elem = freshVar(buf);
+    emit(buf, `var ${elem} = ${accessor}[${i}];`);
+    emitValidation(buf, items[i], elem, childPath(pathExpr, String(i)));
   }
 }
 
@@ -460,29 +630,34 @@ function emitRecordValidation(
   accessor: string,
   pathExpr: string,
 ): void {
-  emit(
-    buf,
-    `if (${accessor} === null || typeof ${accessor} !== "object" || _isArr(${accessor})) return _err(_me(${pathExpr}, "object", ${accessor}));`,
-  );
+  emitObjectTypeCheck(buf, accessor, pathExpr);
   const key = freshVar(buf);
   emit(buf, `for (var ${key} in ${accessor}) {`);
   buf.indent++;
   // Skip inherited properties — only validate own properties
-  emit(buf, `if (!Object.hasOwn(${accessor}, ${key})) continue;`);
-  const elemAccessor = `${accessor}[${key}]`;
-  const elemPathExpr = dynamicChildPath(pathExpr, key);
-  emitValidation(buf, schema.meta.values, elemAccessor, elemPathExpr);
+  emit(buf, `if (!_hasOwn(${accessor}, ${key})) continue;`);
+  const elem = freshVar(buf);
+  emit(buf, `var ${elem} = ${accessor}[${key}];`);
+  emitValidation(buf, schema.meta.values, elem, dynamicChildPath(pathExpr, key));
   buf.indent--;
   emit(buf, "}");
 }
 
+/**
+ * Untagged union: try variants in order; the first that fully validates wins.
+ *
+ * Each non-last variant is tried with `exactCheck` (an inline expression
+ * exactly equivalent to full validation) when one exists, otherwise with a
+ * compiled boolean sub-validator. The last variant is validated inline so its
+ * error is the one reported when nothing matches.
+ */
 function emitUnionValidation(
   buf: CodeBuffer,
   schema: Schema & { readonly kind: "union" },
   accessor: string,
   pathExpr: string,
 ): void {
-  const variants = schema.meta.variants;
+  const variants = schema.meta.variants as readonly Schema[];
 
   const discriminant = findDiscriminant(variants);
   if (discriminant !== null) {
@@ -493,35 +668,47 @@ function emitUnionValidation(
   const label = "u" + buf.varCounter++;
   emit(buf, `${label}: {`);
   buf.indent++;
-  for (let i = 0; i < variants.length; i++) {
-    const variant = variants[i];
-    if (i < variants.length - 1) {
-      const check = quickTypeCheck(variant, accessor);
-      if (check !== null) {
-        emit(buf, `if (${check}) break ${label};`);
-      } else {
-        // quickTypeCheck returned null (e.g., large enum, nested union) —
-        // can't use a simple type-of guard. Compile a sub-validator for this
-        // variant and call it: if it returns Ok, break out of the union block.
-        const subBuf = createBuffer();
-        emitStandardRefs(subBuf, ok, err);
-        emit(subBuf, "return function(v) {");
-        subBuf.indent++;
-        emitValidation(subBuf, variant, "v", '""');
-        emit(subBuf, "return _ok(v);");
-        subBuf.indent--;
-        emit(subBuf, "}");
-        const subValidator = compileFunction(subBuf);
-        const ref = freshVar(buf);
-        emitRef(buf, ref, subValidator);
-        emit(buf, `if (${ref}(${accessor})[0]) break ${label};`);
-      }
+  const last = variants.length - 1;
+  for (let i = 0; i < last; i++) {
+    const check = exactCheck(variants[i], accessor);
+    if (check !== null) {
+      emit(buf, `if (${check}) break ${label};`);
     } else {
-      emitValidation(buf, variant, accessor, pathExpr);
+      const ref = emitRef(buf, freshVar(buf), compileBooleanValidator(variants[i]));
+      emit(buf, `if (${ref}(${accessor})) break ${label};`);
     }
+  }
+  if (last >= 0) {
+    emitValidation(buf, variants[last], accessor, pathExpr);
+  } else {
+    // Empty union matches nothing
+    emit(buf, `return _err(_me(${pathExpr}, "never", ${accessor}));`);
   }
   buf.indent--;
   emit(buf, "}");
+}
+
+const returnTrue = (): boolean => true;
+const returnFalse = (): boolean => false;
+const noError = (): undefined => undefined;
+
+/**
+ * Compile `schema` into `(v) => boolean` — the same emitted checks as
+ * `validate`, but `_ok` / `_err` return true / false and no SchemaError is
+ * built, so a failed union attempt allocates nothing. Nested unions inside it
+ * compile their own boolean sub-validators the same way.
+ */
+function compileBooleanValidator(schema: Schema): (v: unknown) => boolean {
+  const buf = createBuffer();
+  emitStandardRefs(buf, returnTrue, returnFalse);
+  emitRef(buf, "_me", noError);
+  emit(buf, "return function variant(v) {");
+  buf.indent++;
+  emitValidation(buf, schema, "v", '""');
+  emit(buf, "return _ok(v);");
+  buf.indent--;
+  emit(buf, "}");
+  return compileFunction<(v: unknown) => boolean>(buf);
 }
 
 function emitDiscriminatedValidation(
@@ -531,97 +718,108 @@ function emitDiscriminatedValidation(
   accessor: string,
   pathExpr: string,
 ): void {
-  emit(
-    buf,
-    `if (${accessor} === null || typeof ${accessor} !== "object" || _isArr(${accessor})) return _err(_me(${pathExpr}, "object", ${accessor}));`,
-  );
-  const discAccessor = `${accessor}[${JSON.stringify(discriminant)}]`;
-  emit(buf, `switch (${discAccessor}) {`);
+  emitObjectTypeCheck(buf, accessor, pathExpr);
+  // Plain-prototype flag is computed before the switch so every case shares it
+  const allKeys: string[] = [];
+  for (let i = 0; i < variants.length; i++) {
+    const v = variants[i];
+    /* node:coverage ignore next 2 */
+    if (v.kind !== "object") continue; // guaranteed by findDiscriminant
+    allKeys.push(...Object.keys(v.meta.properties));
+  }
+  const plainFlag = emitPlainFlag(buf, accessor, allKeys);
+  const tag = emitOwnRead(buf, accessor, discriminant, plainFlag);
+  emit(buf, `switch (${tag}) {`);
   buf.indent++;
+  const tagLabels: string[] = [];
   for (let i = 0; i < variants.length; i++) {
     const obj = variants[i];
     /* node:coverage ignore next 2 */
     if (obj.kind !== "object") continue; // guaranteed by findDiscriminant
-    const litSchema = obj.meta.properties[discriminant];
-    emit(buf, `case ${JSON.stringify(litSchema.meta.value)}: {`);
+    const properties = obj.meta.properties as Readonly<Record<string, Schema>>;
+    // findDiscriminant excludes NaN tags, so `case` (===) matches exactly
+    const tagSchema = properties[discriminant] as Schema & { readonly kind: "literal" };
+    const tagLiteral = jsLiteral(tagSchema.meta.value);
+    tagLabels.push(tagLiteral);
+    emit(buf, `case ${tagLiteral}: {`);
     buf.indent++;
-    const keys = Object.keys(obj.meta.properties);
-    for (let j = 0; j < keys.length; j++) {
-      const key = keys[j];
-      if (key === discriminant) continue;
-      const child = obj.meta.properties[key];
-      const childAccessor = `${accessor}[${JSON.stringify(key)}]`;
-      const childPathExpr = childPath(pathExpr, key);
-      emitValidation(buf, child, childAccessor, childPathExpr);
+    const keys = Object.keys(properties);
+    const present = emitProperties(
+      buf,
+      properties,
+      keys,
+      discriminant,
+      accessor,
+      pathExpr,
+      plainFlag,
+    );
+    if (!obj.meta.additionalProperties) {
+      emitExtraKeyCheck(buf, keys, present, accessor, pathExpr);
     }
     emit(buf, "break;");
     buf.indent--;
     emit(buf, "}");
   }
-  const discLabelRef = freshVar(buf);
-  const discLabels: string[] = [];
-  for (let i = 0; i < variants.length; i++) {
-    const v = variants[i];
-    /* node:coverage ignore next 2 */
-    if (v.kind !== "object") continue;
-    discLabels.push(JSON.stringify(v.meta.properties[discriminant].meta.value));
-  }
-  const discLabel = "one of: " + discLabels.join(", ");
-  emitRef(buf, discLabelRef, discLabel);
+  const discLabelRef = emitRef(buf, freshVar(buf), "one of: " + tagLabels.join(", "));
   const discPathExpr = childPath(pathExpr, discriminant);
-  emit(buf, `default: return _err(_me(${discPathExpr}, ${discLabelRef}, ${discAccessor}));`);
+  emit(buf, `default: return _err(_me(${discPathExpr}, ${discLabelRef}, ${tag}));`);
   buf.indent--;
   emit(buf, "}");
 }
 
 /**
- * Generate an inline JS expression that type-checks a value against a schema.
- * Returns null for complex schemas that can't be checked with a single expression.
+ * Inline JS expression that is true IFF `schema` would fully validate the
+ * value — or null when no such single expression exists (constrained numbers,
+ * regex-checked strings, objects, arrays, ...). Only exact checks are safe for
+ * union dispatch: a looser check would accept values the variant rejects.
  */
-function quickTypeCheck(schema: Schema, accessor: string): string | null {
+function exactCheck(schema: Schema, accessor: string): string | null {
   switch (schema.kind) {
-    case "string":
-      return `typeof ${accessor} === "string"`;
-    case "number":
-      return `typeof ${accessor} === "number" && ${accessor} === ${accessor}`;
-    case "integer":
-      return `typeof ${accessor} === "number" && _isSafe(${accessor})`;
-    case "boolean":
-      return `typeof ${accessor} === "boolean"`;
-    case "null":
-      return `${accessor} === null`;
-    case "literal": {
-      const v = schema.meta.value;
-      if (v === null) return `${accessor} === null`;
-      if (typeof v === "boolean") return `${accessor} === ${v}`;
-      if (typeof v === "number") return `${accessor} === ${v}`;
-      return `${accessor} === ${JSON.stringify(v)}`;
+    case "string": {
+      const meta = schema.meta as StringMeta;
+      if (stringHasRegex(meta)) return null;
+      let check = `typeof ${accessor} === "string"`;
+      if (meta?.minLength !== undefined)
+        check += ` && ${accessor}.length >= ${jsLiteral(meta.minLength)}`;
+      if (meta?.maxLength !== undefined)
+        check += ` && ${accessor}.length <= ${jsLiteral(meta.maxLength)}`;
+      return `(${check})`;
     }
+    case "number":
+      return hasNumericConstraints(schema.meta)
+        ? null
+        : `(typeof ${accessor} === "number" && _isFin(${accessor}))`;
+    case "integer":
+      return hasNumericConstraints(schema.meta)
+        ? null
+        : `(typeof ${accessor} === "number" && _isSafe(${accessor}))`;
+    case "boolean":
+      return `(typeof ${accessor} === "boolean")`;
+    case "null":
+      return `(${accessor} === null)`;
+    case "literal":
+      return `(${eqExpr(accessor, schema.meta.value)})`;
     case "enum": {
       const values = schema.meta.values as readonly (string | number)[];
-      if (values.length <= 4) {
-        return values.map((v) => `${accessor} === ${JSON.stringify(v)}`).join(" || ");
-      }
-      return null;
+      if (values.length > ENUM_INLINE_MAX) return null;
+      return `(${values.map((v) => eqExpr(accessor, v)).join(" || ")})`;
+    }
+    case "optional":
+    case "nullable": {
+      const inner = exactCheck(schema.meta.inner, accessor);
+      if (inner === null) return null;
+      return `(${accessor} === ${schema.kind === "optional" ? "undefined" : "null"} || ${inner})`;
     }
     case "union": {
+      const variants = schema.meta.variants as readonly Schema[];
       const checks: string[] = [];
-      for (const v of schema.meta.variants) {
-        const c = quickTypeCheck(v, accessor);
-        if (c !== null) checks.push(c);
+      for (let i = 0; i < variants.length; i++) {
+        const c = exactCheck(variants[i], accessor);
+        if (c === null) return null;
+        checks.push(c);
       }
-      return checks.length > 0 ? checks.join(" || ") : null;
+      return checks.length > 0 ? `(${checks.join(" || ")})` : "false";
     }
-    case "array":
-    case "tuple":
-      return `_isArr(${accessor})`;
-    case "object":
-    case "record":
-      return `typeof ${accessor} === "object" && ${accessor} !== null && !_isArr(${accessor})`;
-    case "optional":
-      return `${accessor} === undefined || (${quickTypeCheck(schema.meta.inner, accessor) ?? "true"})`;
-    case "nullable":
-      return `${accessor} === null || (${quickTypeCheck(schema.meta.inner, accessor) ?? "true"})`;
     default:
       return null;
   }

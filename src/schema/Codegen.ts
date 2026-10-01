@@ -2,8 +2,8 @@
  * Codegen — code-generation plumbing for `new Function` compilation.
  *
  * Provides the `CodeBuffer` accumulator, reference tracking, variable naming,
- * and path expression helpers. This module knows nothing about schemas — it is
- * pure string-building infrastructure that any code generator can use.
+ * safe literal emission, and path expression helpers. Knows nothing about
+ * schemas — pure string-building infrastructure for any code generator.
  *
  * When to use: building code generators that compile domain logic into
  * optimized functions at init time. Used internally by Validate, JSON, and
@@ -15,39 +15,21 @@
  *   compiled `new Function` as closure-captured arguments.
  *   `freshVar(buf)`: allocates unique names (v0, v1, ...).
  *
+ * Design tradeoffs: every value spliced into generated source (labels, keys,
+ * constants) goes through `jsLiteral` — never raw template interpolation — so
+ * untrusted schema text (e.g. from `fromJsonSchema`) cannot inject code.
+ *
  * @example Build and compile a simple function
  * ```ts
- * import { createBuffer, emit, emitRef, compileFunction } from "@dolphin278/vjuga/schema/Codegen";
+ * import { createBuffer, emit, emitRef, compileFunction, jsLiteral } from "@dolphin278/vjuga/schema/Codegen";
  * const buf = createBuffer();
  * emitRef(buf, "_double", (n: number) => n * 2);
  * emit(buf, "return function transform(v) {");
- * emit(buf, "  return _double(v);");
+ * emit(buf, `  return v === ${jsLiteral('"quoted"')} ? 0 : _double(v);`);
  * emit(buf, "}");
  * const fn = compileFunction<(v: number) => number>(buf);
  * fn(21); // 42
  * ```
- *
- * @example Helper functions — compile sub-functions with access to same refs
- * ```ts
- * const helper = compileHelper<Function>(buf, "function add(a, b) { return a + b; }");
- * emitRef(buf, "_add", helper);
- * // Generated code can now call _add(x, y)
- * ```
- *
- * @example Path expressions — for error messages in validators/parsers
- * ```ts
- * childPath('"user"', "name");        // '"user.name"' (static)
- * dynamicChildPath('"items"', "idx"); // '"items." + idx' (dynamic)
- * ```
- *
- * Pitfalls:
- *   - The buffer's `code` must contain a `return function ...` statement.
- *     `compileFunction` wraps it in `new Function(...refs, code)` and calls
- *     the factory — the returned value IS the compiled function.
- *   - `emitRef` must be called BEFORE the ref name is used in emitted code.
- *     Refs are passed as function parameters — missing refs cause ReferenceError.
- *   - `compileHelper` creates a sub-function with access to all current refs.
- *     Call it to get the function, then register the result via `emitRef`.
  */
 
 // ---------------------------------------------------------------------------
@@ -72,7 +54,13 @@ export function emit(buf: CodeBuffer, line: string): void {
   buf.code += line + "\n";
 }
 
-/** Capture a runtime value as a named parameter for the generated function. */
+/**
+ * Capture a runtime value as a named parameter for the generated function.
+ *
+ * Must be called BEFORE the ref name is used in emitted code — refs become
+ * function parameters, so a missing ref is a ReferenceError at call time.
+ * Registering the same name twice silently replaces the earlier value.
+ */
 export function emitRef(buf: CodeBuffer, name: string, value: unknown): string {
   buf.refs.set(name, value);
   return name;
@@ -87,7 +75,9 @@ export function freshVar(buf: CodeBuffer): string {
  * Compile the buffer into a function via `new Function`.
  *
  * All refs become closure-captured parameters. The buffer's code must contain
- * a `return function ...` statement — the returned value is that function.
+ * a `return function ...` statement — `compileFunction` wraps it in
+ * `new Function(...refs, code)` and calls the factory, so the returned value
+ * IS the compiled function.
  */
 export function compileFunction<T>(buf: CodeBuffer): T {
   const [names, values] = extractRefs(buf);
@@ -102,7 +92,14 @@ export function compileFunction<T>(buf: CodeBuffer): T {
  * Compile a helper function from a source string.
  *
  * Used by stringify modules that build helper functions for objects, arrays,
- * and records. The helper gets all current refs as closure-captured params.
+ * and records. The helper gets all current refs as closure-captured params;
+ * register the returned function via `emitRef` to call it from emitted code.
+ *
+ * @example
+ * ```ts
+ * const add = compileHelper<Function>(buf, "function add(a, b) { return a + b; }");
+ * emitRef(buf, "_add", add); // generated code can now call _add(x, y)
+ * ```
  */
 export function compileHelper<T>(buf: CodeBuffer, source: string): T {
   const [names, values] = extractRefs(buf);
@@ -125,6 +122,65 @@ function extractRefs(buf: CodeBuffer): [string[], unknown[]] {
 }
 
 // ---------------------------------------------------------------------------
+// Literal emission
+// ---------------------------------------------------------------------------
+
+/**
+ * Render a primitive as a JS source literal that evaluates back to the same
+ * value. Strings are JSON-escaped (plus U+2028/U+2029, which older parsers
+ * treat as line terminators); numbers are `Object.is`-exact, including `NaN`,
+ * `Infinity`, `-Infinity`, and `-0` (which `JSON.stringify` would turn into
+ * `null` / `0`).
+ *
+ * Throws `TypeError` for any other type, so a malformed schema cannot smuggle
+ * an object with a hostile `toString` into generated source.
+ *
+ * @example
+ * ```ts
+ * jsLiteral('a"b\n');  // '"a\\"b\\n"'
+ * jsLiteral(-Infinity); // "-Infinity"
+ * jsLiteral(-0);        // "-0"
+ * ```
+ */
+export function jsLiteral(value: unknown): string {
+  switch (typeof value) {
+    case "string":
+      return JSON.stringify(value).replace(LINE_SEPARATORS, escapeLineSeparator);
+    case "number":
+      // String() already yields "NaN", "Infinity", "-Infinity"; only -0 differs.
+      return Object.is(value, -0) ? "-0" : String(value);
+    case "boolean":
+      return value ? "true" : "false";
+    case "undefined":
+      return "undefined";
+    default:
+      if (value === null) return "null";
+      throw new TypeError("jsLiteral: unsupported value of type " + typeof value);
+  }
+}
+
+const LINE_SEPARATORS = /[\u2028\u2029]/g;
+
+function escapeLineSeparator(ch: string): string {
+  return ch === "\u2028" ? "\\u2028" : "\\u2029";
+}
+
+/**
+ * JS expression that is true when `accessor` equals `value` under
+ * SameValueZero (the `Set.has` / `Array.prototype.includes` relation): `NaN`
+ * matches `NaN`, and `0` matches `-0`.
+ */
+export function eqExpr(accessor: string, value: unknown): string {
+  // NaN is the only value not === to itself
+  return value !== value ? `${accessor} !== ${accessor}` : `${accessor} === ${jsLiteral(value)}`;
+}
+
+/** Negation of `eqExpr` — true when `accessor` does NOT equal `value`. */
+export function neExpr(accessor: string, value: unknown): string {
+  return value !== value ? `${accessor} === ${accessor}` : `${accessor} !== ${jsLiteral(value)}`;
+}
+
+// ---------------------------------------------------------------------------
 // Path expression helpers
 // ---------------------------------------------------------------------------
 
@@ -133,17 +189,19 @@ function extractRefs(buf: CodeBuffer): [string[], unknown[]] {
  *
  * Static paths are JSON string literals: `'"user.name"'`.
  * Dynamic paths contain `+` operators: `'"items." + v3 + ".name"'`.
+ *
+ * @example
+ * ```ts
+ * childPath('"user"', "name"); // '"user.name"'
+ * ```
  */
 export function childPath(parentExpr: string, key: string): string {
   if (isStaticPath(parentExpr)) {
     const parent = JSON.parse(parentExpr) as string;
     const child = parent === "" ? key : parent + "." + key;
-    return JSON.stringify(child);
+    return jsLiteral(child);
   }
-  // JSON.stringify handles all special chars (quotes, backslash, newlines,
-  // control chars) — .slice(1,-1) strips the surrounding quotes.
-  const escaped = JSON.stringify(key).slice(1, -1);
-  return parentExpr + ' + ".' + escaped + '"';
+  return parentExpr + " + " + jsLiteral("." + key);
 }
 
 /**
@@ -151,18 +209,26 @@ export function childPath(parentExpr: string, key: string): string {
  *
  * The result is a JS expression that concatenates the parent path with the
  * loop variable at runtime: `"items." + idx`
+ *
+ * @example
+ * ```ts
+ * dynamicChildPath('"items"', "idx"); // '"items." + idx'
+ * ```
  */
 export function dynamicChildPath(parentExpr: string, indexVar: string): string {
   if (isStaticPath(parentExpr)) {
     const parent = JSON.parse(parentExpr) as string;
     if (parent === "") return `"" + ${indexVar}`;
-    // JSON.stringify escapes quotes, backslash, control chars in parent
-    return `${JSON.stringify(parent + ".")} + ${indexVar}`;
+    return `${jsLiteral(parent + ".")} + ${indexVar}`;
   }
   return parentExpr + ` + "." + ${indexVar}`;
 }
 
-/** A static path expression is a simple JSON string literal with no + operators. */
+/**
+ * A static path expression is a single string literal with no `+` operators.
+ * A key containing `+` makes a static literal look dynamic; that is harmless —
+ * the dynamic branch emits a correct (just unfolded) concatenation.
+ */
 function isStaticPath(expr: string): boolean {
   return expr.indexOf("+") === -1;
 }

@@ -305,8 +305,9 @@ function sizedWidthBig(span: bigint, size: number): bigint {
 function drawBigInt(prng: PRNG, lo: bigint, hi: bigint): bigint {
   const range = hi - lo + 1n;
   let raw = nextBigInt(prng);
-  // Keep >= 64 bits of slack above the range so modulo bias stays negligible.
-  for (let bound = 1n << 64n; bound < range << 64n; bound <<= 64n) {
+  // Keep >= 32 bits of slack above the range so modulo bias stays <= 2^-32;
+  // ranges up to 2^32 need a single 64-bit word.
+  for (let bound = 1n << 64n; bound < range << 32n; bound <<= 64n) {
     raw = (raw << 64n) | nextBigInt(prng);
   }
   return lo + (raw % range);

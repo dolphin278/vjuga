@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import { memoize, once } from "../Memoization.js";
+import * as LRU from "../LRUCache.js";
 
 test("function memoization caches results of given function", () => {
   let calls: number[] = [];
@@ -63,4 +64,47 @@ test("once returns function that calls original function only once", () => {
   assert.equal(memoized(), 1);
   assert.equal(memoized(), 1);
   assert.equal(counter, 1);
+});
+
+test("memoize accepts a minimal { get, has, set } cache (e.g. an LRUCache adapter)", () => {
+  const lru = LRU.make<string, number>(2);
+  const cache = {
+    get: (k: string) => LRU.get(lru, k),
+    has: (k: string) => LRU.has(lru, k),
+    set: (k: string, v: number) => LRU.set(lru, k, v),
+  };
+  let calls = 0;
+  const memoized = memoize((n: number) => (calls++, n * 2), { cache });
+  assert.equal(memoized(1), 2);
+  assert.equal(memoized(1), 2);
+  assert.equal(calls, 1);
+  memoized(2);
+  memoized(3); // evicts the key for 1
+  assert.equal(LRU.size(lru), 2);
+  memoized(1);
+  assert.equal(calls, 4);
+});
+
+test("once retries after fn throws and then caches the first success", () => {
+  let calls = 0;
+  const memoized = once(() => {
+    calls++;
+    if (calls === 1) throw new Error("boom");
+    return 42;
+  });
+  assert.throws(() => memoized(), /boom/);
+  assert.equal(memoized(), 42);
+  assert.equal(memoized(), 42);
+  assert.equal(calls, 2);
+});
+
+test("once caches an undefined result without calling fn again", () => {
+  let calls = 0;
+  const memoized = once((): undefined => {
+    calls++;
+    return undefined;
+  });
+  assert.equal(memoized(), undefined);
+  assert.equal(memoized(), undefined);
+  assert.equal(calls, 1);
 });

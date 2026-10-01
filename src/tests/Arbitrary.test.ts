@@ -1001,6 +1001,18 @@ test("date shrink candidates stay in range", () => {
 // Sizing (G7-4)
 // ---------------------------------------------------------------------------
 
+test("integer reaches the full range at size 100", () => {
+  const prng = rng(1n);
+  let max = -Infinity;
+  let min = Infinity;
+  for (let i = 0; i < 2000; i++) {
+    const v = Arb.integer(-1000, 1000)(PRNG.split(prng), 100).value;
+    max = Math.max(max, v);
+    min = Math.min(min, v);
+  }
+  assert.ok(max > 900 && min < -900, `range seen: ${min}..${max}`);
+});
+
 test("integer is biased toward the target at small sizes", () => {
   const prng = rng(2n);
   for (let i = 0; i < 500; i++) {
@@ -1010,6 +1022,29 @@ test("integer is biased toward the target at small sizes", () => {
     const w = Arb.integer(0, 10)(PRNG.split(prng), 3).value;
     assert.ok(w <= 3, `small range at size 3 produced ${w}`);
   }
+});
+
+test("integer sizes between the extremes grow exponentially", () => {
+  const prng = rng(3n);
+  let max = 0;
+  for (let i = 0; i < 2000; i++) {
+    max = Math.max(max, Arb.integer(0, 1_000_000)(PRNG.split(prng), 50).value);
+  }
+  // (1e6 + 1)^0.5 - 1 ≈ 999
+  assert.ok(max > 500 && max <= 1000, `size 50 max ${max}`);
+});
+
+test("integer handles ranges wider than 2^53", () => {
+  const prng = rng(4n);
+  const lo = -Number.MAX_SAFE_INTEGER;
+  const hi = Number.MAX_SAFE_INTEGER;
+  let big = 0;
+  for (let i = 0; i < 200; i++) {
+    const v = Arb.integer(lo, hi)(PRNG.split(prng), 100).value;
+    assert.ok(Number.isSafeInteger(v));
+    if (Math.abs(v) > 2 ** 50) big++;
+  }
+  assert.ok(big > 100, `only ${big} large values`);
 });
 
 test("integer validates its bounds", () => {
@@ -1023,8 +1058,45 @@ test("integer with min === max always yields it", () => {
   assert.equal(Arb.integer(7, 7)(rng(), 100).value, 7);
 });
 
+test("bigint reaches the full range at size 100 and stays near 0 at size 0", () => {
+  const prng = rng(5n);
+  let max = 0n;
+  for (let i = 0; i < 500; i++) {
+    const v = Arb.bigint(0n, 10n ** 15n)(PRNG.split(prng), 100).value;
+    if (v > max) max = v;
+    assert.equal(Arb.bigint(-5n, 5n)(PRNG.split(prng), 0).value, 0n);
+  }
+  assert.ok(max > 9n * 10n ** 14n, `max ${max}`);
+});
+
+test("bigint supports ranges wider than 64 bits", () => {
+  const prng = rng(6n);
+  const hi = 2n ** 200n;
+  let big = 0;
+  for (let i = 0; i < 100; i++) {
+    const v = Arb.bigint(0n, hi)(PRNG.split(prng), 100).value;
+    assert.ok(v >= 0n && v <= hi);
+    if (v > 2n ** 190n) big++;
+  }
+  assert.ok(big > 90, `only ${big} large values`);
+  // Span beyond float range: exponent overflows to Infinity at mid sizes.
+  const huge = 2n ** 1100n;
+  const w = Arb.bigint(0n, huge)(rng(7n), 50).value;
+  assert.ok(w >= 0n && w <= huge);
+  assert.equal(Arb.bigint(3n, 3n)(rng(), 100).value, 3n);
+});
+
 test("bigint validates min <= max", () => {
   assert.throws(() => Arb.bigint(5n, 1n), RangeError);
+});
+
+test("date() spans far beyond ±100 ms at size 100", () => {
+  const prng = rng(8n);
+  let spread = 0;
+  for (let i = 0; i < 200; i++) {
+    spread = Math.max(spread, Math.abs(Arb.date()(PRNG.split(prng), 100).value.getTime()));
+  }
+  assert.ok(spread > 1e15, `spread ${spread}`);
 });
 
 // ---------------------------------------------------------------------------

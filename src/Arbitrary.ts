@@ -19,7 +19,8 @@
  *
  * Design tradeoffs: `Iterable` (not `Array`) for shrinks keeps the happy path
  * cheap — children are produced only when the runner traverses during
- * shrinking.
+ * shrinking. Size (0–100, as passed by Property) scales numeric ranges
+ * exponentially from the shrink target and reaches the full range at 100.
  *
  * Prior art: Hedgehog (Haskell), fast-check (TypeScript).
  *
@@ -63,6 +64,9 @@ export type Arbitrary<T> = (this: void, prng: PRNG, size: number) => Tree<T>;
 // ---------------------------------------------------------------------------
 
 const NO_SHRINKS: readonly Tree<never>[] = [];
+
+/** Size at which numeric arbitraries cover their full declared range. */
+const FULL_SIZE = 100;
 
 function leaf<T>(value: T): Tree<T> {
   return { value, shrinks: NO_SHRINKS };
@@ -268,9 +272,16 @@ function allUnique<T>(values: T[], keyFn: Fn1<T, unknown>): boolean {
   return true;
 }
 
-/** Half-width of the sized range on one side of the shrink target. */
+/**
+ * Half-width of the sized range on one side of the shrink target. Grows
+ * exponentially with `size` (never narrower than `size` itself) and covers
+ * the full `span` once `size >= FULL_SIZE`.
+ */
 function sizedWidth(span: number, size: number): number {
-  return Math.min(span, Math.max(0, Math.floor(size)));
+  if (size >= FULL_SIZE) return span;
+  const s = Math.max(0, Math.floor(size));
+  const exp = Math.floor(Math.pow(span + 1, s / FULL_SIZE)) - 1;
+  return Math.min(span, Math.max(s, exp));
 }
 
 /** Uniform integer in [lo, hi]; exact even when the range exceeds 2^53. */
@@ -281,8 +292,13 @@ function drawInt(prng: PRNG, lo: number, hi: number): number {
 }
 
 function sizedWidthBig(span: bigint, size: number): bigint {
-  const sN = BigInt(Math.max(0, Math.floor(size)));
-  return sN < span ? sN : span;
+  if (size >= FULL_SIZE) return span;
+  const s = Math.max(0, Math.floor(size));
+  const exp = Math.pow(Number(span) + 1, s / FULL_SIZE);
+  const w = Number.isFinite(exp) ? BigInt(Math.floor(exp)) - 1n : span;
+  const sN = BigInt(s);
+  const atLeast = w > sN ? w : sN;
+  return atLeast < span ? atLeast : span;
 }
 
 /** Uniform bigint in [lo, hi], drawing as many 64-bit words as the range needs. */
@@ -304,6 +320,8 @@ function drawBigInt(prng: PRNG, lo: bigint, hi: bigint): bigint {
  * Generates integers in [min, max] (inclusive). Shrinks toward 0 (or the
  * nearest bound if 0 is outside the range).
  *
+ * Sizing: at small sizes values cluster around the shrink target; the window
+ * widens exponentially and spans the whole [min, max] at size >= 100.
  * Throws `RangeError` unless both bounds are safe integers with min <= max.
  */
 export function integer(min = -0x7fff_ffff, max = 0x7fff_ffff): Arbitrary<number> {
@@ -562,7 +580,7 @@ function alternativeShrinks<T>(
 
 /**
  * Generates bigints in [min, max] (inclusive). Shrinks toward 0n (or the
- * nearest bound). Sized like `integer`.
+ * nearest bound). Sized like `integer`: full range at size >= 100.
  * Throws `RangeError` when min > max.
  */
 export function bigint(
@@ -615,7 +633,7 @@ export function uniqueArray<T>(
     const targetLen = nextInt(prng, minLen, sizedMax);
     const trees: Tree<T>[] = [];
     const seen = new Set<unknown>();
-    const sizeCap = Math.max(size, 100);
+    const sizeCap = Math.max(size, FULL_SIZE);
     let genSize = size;
     let misses = 0;
     while (trees.length < targetLen) {

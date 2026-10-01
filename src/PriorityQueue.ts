@@ -18,6 +18,17 @@
  * overhead). For top-k extraction from a large set, `heapify` + k pops is
  * O(n + k log n) — faster than sorting the full array.
  *
+ * Internal design:
+ *   kItems: Array<T | undefined>  — heap array, first kSize slots are live
+ *   kSize:  number                — number of live elements
+ *   kCmp:   (a, b) => number      — comparator, called directly (no Reflect)
+ *
+ * Sifting moves a "hole" and writes the held value once at the end. If the
+ * comparator throws, the moves are undone, so `push`/`pop`/`heapify` are
+ * atomic: the heap is exactly as before the call. The heap is NOT stable: elements that
+ * compare equal may come out in any order — encode a sequence number in the
+ * comparator if FIFO tie-breaking is needed.
+ *
  * @example
  * ```ts
  * import * as PQ from "@dolphin278/vjuga/PriorityQueue";
@@ -111,7 +122,15 @@ export function pop<T>(pq: PriorityQueue<T>): T | undefined {
     items[0] = items[newSize];
     items[newSize] = void 0;
     pq[kSize] = newSize;
-    siftDown(pq, 0);
+    try {
+      siftDown(pq, 0);
+    } catch (e) {
+      // siftDown restored the root; put the minimum back so pop is atomic.
+      items[newSize] = items[0];
+      items[0] = min;
+      pq[kSize] = n;
+      throw e;
+    }
   }
   return min;
 }
@@ -126,50 +145,76 @@ export function heapify<T>(pq: PriorityQueue<T>, items: Iterable<T>): void {
   for (const item of items) {
     arr[n++] = item;
   }
-  pq[kItems] = arr;
-  pq[kSize] = n;
+  // Sift on a scratch heap so `pq` is untouched if the comparator throws.
+  const tmp: PriorityQueue<T> = { [kItems]: arr, [kSize]: n, [kCmp]: pq[kCmp] };
   // Bottom-up sift: start from the last non-leaf node ((n/2)-1) down to 0.
   for (let i = (n >> 1) - 1; i >= 0; i--) {
-    siftDown(pq, i);
+    siftDown(tmp, i);
   }
+  pq[kItems] = arr;
+  pq[kSize] = n;
 }
 
 // --- Internal helpers ---
 
-function siftUp<T>(pq: PriorityQueue<T>, i: number): void {
+// Sifting is exception-safe: if the comparator throws, the catch block undoes
+// the moves along the (deterministic) parent chain, restoring the exact state
+// from before the sift. Costs nothing on the non-throwing path.
+function siftUp<T>(pq: PriorityQueue<T>, start: number): void {
   const items = pq[kItems];
   const cmp = pq[kCmp];
-  const value = items[i] as T;
-  while (i > 0) {
-    const parent = (i - 1) >> 1;
-    if (Reflect.apply(cmp, undefined, [value, items[parent]]) < 0) {
-      items[i] = items[parent];
-      i = parent;
-    } else {
-      break;
+  const value = items[start] as T;
+  let i = start;
+  try {
+    while (i > 0) {
+      const parent = (i - 1) >> 1;
+      if (cmp(value, items[parent] as T) < 0) {
+        items[i] = items[parent];
+        i = parent;
+      } else {
+        break;
+      }
     }
+  } catch (e) {
+    // Shift the displaced ancestors back down, then drop the new element.
+    let carry: T | undefined = value;
+    for (let j = start; j !== i; j = (j - 1) >> 1) {
+      const t = items[j];
+      items[j] = carry;
+      carry = t;
+    }
+    items[start] = void 0;
+    pq[kSize] = start;
+    throw e;
   }
   items[i] = value;
 }
 
-function siftDown<T>(pq: PriorityQueue<T>, i: number): void {
+function siftDown<T>(pq: PriorityQueue<T>, start: number): void {
   const items = pq[kItems];
   const cmp = pq[kCmp];
   const n = pq[kSize];
-  const value = items[i] as T;
-  while (true) {
-    const left = (i << 1) + 1;
-    if (left >= n) break;
-    const right = left + 1;
-    // Pick the smaller child.
-    const child =
-      right < n && Reflect.apply(cmp, undefined, [items[right], items[left]]) < 0 ? right : left;
-    if (Reflect.apply(cmp, undefined, [items[child], value]) < 0) {
-      items[i] = items[child];
-      i = child;
-    } else {
-      break;
+  const value = items[start] as T;
+  let i = start;
+  try {
+    while (true) {
+      const left = (i << 1) + 1;
+      if (left >= n) break;
+      const right = left + 1;
+      // Pick the smaller child.
+      const child = right < n && cmp(items[right] as T, items[left] as T) < 0 ? right : left;
+      if (cmp(items[child] as T, value) < 0) {
+        items[i] = items[child];
+        i = child;
+      } else {
+        break;
+      }
     }
+  } catch (e) {
+    // Shift the promoted children back down, restoring `value` at `start`.
+    for (let j = i; j !== start; j = (j - 1) >> 1) items[j] = items[(j - 1) >> 1];
+    items[start] = value;
+    throw e;
   }
   items[i] = value;
 }

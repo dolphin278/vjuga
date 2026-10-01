@@ -130,6 +130,9 @@ export interface GenConfig {
   readonly protoKeys: boolean;
 }
 
+/** JSON-oriented config: no TOON-only shapes, prototype-colliding keys allowed. */
+export const DEFAULT_CFG: GenConfig = { toon: false, protoKeys: true };
+
 export interface Generated {
   readonly schema: S.Schema;
   /** True if the schema intentionally contains a shape TOON rejects. */
@@ -211,7 +214,7 @@ export function genSchema(r: Rng, cfg: GenConfig, depth = 0, pos: Pos = "root"):
   };
   const leaf = depth >= 3 || r() < 0.3;
   let schema: S.Schema;
-  const x = leaf ? 0 : int(r, 7);
+  const x = leaf ? 0 : int(r, 8);
   switch (x) {
     case 0:
       schema = genPrimitive(r);
@@ -238,6 +241,11 @@ export function genSchema(r: Rng, cfg: GenConfig, depth = 0, pos: Pos = "root"):
     case 5:
       schema = genUnion(r, cfg, depth, () => (unsupported = true), child);
       break;
+    case 6:
+      schema = genCombinator(r, () => child(pos === "field" ? "inner" : pos));
+      // TOON has no layout for unknown / allOf / not / conditional
+      if (cfg.toon && schema.kind !== "union") unsupported = true;
+      break;
     default:
       // nullable(optional(T)) as a field would mean "present but undefined"
       schema = S.nullable(child(pos === "field" ? "inner" : pos));
@@ -254,6 +262,27 @@ export function genSchema(r: Rng, cfg: GenConfig, depth = 0, pos: Pos = "root"):
     }
   }
   return { schema, unsupported };
+}
+
+/**
+ * Wrap `inner()` in a new-kind combinator that accepts exactly the values
+ * `genValue` produces for it (genValue reads the first allOf variant and the
+ * conditional's else branch).
+ */
+function genCombinator(r: Rng, inner: () => S.Schema): S.Schema {
+  switch (int(r, 5)) {
+    case 0:
+      return S.unknown();
+    case 1:
+      return S.allOf(inner(), S.unknown());
+    case 2:
+      return S.allOf(inner(), S.not(S.literal("\u0000never")));
+    case 3:
+      return S.conditional(S.string(), S.string(), inner());
+    default:
+      // A single variant is trivially exactly-one
+      return S.oneOf(inner());
+  }
 }
 
 function genUnion(
@@ -285,7 +314,8 @@ function genUnion(
       for (const k of genKeys(r, cfg, int(r, 3), [disc])) props[k] = child("field");
       vs.push(S.object(props));
     }
-    return S.union(...vs);
+    // Distinct tags make a discriminated oneOf exactly-one by construction
+    return r() < 0.3 ? S.oneOf(...vs) : S.union(...vs);
   }
   if (kind === 2) {
     // Non-discriminated objects with disjoint required keys, plus maybe one
@@ -364,6 +394,14 @@ export function genValue(r: Rng, schema: S.Schema): unknown {
       return r() < 0.3 ? undefined : genValue(r, schema.meta.inner);
     case "nullable":
       return r() < 0.3 ? null : genValue(r, schema.meta.inner);
+    case "unknown":
+      return r() < 0.5 ? genLiteralValue(r) : [genLiteralValue(r), { k: genLiteralValue(r) }];
+    case "allOf":
+      return genValue(r, schema.meta.variants[0]);
+    case "conditional":
+      return genValue(r, schema.meta.else);
+    case "not":
+      return genLiteralValue(r); // only generated inside allOf, never reached
   }
 }
 

@@ -2,6 +2,8 @@ import { test } from "node:test";
 import * as S from "../../../schema/Schema.js";
 import * as Arb from "../../../Arbitrary.js";
 import * as Prop from "../../../Property.js";
+import { validate } from "../../../schema/Validate.js";
+import * as G from "./_serial-gen.js";
 
 const NUM_RUNS = 1_000_000;
 
@@ -124,6 +126,11 @@ test("all builders produce {kind, meta} shape", () => {
     S.union(S.string(), S.number()),
     S.optional(S.string()),
     S.nullable(S.string()),
+    S.unknown(),
+    S.allOf(S.string()),
+    S.not(S.string()),
+    S.conditional(S.string()),
+    S.oneOf(S.string()),
   ];
   for (const s of schemas) {
     if (!("kind" in s && "meta" in s))
@@ -163,6 +170,43 @@ test("findDiscriminant detects common literal property", () => {
         S.object({ tag: S.literal(b), x: S.number() }),
       ];
       return S.findDiscriminant(variants) === "tag";
+    },
+    { numRuns: NUM_RUNS },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Random schemas (incl. unknown / allOf / not / conditional / oneOf):
+// toJsonSchema → fromJsonSchema keeps every JSON value's verdict
+// ---------------------------------------------------------------------------
+
+type Verdict = (v: unknown) => readonly [boolean, unknown];
+// Cast: Infer<> over the base `Schema` union is "excessively deep" for tsc
+const compile = (s: S.Schema): Verdict => validate(s as S.StringSchema) as Verdict;
+
+test("random schemas keep their verdicts through toJsonSchema → fromJsonSchema", () => {
+  Prop.assert(
+    Arb.tuple(Arb.integer(0, 0x7fffffff), Arb.string({ maxLength: 8 })),
+    ([n, str]) => {
+      const seed = G.hashSeed(n + ":" + str);
+      const { schema } = G.genSchema(G.rng(seed), { toon: false, protoKeys: true });
+      const back = S.fromJsonSchema(S.toJsonSchema(schema));
+      if (!back[0]) throw new Error(`seed=${seed} lowering failed: ${back[1]}`);
+      const a = compile(schema);
+      const b = compile(back[1]);
+      const r = G.rng(seed ^ 0x2545f491);
+      for (let i = 0; i < 4; i++) {
+        // JSON values only: undefined has no JSON Schema meaning
+        const raw =
+          i < 2 ? G.genValue(r, schema) : G.genValue(r, G.genSchema(r, G.DEFAULT_CFG).schema);
+        const json = JSON.stringify(raw);
+        if (json === undefined) continue;
+        const v: unknown = JSON.parse(json);
+        if (a(v)[0] !== b(v)[0]) {
+          throw new Error(`seed=${seed}\nschema=${JSON.stringify(schema)}\nvalue=${json}`);
+        }
+      }
+      return true;
     },
     { numRuns: NUM_RUNS },
   );

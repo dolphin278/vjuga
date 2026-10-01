@@ -214,6 +214,84 @@ if (missingUnitCoverage.length > 0) {
   process.exit(1);
 }
 
+// Module docstring shape: title line `ModuleName — ...` and at most
+// MAX_DOCSTRING_LINES lines between the `/**` and `*/` delimiters.
+const MAX_DOCSTRING_LINES = 40;
+const docstringProblems = [];
+for (const m of modules) {
+  const source = readFileSync(join(ROOT, "src", `${m.name}.ts`), "utf8").trimStart();
+  const end = source.indexOf("*/");
+  const block = source.slice(0, end).split("\n");
+  const bodyLines = block.length - 1; // excludes the closing delimiter line
+  const base = m.name.split("/").pop();
+  if (!(block[1] ?? "").startsWith(` * ${base} — `)) {
+    docstringProblems.push(`${m.name}: first docstring line must start with "${base} — "`);
+  }
+  if (bodyLines - 1 > MAX_DOCSTRING_LINES) {
+    docstringProblems.push(
+      `${m.name}: module docstring has ${bodyLines - 1} lines (max ${MAX_DOCSTRING_LINES})`,
+    );
+  }
+}
+if (docstringProblems.length > 0) {
+  console.error("lint-docs: module docstring format violations:");
+  for (const problem of docstringProblems) console.error(`  ${problem}`);
+  process.exit(1);
+}
+
+// Call-style references (`name(...)`) in module entries of llms.txt and
+// AGENTS.md tables must name a real export of that module.
+const NON_EXPORT_CALLS = new Set(["fn", "import"]);
+function exportNames(moduleName) {
+  const source = readFileSync(join(ROOT, "src", `${moduleName}.ts`), "utf8");
+  const names = new Set();
+  const decl =
+    /^export\s+(?:declare\s+)?(?:async\s+)?(?:function\*?|const|let|class|abstract\s+class|type|interface|enum)\s+([A-Za-z_$][\w$]*)/gm;
+  for (const match of source.matchAll(decl)) names.add(match[1]);
+  for (const match of source.matchAll(/^export\s+(?:type\s+)?\{([^}]*)\}/gm)) {
+    for (const item of match[1].split(",")) {
+      const name = item.trim().split(/\s+as\s+/).pop();
+      if (name) names.add(name);
+    }
+  }
+  return names;
+}
+function citedCalls(text) {
+  const out = [];
+  for (const span of text.matchAll(/`([^`]+)`/g)) {
+    const call = span[1].match(/^([A-Za-z_$][\w$]*)\(/);
+    if (call && !NON_EXPORT_CALLS.has(call[1])) out.push(call[1]);
+  }
+  return out;
+}
+const citeProblems = [];
+const knownModules = new Set(modules.map((m) => m.name));
+for (const line of llmsTxt.split("\n")) {
+  const entry = line.match(/^- `@dolphin278\/vjuga\/([\w/]+)\.js`:(.*)$/);
+  if (!entry || !knownModules.has(entry[1])) continue;
+  const names = exportNames(entry[1]);
+  for (const name of citedCalls(entry[2])) {
+    if (!names.has(name)) citeProblems.push(`llms.txt ${entry[1]}: \`${name}(\` is not an export`);
+  }
+}
+for (const line of agentsMd.split("\n")) {
+  if (!line.startsWith("|")) continue;
+  const cells = line.split("|").map((c) => c.trim());
+  const moduleCell = cells[2]?.match(/^`([\w/]+)`$/);
+  if (!moduleCell || !knownModules.has(moduleCell[1])) continue;
+  const names = exportNames(moduleCell[1]);
+  for (const name of citedCalls(cells[3] ?? "")) {
+    if (!names.has(name)) {
+      citeProblems.push(`AGENTS.md ${moduleCell[1]}: \`${name}(\` is not an export`);
+    }
+  }
+}
+if (citeProblems.length > 0) {
+  console.error("lint-docs: docs cite exports that do not exist:");
+  for (const problem of citeProblems) console.error(`  ${problem}`);
+  process.exit(1);
+}
+
 const canonicalGuide = readFileSync(join(ROOT, CANONICAL_GUIDE), "utf8");
 if (!canonicalGuide.includes("authoritative source for repo-specific engineering policy")) {
   console.error(

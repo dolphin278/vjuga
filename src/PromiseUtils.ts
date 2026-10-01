@@ -6,6 +6,10 @@
  *
  * Prior art: Bluebird's `Promise.props()`.
  *
+ * `props` resolves the object's OWN ENUMERABLE keys, string and symbol alike;
+ * inherited keys are ignored. The result is a null-prototype object (no
+ * `toString`/`hasOwnProperty`; safe for keys like `__proto__`).
+ *
  * @example
  * ```ts
  * import * as PromiseUtils from "@dolphin278/vjuga/PromiseUtils";
@@ -16,19 +20,20 @@
  * ```
  */
 export async function props<T extends object>(obj: T): Promise<{ [K in keyof T]: Awaited<T[K]> }> {
-  const keys: string[] = [];
+  const keys: (string | symbol)[] = [];
   const promises: unknown[] = [];
 
-  for (const key in obj) {
+  for (const key of Reflect.ownKeys(obj)) {
+    if (!Object.prototype.propertyIsEnumerable.call(obj, key)) continue;
     keys.push(key);
-    promises.push(obj[key]);
+    promises.push((obj as Record<string | symbol, unknown>)[key]);
   }
 
   const values = await Promise.all(promises);
   const result = Object.create(null) as { [K in keyof T]: Awaited<T[K]> };
 
   for (let i = 0; i < keys.length; i++) {
-    (result as Record<string, unknown>)[keys[i]] = values[i];
+    (result as Record<string | symbol, unknown>)[keys[i]] = values[i];
   }
 
   return result;

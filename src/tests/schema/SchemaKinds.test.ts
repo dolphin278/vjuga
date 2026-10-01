@@ -305,3 +305,40 @@ test("TOON primitive oneOf parses with exactly-one semantics", () => {
   assert.equal(ST.parse(n)("v: null")[0], false);
   assert.deepEqual(ST.parse(n)("v: x"), [true, { v: "x" }]);
 });
+
+test("allOf / conditional properties that accept undefined may be absent", () => {
+  const s = S.object({
+    a: S.allOf(S.optional(S.string()), S.optional(S.unknown())),
+    c: S.conditional(S.string(), S.string(), S.optional(S.number())),
+    r: S.allOf(S.string()),
+    u: S.oneOf(S.optional(S.string()), S.optional(S.literal("x"))),
+  });
+  assert.equal(S.propertyMayBeAbsent(s.meta.properties.a), true);
+  assert.equal(S.propertyMayBeAbsent(s.meta.properties.c), true);
+  assert.equal(S.propertyMayBeAbsent(s.meta.properties.r), false);
+  assert.equal(S.propertyMayBeAbsent(S.optional(S.string())), true);
+  assert.equal(
+    S.propertyMayBeAbsent(S.conditional(S.optional(S.null_()), S.optional(S.string()))),
+    true,
+  );
+  assert.equal(S.propertyMayBeAbsent(S.conditional(S.optional(S.null_()), S.string())), false);
+  assert.equal(S.propertyMayBeAbsent(S.allOf(S.nullable(S.optional(S.string())))), true);
+  assert.equal(S.propertyMayBeAbsent(S.allOf(S.union(S.string(), S.optional(S.null_())))), true);
+  assert.equal(S.propertyMayBeAbsent(s.meta.properties.u), false); // oneOf kind is "union"
+  assert.equal(S.propertyMayBeAbsent(S.allOf(s.meta.properties.u)), false); // both match undefined
+  assert.equal(S.propertyMayBeAbsent(S.allOf(S.oneOf(S.optional(S.string()), S.null_()))), true);
+  assert.equal(S.propertyMayBeAbsent(S.allOf(S.literal("x"))), false);
+  // toJsonSchema leaves them out of `required`
+  assert.deepEqual((S.toJsonSchema(s) as { required: string[] }).required, ["r", "u"]);
+  // stringify omits absent keys and emits valid JSON; parse round-trips
+  const str = SJ.stringify(s);
+  const par = SJ.parse(s);
+  assert.equal(str({ r: "x", u: "y" } as never), '{"r":"x","u":"y"}');
+  assert.equal(str({ a: "s", c: 1, r: "x", u: "y" } as never), '{"a":"s","c":1,"r":"x","u":"y"}');
+  assert.deepEqual(par('{"r":"x","u":"y"}'), [true, { r: "x", u: "y" }]);
+  // outside an object field, undefined emits null like optional(T)
+  assert.equal(
+    SJ.stringify(S.array(S.allOf(S.optional(S.string()))))([undefined] as never),
+    "[null]",
+  );
+});

@@ -242,7 +242,10 @@ export function genSchema(r: Rng, cfg: GenConfig, depth = 0, pos: Pos = "root"):
       schema = genUnion(r, cfg, depth, () => (unsupported = true), child);
       break;
     case 6:
-      schema = genCombinator(r, () => child(pos === "field" ? "inner" : pos));
+      // In a field the wrapped child may itself be optional (key may be absent)
+      schema = genCombinator(r, () =>
+        child(pos === "field" ? (r() < 0.5 ? "field" : "inner") : pos),
+      );
       // TOON has no layout for unknown / allOf / not / conditional
       if (cfg.toon && schema.kind !== "union") unsupported = true;
       break;
@@ -273,15 +276,19 @@ function genCombinator(r: Rng, inner: () => S.Schema): S.Schema {
   switch (int(r, 5)) {
     case 0:
       return S.unknown();
+    // The extra variants accept undefined so an optional inner stays optional
     case 1:
-      return S.allOf(inner(), S.unknown());
+      return S.allOf(inner(), S.optional(S.unknown()));
     case 2:
-      return S.allOf(inner(), S.not(S.literal("\u0000never")));
+      return S.allOf(inner(), S.optional(S.not(S.literal("\u0000never"))));
     case 3:
       return S.conditional(S.string(), S.string(), inner());
-    default:
-      // A single variant is trivially exactly-one
-      return S.oneOf(inner());
+    default: {
+      // A single variant is trivially exactly-one. union(optional(T)) is not
+      // treated as an absent-able field by serializers — unwrap it.
+      const x = inner();
+      return S.oneOf(x.kind === "optional" ? x.meta.inner : x);
+    }
   }
 }
 

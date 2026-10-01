@@ -45,7 +45,7 @@ import { parse as jsonParse, escapeJsonString } from "../JSON.js";
 import type { Schema, Infer } from "./Schema.js";
 import type { SchemaError } from "./Validate.js";
 import { emitStandardRefs, emitValidation, validate } from "./Validate.js";
-import { findDiscriminant } from "./Schema.js";
+import { findDiscriminant, propertyMayBeAbsent } from "./Schema.js";
 import { unreachable } from "../FunctionUtils.js";
 import {
   type CodeBuffer,
@@ -153,7 +153,8 @@ function walkStringify(buf: CodeBuffer, schema: Schema, accessor: string): strin
     case "not":
     case "conditional":
       // No single shape to specialize on — the value is serialized as-is
-      return `_js(${accessor})`;
+      // (undefined outside an object field emits null, like optional(T))
+      return `(${accessor} === undefined ? "null" : _js(${accessor}))`;
     default:
       unreachable(schema);
   }
@@ -167,7 +168,7 @@ function walkStringifyObject(
   const keys = Object.keys(props);
   if (keys.length === 0) return `"{}"`;
 
-  const hasOptional = keys.some((k) => props[k].kind === "optional");
+  const hasOptional = keys.some((k) => propertyMayBeAbsent(props[k]));
 
   // All-required path: return a pure expression — no helper function needed.
   // This is critical for inlining into array loops: the expression is spliced
@@ -202,6 +203,9 @@ function walkStringifyObject(
         expr: walkStringify(buf, child.meta.inner, childAccessor),
         optional: true,
       });
+    } else if (propertyMayBeAbsent(child)) {
+      // allOf / conditional accepting undefined: omit the key when absent
+      childExprs.push({ key, expr: walkStringify(buf, child, childAccessor), optional: true });
     } else {
       childExprs.push({ key, expr: walkStringify(buf, child, childAccessor), optional: false });
     }

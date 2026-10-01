@@ -544,7 +544,7 @@ function buildJsonSchemaNode(s: Schema, built: Map<Schema, JsonSchemaObject>): J
         // JSON Schema (see "optional" case below). Required/optional is tracked
         // via the required array, not the JSON Schema itself.
         setOwn(properties, key, built.get(child)!);
-        if (child.kind !== "optional") required.push(key);
+        if (!propertyMayBeAbsent(child)) required.push(key);
       }
       const out: Record<string, unknown> = { type: "object", properties };
       if (required.length > 0) out.required = required;
@@ -1357,6 +1357,42 @@ function lowerArrayKeywords(ctx: LowerCtx, js: Record<string, unknown>, base: st
 // ---------------------------------------------------------------------------
 // Schema introspection
 // ---------------------------------------------------------------------------
+
+/**
+ * True if an object property with this schema may be absent: `optional(T)`,
+ * or an `allOf` / `conditional` that accepts `undefined` (e.g.
+ * `allOf(optional(T), ...)`). Serializers use it to omit absent keys and
+ * `toJsonSchema` to leave the key out of `required`.
+ */
+export function propertyMayBeAbsent(schema: Schema): boolean {
+  if (schema.kind === "optional") return true;
+  return (
+    (schema.kind === "allOf" || schema.kind === "conditional") && acceptsUndefinedExact(schema)
+  );
+}
+
+/** Exactly whether `schema` accepts the value `undefined`. */
+function acceptsUndefinedExact(s: Schema): boolean {
+  switch (s.kind) {
+    case "optional":
+      return true;
+    case "nullable":
+      return acceptsUndefinedExact(s.meta.inner);
+    case "union": {
+      const matches = (s.meta.variants as readonly Schema[]).filter(acceptsUndefinedExact).length;
+      return s.meta.exclusive === true ? matches === 1 : matches > 0;
+    }
+    case "allOf":
+      return (s.meta.variants as readonly Schema[]).every(acceptsUndefinedExact);
+    case "conditional":
+      return acceptsUndefinedExact(s.meta.if)
+        ? acceptsUndefinedExact(s.meta.then)
+        : acceptsUndefinedExact(s.meta.else);
+    default:
+      // literal values are never undefined; unknown / not reject it
+      return false;
+  }
+}
 
 /** True if the schema describes a leaf value (no nesting). */
 export function isPrimitive(schema: Schema): boolean {

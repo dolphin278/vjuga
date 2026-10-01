@@ -252,9 +252,9 @@ function toonUnquote(s: string): string {
 /** Canonicalize number per TOON spec. NaN/Infinity → null. */
 function canonicalNumber(n: number): string {
   if (n !== n || !isFinite(n)) return "null";
-  const s = "" + n;
-  if (s.indexOf("e") === -1 && s.indexOf("E") === -1) return s;
-  return n.toFixed(20).replace(/\.?0+$/, "");
+  // JS shortest round-trip form. Exponent notation (1e+21, 1e-7) is valid
+  // TOON (JSON number grammar) and parses back exactly.
+  return "" + n;
 }
 
 /**
@@ -581,7 +581,7 @@ function emitTabularStringify(
 
   emit(
     ctx.buf,
-    `s += ${pad} + ${escapeJsonString(header)} + "[" + ${accessor}.length + "]${fieldHeader}:\\n";`,
+    `s += ${pad} + ${escapeJsonString(header)} + "[" + ${accessor}.length + ${escapeJsonString("]" + fieldHeader + ":\n")};`,
   );
 
   // Inline cell expressions directly in the loop body — eliminates one level
@@ -1222,7 +1222,15 @@ function emitTabularParse(
     const cellVar = freshVar(buf);
     emit(buf, `if (${j} < cells.length) {`);
     buf.indent++;
-    emitPrimValueParse(buf, inner, `cells[${j}]`, `${pathExpr} + ".${f}"`, cellVar);
+    // Field names are untrusted (e.g. from fromJsonSchema) — always emit them
+    // as escaped string literals, never raw inside generated source.
+    emitPrimValueParse(
+      buf,
+      inner,
+      `cells[${j}]`,
+      `${pathExpr} + ${escapeJsonString("." + f)}`,
+      cellVar,
+    );
     emit(buf, `obj[${escapeJsonString(f)}] = ${cellVar};`);
     buf.indent--;
     emit(buf, "}");

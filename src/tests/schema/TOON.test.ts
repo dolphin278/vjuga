@@ -599,18 +599,30 @@ test("parse flexible order — rejects missing required", () => {
 // Coverage: canonicalNumber exponential notation
 // ---------------------------------------------------------------------------
 
-test("stringify number with exponential notation", () => {
-  const fn = ST.stringify(S.object({ n: S.number() }));
-  // 5e-7 triggers exponential notation in JS ("5e-7"), canonicalNumber must expand it
-  const result = fn({ n: 5e-7 });
-  assert.ok(result.startsWith("n: "));
-  const numPart = result.slice(3);
-  // Verify expanded form without exponential notation
-  assert.ok(
-    !numPart.includes("e") && !numPart.includes("E"),
-    "exponential notation should be expanded",
-  );
-  assert.equal(Number(numPart), 5e-7);
+test("numbers with exponent notation round-trip exactly (G9-1)", () => {
+  const schema = S.object({ n: S.number() });
+  const str = ST.stringify(schema);
+  const par = ST.parse(schema);
+  for (const n of [5e-7, 1e100, -1e30, 1e21, 1.5e300, 1e-21, 1.2345678901234567e-10, 5e-324]) {
+    const out = str({ n });
+    assert.equal(out, "n: " + String(n));
+    assert.deepEqual(assertOk(par(out)), { n });
+  }
+});
+
+test("tabular field names are never interpolated into generated code (G9-8)", () => {
+  const g = globalThis as { PWN?: number };
+  g.PWN = 0;
+  const evil = 'a"+(globalThis.PWN=1)+"';
+  const schema = S.object({ xs: S.array(S.object({ [evil]: S.integer() })) });
+  const str = ST.stringify(schema);
+  const par = ST.parse(schema);
+  const out = str({ xs: [{ [evil]: 1 }] });
+  assert.equal(g.PWN, 0);
+  const e = assertErr(par(out.replace("\n  1", "\n  notanumber")));
+  assert.equal(e.path, "xs." + evil);
+  assert.equal(g.PWN, 0);
+  delete g.PWN;
 });
 
 // ---------------------------------------------------------------------------

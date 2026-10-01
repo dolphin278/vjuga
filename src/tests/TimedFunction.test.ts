@@ -74,3 +74,29 @@ test("debounce: fires again after a second quiet period", async () => {
   await sleep(TICK);
   assert.deepEqual(calls, [1, 2]);
 });
+
+test("throttle: re-entrant call from fn is dropped", async () => {
+  let calls = 0;
+  const fn: () => void = throttle(() => {
+    calls++;
+    if (calls < 10) fn();
+  }, W);
+  fn();
+  assert.equal(calls, 1);
+  await sleep(TICK);
+});
+
+test("throttle: throwing fn still starts the window", async () => {
+  let calls = 0;
+  const fn = throttle(() => {
+    calls++;
+    throw new Error("boom");
+  }, W);
+  assert.throws(() => fn(), /boom/);
+  fn(); // within window - dropped, not re-invoked
+  assert.equal(calls, 1);
+  await sleep(TICK);
+  assert.throws(() => fn(), /boom/);
+  assert.equal(calls, 2);
+  await sleep(TICK);
+});

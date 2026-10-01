@@ -1,6 +1,9 @@
 import { test, describe } from "node:test";
 import * as assert from "node:assert/strict";
 import { setTimeout as sleep } from "node:timers/promises";
+import { getEventListeners } from "node:events";
+import { relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import * as WP from "../WorkerPool.js";
 import { WorkerPoolDestroyedError, WorkerExitError } from "../WorkerPool.js";
 
@@ -258,12 +261,11 @@ describe("error forwarding", () => {
     await WP.destroy(pool);
   });
 
-  test("non-Error thrown is serialized", async () => {
+  test("non-Error thrown rejects with the (cloned) value itself", async () => {
     const throwStringUrl = new URL("./fixtures/throw-string.mjs", import.meta.url).href;
     const pool = WP.make({ filename: throwStringUrl, maxThreads: 1 });
     const err = await WP.run(pool, null).catch((e: unknown) => e);
-    assert.ok(err instanceof Error);
-    assert.equal(err.message, "string error");
+    assert.equal(err, "string error");
     await WP.destroy(pool);
   });
 });
@@ -512,6 +514,229 @@ describe("worker lifecycle", () => {
     await sleep(200);
     const result = await WP.run(pool, "test2");
     assert.equal(result, "test2");
+    await WP.destroy(pool);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review findings (G5-1 .. G5-11)
+// ---------------------------------------------------------------------------
+
+const fixture = (name: string): string => new URL(`./fixtures/${name}`, import.meta.url).href;
+const isBun = typeof (globalThis as Record<string, unknown>).Bun !== "undefined";
+
+describe("G5-1/G5-5: robust error forwarding", () => {
+  test("plain-object cause does not crash the process; worker stays usable", async () => {
+    const pool = WP.make({ filename: fixture("throw-cause-obj.mjs"), maxThreads: 1 });
+    const err = await WP.run(pool, null).catch((e: unknown) => e);
+    assert.ok(err instanceof Error);
+    assert.equal(err.message, "x");
+    assert.deepEqual(err.cause, { message: "m" });
+    // Worker returned to idle: a second task on the same single worker settles.
+    const err2 = await WP.run(pool, null).catch((e: unknown) => e);
+    assert.ok(err2 instanceof Error);
+    await WP.destroy(pool);
+  });
+
+  test("Error with an uncloneable property is forwarded without it", async () => {
+    const pool = WP.make({ filename: fixture("throw-uncloneable.mjs"), maxThreads: 1 });
+    const err = (await WP.run(pool, null).catch((e: unknown) => e)) as Error & { ok?: number };
+    assert.ok(err instanceof Error);
+    assert.equal(err.message, "fn prop");
+    assert.equal(err.ok, 7);
+    assert.equal("fn" in err, false);
+    // Worker survived (no DataCloneError crash).
+    const again = (await WP.run(pool, null).catch((e: unknown) => e)) as Error;
+    assert.equal(again.message, "fn prop");
+    await WP.destroy(pool);
+  });
+
+  test("uncloneable result rejects with DataCloneError; worker stays usable", async () => {
+    const pool = WP.make<string, string>({ filename: fixture("return-fn.mjs"), maxThreads: 1 });
+    const err = await WP.run(pool, "bad").catch((e: unknown) => e);
+    assert.ok(err instanceof Error);
+    assert.ok(!(err instanceof WorkerExitError));
+    assert.equal(await WP.run(pool, "ok"), "ok");
+    await WP.destroy(pool);
+  });
+
+  test("cause cycle is cut, not infinite", async () => {
+    const pool = WP.make({ filename: fixture("throw-cycle.mjs"), maxThreads: 1 });
+    const err = await WP.run(pool, null).catch((e: unknown) => e);
+    assert.ok(err instanceof Error);
+    assert.equal(err.message, "loop");
+    await WP.destroy(pool);
+  });
+
+  test("thrown plain objects are cloned; uncloneable ones fall back to a string", async () => {
+    const pool = WP.make<string, never>({ filename: fixture("throw-object.mjs"), maxThreads: 1 });
+    assert.deepEqual(await WP.run(pool, "x").catch((e: unknown) => e), {
+      code: 7,
+      nested: { a: [1, 2] },
+    });
+    assert.equal(await WP.run(pool, "fn").catch((e: unknown) => e), "[object Object]");
+    await WP.destroy(pool);
+  });
+
+  test("uncloneable task data rejects the task and frees the worker", async () => {
+    const pool = WP.make<unknown, unknown>({ filename: echoUrl, maxThreads: 1 });
+    const err = await WP.run(pool, () => 1).catch((e: unknown) => e);
+    assert.ok(err instanceof Error);
+    assert.equal(WP.activeCount(pool), 0);
+    // Queued behind a spawning worker (READY path) and via the idle path.
+    const [a, b] = await Promise.allSettled([WP.run(pool, () => 1), WP.run(pool, "fine")]);
+    assert.equal(a.status, "rejected");
+    assert.equal(b.status, "fulfilled");
+    assert.equal(await WP.run(pool, "after"), "after");
+    await WP.destroy(pool);
+  });
+});
+
+describe("G5-2: crash recovery dispatches queued work", () => {
+  test("minThreads=0: task queued behind a crashing task still runs", async () => {
+    if (isBun) return; // Bun does not fire 'exit' on process.exit() in a worker
+    const pool = WP.make<string, string>({
+      filename: new URL("./fixtures/crash.mjs", import.meta.url).href,
+      minThreads: 0,
+      maxThreads: 1,
+    });
+    const crash = WP.run(pool, "crash").catch((e: unknown) => e);
+    const next = WP.run(pool, "alive");
+    assert.ok((await crash) instanceof WorkerExitError);
+    assert.equal(await next, "alive");
+    await WP.drain(pool);
+    await WP.destroy(pool);
+  });
+});
+
+describe("uncaught exception in a ready worker", () => {
+  test("rejects the in-flight task, queued task runs on a replacement", async () => {
+    const pool = WP.make<string, string>({ filename: fixture("uncaught.mjs"), maxThreads: 1 });
+    const boom = WP.run(pool, "boom").catch((e: unknown) => e);
+    const next = WP.run(pool, "alive");
+    const err = await boom;
+    assert.ok(err instanceof Error);
+    assert.match(err.message, /uncaught in worker/);
+    assert.equal(await next, "alive");
+    await WP.destroy(pool);
+  });
+});
+
+describe("G5-3: startup failure", () => {
+  test("rejects queued tasks with the startup error and does not respawn", async () => {
+    const counter = new SharedArrayBuffer(4);
+    const pool = WP.make<number, number>({
+      filename: fixture("bad-init-count.mjs"),
+      minThreads: 1,
+      maxThreads: 1,
+      workerData: counter,
+    });
+    const results = await Promise.allSettled([WP.run(pool, 1), WP.run(pool, 2), WP.run(pool, 3)]);
+    for (const r of results) {
+      assert.equal(r.status, "rejected");
+      assert.match(String((r as PromiseRejectedResult).reason), /init failed/);
+    }
+    await sleep(400);
+    // minThreads=1 pre-spawn (1) + one on-demand spawn at most; never a loop.
+    assert.ok(Atomics.load(new Int32Array(counter), 0) <= 2);
+    await WP.drain(pool);
+    await WP.destroy(pool);
+  });
+
+  test("exit before READY without an error event rejects with WorkerExitError", async () => {
+    if (isBun) return;
+    const pool = WP.make({ filename: fixture("exit-on-import.mjs"), maxThreads: 1 });
+    const err = await WP.run(pool, 1).catch((e: unknown) => e);
+    assert.ok(err instanceof WorkerExitError);
+    await WP.destroy(pool);
+  });
+});
+
+describe("G5-6: equal priorities run in submission order", () => {
+  test("30 equal-priority tasks complete FIFO on a single worker", async () => {
+    const pool = WP.make<number, number>({ filename: slowUrl, maxThreads: 1 });
+    const blocker = WP.run(pool as unknown as WP.WorkerPool<number, string>, 50);
+    const order: number[] = [];
+    const ps: Promise<unknown>[] = [];
+    for (let i = 0; i < 30; i++) {
+      ps.push(WP.run(pool, 0, { priority: 1 }).then(() => order.push(i)));
+    }
+    await blocker;
+    await Promise.all(ps);
+    assert.deepEqual(
+      order,
+      Array.from({ length: 30 }, (_, i) => i),
+    );
+    await WP.destroy(pool);
+  });
+});
+
+describe("G5-7: abort listener cleanup", () => {
+  test("listener removed after completion and after error", async () => {
+    const pool = WP.make<string, string>({ filename: echoUrl, maxThreads: 2 });
+    const throwing = WP.make({ filename: throwUrl, maxThreads: 1 });
+    const controller = new AbortController();
+    for (let i = 0; i < 5; i++) await WP.run(pool, "x", { signal: controller.signal });
+    await WP.run(throwing, null, { signal: controller.signal }).catch(() => {});
+    assert.equal(getEventListeners(controller.signal, "abort").length, 0);
+    await WP.destroy(pool);
+    await WP.destroy(throwing);
+  });
+
+  test("listener removed when the pool is destroyed under a pending task", async () => {
+    const pool = WP.make<number, string>({ filename: slowUrl, maxThreads: 1 });
+    const controller = new AbortController();
+    const p = WP.run(pool, 5000, { signal: controller.signal }).catch((e: unknown) => e);
+    await sleep(30);
+    await WP.destroy(pool);
+    assert.ok((await p) instanceof WorkerPoolDestroyedError);
+    assert.equal(getEventListeners(controller.signal, "abort").length, 0);
+  });
+});
+
+describe("G5-8: abort of an in-flight task", () => {
+  test("rejects at once but stays active until the worker replies", async () => {
+    const pool = WP.make<number, string>({ filename: slowUrl, maxThreads: 1 });
+    const controller = new AbortController();
+    const p = WP.run(pool, 300, { signal: controller.signal });
+    await sleep(50);
+    controller.abort();
+    await assert.rejects(() => p, { name: "AbortError" });
+    assert.equal(WP.activeCount(pool), 1);
+    await WP.drain(pool); // must wait for the worker, not resolve early
+    assert.equal(WP.activeCount(pool), 0);
+    // Worker is free again.
+    assert.equal(await WP.run(pool, 10), "done");
+    await WP.destroy(pool);
+  });
+});
+
+describe("G5-11: filename and workerData", () => {
+  test("relative string path resolves against cwd", async () => {
+    const abs = fileURLToPath(fixture("echo.mjs"));
+    const pool = WP.make<string, string>({ filename: relative(process.cwd(), abs), maxThreads: 1 });
+    assert.equal(await WP.run(pool, "rel"), "rel");
+    await WP.destroy(pool);
+  });
+
+  test("absolute string path works", async () => {
+    const pool = WP.make<string, string>({
+      filename: fileURLToPath(fixture("echo.mjs")),
+      maxThreads: 1,
+    });
+    assert.equal(await WP.run(pool, "abs"), "abs");
+    await WP.destroy(pool);
+  });
+
+  test("user data arrives as workerData.userData", async () => {
+    const pool = WP.make<null, { filename: string; userData: unknown }>({
+      filename: fixture("worker-data.mjs"),
+      maxThreads: 1,
+      workerData: { answer: 42 },
+    });
+    const wd = await WP.run(pool, null);
+    assert.deepEqual(wd.userData, { answer: 42 });
+    assert.equal(typeof wd.filename, "string");
     await WP.destroy(pool);
   });
 });

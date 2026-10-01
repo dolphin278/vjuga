@@ -56,6 +56,13 @@ bench("BatchExecutor: large batch (500 concurrent calls)", async () => {
   return Promise.all(promises);
 });
 
+bench("BatchExecutor: huge batch (2000 concurrent calls)", async () => {
+  const exec = makeEchoExecutor();
+  const promises: Promise<number>[] = [];
+  for (let i = 0; i < 2000; i++) promises.push(exec(i));
+  return Promise.all(promises);
+});
+
 bench("BatchExecutor: multiple sequential batches (10 batches of 10)", async () => {
   const exec = makeEchoExecutor();
   for (let batch = 0; batch < 10; batch++) {

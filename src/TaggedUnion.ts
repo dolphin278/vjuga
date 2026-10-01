@@ -17,10 +17,11 @@
  * import { variant, match, is, type TaggedUnion } from "@dolphin278/vjuga/TaggedUnion";
  *
  * type Shape = TaggedUnion<{ circle: { r: number }; rect: { w: number; h: number } }>;
- * const s: Shape = variant("circle", { r: 5 });
+ * // Cast (or take `s: Shape` as a parameter) so TS does not narrow to `circle`.
+ * const s = variant("circle", { r: 5 }) as Shape;
  * const area = match(s, {
  *   circle: (v) => Math.PI * v.r ** 2,
- *   rect:   (v) => v.w * v.h,
+ *   rect: (v) => v.w * v.h,
  * });
  * ```
  */
@@ -53,6 +54,12 @@ export function variant<K extends PropertyKey, V>(
  * The handler map must cover every variant tag — TypeScript will error at
  * compile time if a case is missing. Each handler receives the variant's
  * `value` and must return `R`.
+ *
+ * A tag with no handler function throws a TypeError naming the tag. The lookup
+ * is a plain property read (an own-property check costs ~50% on this hot path),
+ * so with type-violating input (e.g. untrusted JSON) a tag naming an
+ * `Object.prototype` member such as `"constructor"` resolves to that inherited
+ * function. Validate untrusted data (e.g. with `schema/Validate`) before `match`.
  */
 export function match<T extends { readonly tag: PropertyKey; readonly value: unknown }, R>(
   union: T,
@@ -60,9 +67,13 @@ export function match<T extends { readonly tag: PropertyKey; readonly value: unk
     [K in T["tag"]]: (value: Extract<T, { readonly tag: K }>["value"]) => R;
   },
 ): R {
-  return Reflect.apply((handlers as Record<PropertyKey, (v: unknown) => R>)[union.tag], undefined, [
-    union.value,
-  ]);
+  const tag = union.tag;
+  const handler = (handlers as Record<PropertyKey, (v: unknown) => R>)[tag];
+  // typeof-only guard: Object.hasOwn here measured +48% per match (see JSDoc).
+  if (typeof handler !== "function") {
+    throw new TypeError(`TaggedUnion.match: no handler for tag ${String(tag)}`);
+  }
+  return Reflect.apply(handler, undefined, [union.value]);
 }
 
 /**

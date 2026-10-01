@@ -27,6 +27,7 @@ const tabularObj = {
 // Compiled functions
 const toonStr = ST.stringify(simpleSchema);
 const toonPar = ST.parse(simpleSchema);
+const toonFlexPar = ST.parse(simpleSchema, { flexibleOrder: true });
 const toonTabStr = ST.stringify(tabularSchema);
 const toonTabPar = ST.parse(tabularSchema);
 const jsonStr = SJ.stringify(simpleSchema);
@@ -45,6 +46,7 @@ const tabularToon = toonTabStr(tabularObj);
   for (let i = 0; i < 200_000; i++) {
     toonStr(simpleObj);
     toonPar(simpleToon);
+    toonFlexPar(simpleToon);
     toonTabStr(tabularObj);
     toonTabPar(tabularToon);
   }
@@ -66,14 +68,17 @@ bench("JSON.stringify — tabular 5 rows (native)", () => JSON.stringify(tabular
 // --- Parse benchmarks ---
 
 bench("TOON.parse — 3 fields", () => toonPar(simpleToon));
+bench("TOON.parse — 3 fields (flexibleOrder)", () => toonFlexPar(simpleToon));
 bench("TOON.parse — tabular 5 rows", () => toonTabPar(tabularToon));
 
 // --- Output size comparison ---
-{
-  const jsonSize = JSON.stringify(tabularObj).length;
-  const toonSize = toonTabStr(tabularObj).length;
+// The docstring's size claims come from these numbers.
+for (const [label, toon, json] of [
+  ["tabular 5 rows", toonTabStr(tabularObj), JSON.stringify(tabularObj)],
+  ["flat 3 fields", toonStr(simpleObj), JSON.stringify(simpleObj)],
+] as const) {
   console.log(
-    `\n  Output size: JSON=${jsonSize} bytes, TOON=${toonSize} bytes, ratio=${((toonSize / jsonSize) * 100).toFixed(0)}%`,
+    `  Output size (${label}): JSON=${json.length} bytes, TOON=${toon.length} bytes, ratio=${((toon.length / json.length) * 100).toFixed(0)}%`,
   );
 }
 

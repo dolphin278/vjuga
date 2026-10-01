@@ -1,8 +1,11 @@
 import { test } from "node:test";
+import * as assert from "node:assert/strict";
 import * as S from "../../../schema/Schema.js";
 import * as SJ from "../../../schema/JSON.js";
 import * as Arb from "../../../Arbitrary.js";
 import * as Prop from "../../../Property.js";
+import type { Result } from "../../../Result.js";
+import * as G from "./_serial-gen.js";
 
 const NUM_RUNS = 1_000_000;
 
@@ -176,6 +179,51 @@ test("optional fields round-trip", () => {
     (obj) => {
       const r = par(str(obj));
       return r[0] === true && r[1].name === obj.name && r[1].age === obj.age;
+    },
+    { numRuns: NUM_RUNS },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Random-schema round-trip (G9-4/5/9 regression net)
+// ---------------------------------------------------------------------------
+
+// Distinct schemas come from a bounded seed space and are cached, so 1M runs
+// do not pay 1M `new Function` compilations; values vary on every run.
+const SCHEMA_SEEDS = 20_000;
+// Untyped views of the factories — `Infer<Schema>` on a dynamic schema is too deep for tsc.
+const jsonStringify = SJ.stringify as unknown as (s: S.Schema) => (v: unknown) => string;
+const jsonParse = SJ.parse as unknown as (s: S.Schema) => (s: string) => Result<unknown, unknown>;
+const jsonCache = new Map<
+  number,
+  { schema: S.Schema; str: (v: unknown) => string; par: (s: string) => Result<unknown, unknown> }
+>();
+
+test("random schemas round-trip through schema/JSON and agree with native JSON", () => {
+  Prop.assert(
+    Arb.tuple(Arb.integer(0, 0x7fffffff), Arb.string({ maxLength: 12 })),
+    ([n, s]) => {
+      const seed = G.hashSeed(n + ":" + s);
+      const schemaSeed = seed % SCHEMA_SEEDS;
+      let c = jsonCache.get(schemaSeed);
+      if (c === undefined) {
+        // Includes prototype-colliding keys (constructor, toString, ...).
+        const { schema } = G.genSchema(G.rng(schemaSeed ^ 0x9e3779b9), {
+          toon: false,
+          protoKeys: true,
+        });
+        c = { schema, str: jsonStringify(schema), par: jsonParse(schema) };
+        jsonCache.set(schemaSeed, c);
+      }
+      const value = G.genValue(G.rng(seed), c.schema);
+      const out = c.str(value);
+      const why = G.describeCase(seed, c.schema, value, out);
+      // Output is valid JSON that decodes to the value (absent ≡ undefined)
+      assert.deepStrictEqual(JSON.parse(out), G.normalize(value), why);
+      const back = c.par(out);
+      assert.ok(back[0], why + "\nerr=" + JSON.stringify(back[1]));
+      assert.deepStrictEqual(G.normalize(back[1]), G.normalize(value), why);
+      return true;
     },
     { numRuns: NUM_RUNS },
   );

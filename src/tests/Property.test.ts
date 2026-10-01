@@ -475,3 +475,169 @@ test("check() respects maxShrinks limit", () => {
   assert.equal(result.ok, false);
   assert.ok(result.shrinks! <= 3);
 });
+
+// ---------------------------------------------------------------------------
+// Minimal counterexamples (G7-1) and termination (G7-2)
+// ---------------------------------------------------------------------------
+
+test("check() finds the true minimum for a two-integer property", () => {
+  for (let s = 1n; s <= 20n; s++) {
+    const r = Prop.check(
+      Arb.tuple(Arb.integer(0, 100), Arb.integer(0, 100)),
+      ([a, b]) => a - b < 20,
+      {
+        numRuns: 100,
+        seed: PRNG.seed(s),
+      },
+    );
+    if (!r.ok) assert.deepEqual(r.counterexample, [20, 0], `seed ${s}`);
+  }
+});
+
+test("check() over dates in 2020-2030 terminates with a minimal counterexample", () => {
+  const d0 = new Date("2020-01-01");
+  const d1 = new Date("2030-01-01");
+  const r = Prop.check(Arb.date(d0, d1), (d) => d.getTime() < d0.getTime() + 5, {
+    numRuns: 100,
+    seed: PRNG.seed(3n),
+    maxShrinks: 50,
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.counterexample!.getTime(), d0.getTime() + 5);
+});
+
+test("check() maxShrinkEvaluations bounds predicate calls during shrinking", () => {
+  let calls = 0;
+  // Root fails, every shrink candidate passes: only the budget stops the scan.
+  const arb: Arb.Arbitrary<number> = () => ({
+    value: -1,
+    shrinks: {
+      *[Symbol.iterator]() {
+        for (let i = 0; ; i++) yield { value: i, shrinks: [] };
+      },
+    },
+  });
+  const r = Prop.check(
+    arb,
+    (x) => {
+      calls++;
+      return x >= 0;
+    },
+    { numRuns: 1, seed: fixedSeed, maxShrinkEvaluations: 25 },
+  );
+  assert.equal(r.ok, false);
+  assert.equal(r.counterexample, -1);
+  assert.equal(calls, 1 + 25);
+});
+
+test("check() timeoutMs also bounds shrinking", () => {
+  let shrinkCalls = 0;
+  const arb: Arb.Arbitrary<number> = () => ({
+    value: -1,
+    shrinks: {
+      *[Symbol.iterator]() {
+        for (let i = 0; ; i++) yield { value: i, shrinks: [] };
+      },
+    },
+  });
+  const r = Prop.check(
+    arb,
+    (x) => {
+      if (x < 0) return false;
+      shrinkCalls++;
+      const until = Date.now() + 2;
+      while (Date.now() < until) {
+        // busy-wait so the deadline passes
+      }
+      return true;
+    },
+    { numRuns: 1, seed: fixedSeed, timeoutMs: 20 },
+  );
+  assert.equal(r.ok, false);
+  assert.ok(shrinkCalls < 100, `shrinking ran ${shrinkCalls} evaluations past the deadline`);
+});
+
+// ---------------------------------------------------------------------------
+// Reported error belongs to the reported counterexample (G7-11)
+// ---------------------------------------------------------------------------
+
+test("check() reports the error of the shrunk counterexample, not the root's", () => {
+  const arb: Arb.Arbitrary<number> = () => ({ value: 100, shrinks: [{ value: 10, shrinks: [] }] });
+  const r = Prop.check(
+    arb,
+    (x) => {
+      if (x >= 50) throw new Error(`crash on ${x}`);
+      return x < 5;
+    },
+    { numRuns: 1, seed: fixedSeed },
+  );
+  assert.equal(r.counterexample, 10);
+  assert.equal(r.error, undefined);
+});
+
+test("check() keeps the root error when no shrink applies", () => {
+  const r = Prop.check(
+    Arb.constant(7),
+    () => {
+      throw new Error("always");
+    },
+    { numRuns: 1, seed: fixedSeed },
+  );
+  assert.equal((r.error as Error).message, "always");
+});
+
+// ---------------------------------------------------------------------------
+// Path replay (G7-6)
+// ---------------------------------------------------------------------------
+
+test("check() path encodes size so the printed hint replays without numRuns", () => {
+  const arb = Arb.array(Arb.integer(-1000, 1000));
+  const pred = (xs: number[]) => xs.reduce((a, b) => a + b, 0) < 40;
+  const r = Prop.check(arb, pred, { numRuns: 20, seed: PRNG.seed(11n) });
+  assert.equal(r.ok, false);
+  assert.match(r.path!, /^\d+@\d+(:\d+)*$/);
+  // Replay exactly as printed by assert(): { seed, path } only.
+  const replay = Prop.check(arb, pred, { seed: PRNG.seed(11n), path: r.path });
+  assert.equal(replay.ok, false);
+  assert.deepEqual(replay.counterexample, r.counterexample);
+  assert.equal(replay.path, r.path);
+  assert.equal(replay.numRuns, 1);
+});
+
+test("check() path replay evaluates the predicate (ok once fixed)", () => {
+  const arb = Arb.integer(0, 1000);
+  const r = Prop.check(arb, (n) => n < 10, { numRuns: 50, seed: fixedSeed });
+  assert.equal(r.ok, false);
+  const fixed = Prop.check(arb, () => true, { seed: fixedSeed, path: r.path });
+  assert.equal(fixed.ok, true);
+  assert.equal(fixed.counterexample, undefined);
+  const thrown = Prop.check(
+    arb,
+    (n) => {
+      throw new Error(`still ${n}`);
+    },
+    { seed: fixedSeed, path: r.path },
+  );
+  assert.equal(thrown.ok, false);
+  assert.equal((thrown.error as Error).message, `still ${r.counterexample}`);
+});
+
+test("check() accepts legacy paths without a size segment", () => {
+  const arb = Arb.integer(0, 1000);
+  const r = Prop.check(arb, (n) => n < 10, { numRuns: 50, seed: fixedSeed });
+  const [head, ...rest] = r.path!.split(":");
+  const legacy = [head!.split("@")[0], ...rest].join(":");
+  const replay = Prop.check(arb, (n) => n < 10, { seed: fixedSeed, numRuns: 50, path: legacy });
+  assert.equal(replay.counterexample, r.counterexample);
+});
+
+test("check() rejects malformed or diverging paths", () => {
+  const arb = Arb.integer(0, 1000);
+  assert.throws(() => Prop.check(arb, () => true, { seed: fixedSeed, path: "x" }), /invalid/);
+  assert.throws(() => Prop.check(arb, () => true, { seed: fixedSeed, path: "1@2@3" }), /invalid/);
+  assert.throws(() => Prop.check(arb, () => true, { seed: fixedSeed, path: "0@-1" }), /invalid/);
+  assert.throws(
+    () => Prop.check(Arb.constant(1), () => true, { seed: fixedSeed, path: "0@5:3" }),
+    /diverged/,
+  );
+});

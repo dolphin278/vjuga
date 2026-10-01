@@ -16,7 +16,21 @@
  * structured-clone serialization make WorkerPool counterproductive for tasks
  * shorter than ~1ms. For I/O-bound concurrency, async/await +
  * `PromiseUtils.props` is simpler. The worker module must export a `default`
- * function and be a separate file.
+ * function and be a separate file. A string `filename` is a file path resolved
+ * against `process.cwd()` (or an absolute URL such as `file:///...`).
+ *
+ * Worker side: `workerData` is `{ filename, userData }` — the pool's
+ * `workerData` option arrives as `workerData.userData`. Thrown values are
+ * structured-cloned back: Errors keep name/message/stack/cause and cloneable
+ * own properties; non-Errors reject with the cloned value itself.
+ *
+ * Failure model: a worker crash rejects its task with `WorkerExitError` and
+ * queued work continues on a replacement. A worker that fails before it is
+ * ready (bad module, throw at import) rejects the queued tasks with that
+ * startup error and is NOT respawned. Aborting an in-flight task rejects the
+ * caller at once, but the worker keeps running it: the task stays counted in
+ * `activeCount()`/`drain()` until the worker replies. Equal-priority tasks
+ * run in submission order.
  *
  * @example
  * ```ts
@@ -27,12 +41,20 @@
 
 import { Worker, type Transferable } from "node:worker_threads";
 import { availableParallelism } from "node:os";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { resolve as resolvePath } from "node:path";
 import * as PQ from "./PriorityQueue.js";
 import { positiveInteger, nonNegativeInteger } from "./FunctionUtils.js";
 import type { PositiveInteger, NonNegativeInteger } from "./FunctionUtils.js";
-import { MSG_TASK, MSG_SHUTDOWN, MSG_RESULT, MSG_ERROR, MSG_READY } from "./WorkerPool.protocol.js";
-import type { InboundMessage, OutboundMessage, SerializedError } from "./WorkerPool.protocol.js";
+import {
+  MSG_TASK,
+  MSG_SHUTDOWN,
+  MSG_RESULT,
+  MSG_ERROR,
+  MSG_READY,
+  deserializeThrown,
+} from "./WorkerPool.protocol.js";
+import type { InboundMessage, OutboundMessage } from "./WorkerPool.protocol.js";
 
 export class WorkerPoolDestroyedError extends Error {
   constructor() {
@@ -53,7 +75,7 @@ export class WorkerExitError extends Error {
 // ---------------------------------------------------------------------------
 
 export interface WorkerPoolConfig {
-  /** Path to the worker module. Must export a default function. */
+  /** Worker module: file path (relative paths resolve against cwd) or URL. Must export a default function. */
   filename: string | URL;
   /** Minimum number of threads to keep alive. Default: 0. */
   minThreads?: number;
@@ -61,7 +83,7 @@ export interface WorkerPoolConfig {
   maxThreads?: number;
   /** Idle timeout in ms before terminating excess threads. Default: 30000. 0 = no timeout. */
   idleTimeout?: number;
-  /** Static data passed to all workers via workerData. */
+  /** Static data passed to all workers; seen as `workerData.userData` inside the worker. */
   workerData?: unknown;
 }
 
@@ -70,7 +92,11 @@ export interface RunOptions {
   priority?: number;
   /** Transferable objects to transfer ownership. */
   transferList?: Transferable[];
-  /** AbortSignal to cancel a queued or in-flight task. */
+  /**
+   * AbortSignal to cancel a queued or in-flight task. Rejects the caller
+   * immediately with `signal.reason`; an in-flight task is not interrupted and
+   * keeps occupying its worker (and `activeCount()`) until it replies.
+   */
   signal?: AbortSignal;
 }
 
@@ -93,6 +119,8 @@ interface WorkerEntry {
   readonly worker: Worker;
   readonly threadId: number;
   ready: boolean;
+  /** Startup failure already handled (queue rejected). */
+  failed: boolean;
   currentTask: Task | undefined;
   idleTimer: ReturnType<typeof setTimeout> | undefined;
 }
@@ -139,7 +167,8 @@ export interface WorkerPool<I, O> {
 // Task comparator: lower priority number = higher priority
 // ---------------------------------------------------------------------------
 
-const taskCmp: PQ.Comparator<Task> = (a, b) => a.priority - b.priority;
+// Ties broken by taskId (submission order) — the heap itself is not stable.
+const taskCmp: PQ.Comparator<Task> = (a, b) => a.priority - b.priority || a.taskId - b.taskId;
 
 // ---------------------------------------------------------------------------
 // Reusable message object — mutated in sendTask() to avoid allocation per call.
@@ -162,11 +191,18 @@ const defaultBootstrapPath =
 // Public API
 // ---------------------------------------------------------------------------
 
+// A string with a 2+ char scheme is a URL; anything else (including `C:\x`) is a path.
+function toModuleSpecifier(filename: string | URL): string {
+  if (filename instanceof URL) return filename.href;
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]+:/.test(filename)) return filename;
+  return pathToFileURL(resolvePath(filename)).href;
+}
+
 /**
  * Creates a new WorkerPool.
  */
 export function make<I, O>(config: WorkerPoolConfig): WorkerPool<I, O> {
-  const filename = config.filename instanceof URL ? config.filename.href : config.filename;
+  const filename = toModuleSpecifier(config.filename);
   const minThreads =
     config.minThreads !== undefined ? nonNegativeInteger(config.minThreads) : nonNegativeInteger(0);
   const maxThreads =
@@ -222,31 +258,37 @@ export function run<I, O>(pool: WorkerPool<I, O>, data: I, options?: RunOptions)
     const taskId = pool[kNextTaskId]++;
     const priority = options?.priority ?? 0;
     const transferList = options?.transferList;
+    let onResolve = resolve;
+    let onReject = reject;
+    if (signal) {
+      // An aborted task is rejected now, but stays in kPendingTasks (if
+      // dispatched) until its worker replies, so activeCount()/drain() stay
+      // truthful. Queued ones are skipped by dequeueNextValid.
+      const onAbort = () => {
+        task.aborted = true;
+        reject(signal.reason);
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      // Don't leak the listener on long-lived shared signals.
+      onResolve = (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      };
+      onReject = (reason) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(reason);
+      };
+    }
     const task: Task<I, O> = {
       taskId,
       data,
       priority,
       transferList,
       signal,
-      resolve,
-      reject,
+      resolve: onResolve,
+      reject: onReject,
       aborted: false,
     };
-
-    if (signal) {
-      const onAbort = () => {
-        task.aborted = true;
-        // If it's still in the pending map (in-flight), reject immediately.
-        if (pool[kPendingTasks].has(taskId)) {
-          pool[kPendingTasks].delete(taskId);
-          reject(signal.reason);
-        } else {
-          // Queued — it will be skipped by dequeueNextValid.
-          reject(signal.reason);
-        }
-      };
-      signal.addEventListener("abort", onAbort, { once: true });
-    }
 
     // Fast path: default priority, idle worker available, no queued tasks.
     // Bypasses PQ push+pop entirely — the common case for pre-warmed pools.
@@ -363,6 +405,7 @@ function spawnWorker<I, O>(pool: WorkerPool<I, O>): WorkerEntry {
     worker,
     threadId: worker.threadId,
     ready: false,
+    failed: false,
     currentTask: undefined,
     idleTimer: undefined,
   };
@@ -433,19 +476,38 @@ function popIdleWorker<I, O>(pool: WorkerPool<I, O>): WorkerEntry | undefined {
 function sendTask(entry: WorkerEntry, task: Task): void {
   taskMsg.taskId = task.taskId;
   taskMsg.data = task.data;
-  if (task.transferList) {
-    entry.worker.postMessage(taskMsg, task.transferList);
-  } else {
-    entry.worker.postMessage(taskMsg);
+  try {
+    if (task.transferList) {
+      entry.worker.postMessage(taskMsg, task.transferList);
+    } else {
+      entry.worker.postMessage(taskMsg);
+    }
+  } finally {
+    // Clear data reference so we don't retain it after postMessage serialized it.
+    taskMsg.data = undefined;
   }
-  // Clear data reference so we don't retain it after postMessage serialized it.
-  taskMsg.data = undefined;
+}
+
+/**
+ * Posts the task to the worker. If the payload is not structured-cloneable the
+ * task is rejected and the worker is released (never left busy forever, never
+ * thrown into an event listener).
+ */
+function postTask<I, O>(pool: WorkerPool<I, O>, entry: WorkerEntry, task: Task<I, O>): void {
+  try {
+    sendTask(entry, task as Task);
+  } catch (err) {
+    entry.currentTask = undefined;
+    pool[kPendingTasks].delete(task.taskId);
+    if (!task.aborted) task.reject(err);
+    markWorkerIdle(pool, entry);
+  }
 }
 
 function dispatchTask<I, O>(pool: WorkerPool<I, O>, entry: WorkerEntry, task: Task<I, O>): void {
   entry.currentTask = task as Task;
   pool[kPendingTasks].set(task.taskId, task);
-  sendTask(entry, task as Task);
+  postTask(pool, entry, task);
 }
 
 function handleWorkerMessage<I, O>(
@@ -464,7 +526,7 @@ function handleWorkerMessage<I, O>(
         pool[kPendingTasks].delete(task.taskId);
         markWorkerIdle(pool, entry);
       } else {
-        sendTask(entry, task as Task);
+        postTask(pool, entry, task);
       }
     } else {
       markWorkerIdle(pool, entry);
@@ -489,7 +551,7 @@ function handleWorkerMessage<I, O>(
     pool[kPendingTasks].delete(msg.taskId);
     entry.currentTask = undefined;
     if (task && !task.aborted) {
-      task.reject(deserializeError(msg.error));
+      task.reject(deserializeThrown(msg.error));
     }
     markWorkerIdle(pool, entry);
     return;
@@ -534,6 +596,10 @@ function terminateIdleWorker<I, O>(pool: WorkerPool<I, O>, entry: WorkerEntry): 
 }
 
 function handleWorkerError<I, O>(pool: WorkerPool<I, O>, entry: WorkerEntry, err: Error): void {
+  if (!entry.ready) {
+    failStartup(pool, entry, err);
+    return;
+  }
   const task = entry.currentTask as Task<I, O> | undefined;
   entry.currentTask = undefined;
   if (task) {
@@ -541,6 +607,26 @@ function handleWorkerError<I, O>(pool: WorkerPool<I, O>, entry: WorkerEntry, err
     if (!task.aborted) {
       task.reject(err);
     }
+  }
+}
+
+/**
+ * A worker died before READY (bad module, throw at import). Reject its task and
+ * everything queued with the startup error; no respawn, so a broken
+ * `filename` can't spin up threads in a loop.
+ */
+function failStartup<I, O>(pool: WorkerPool<I, O>, entry: WorkerEntry, err: unknown): void {
+  if (entry.failed) return;
+  entry.failed = true;
+  const task = entry.currentTask as Task<I, O> | undefined;
+  entry.currentTask = undefined;
+  if (task) {
+    pool[kPendingTasks].delete(task.taskId);
+    if (!task.aborted) task.reject(err);
+  }
+  let queued: Task<I, O> | undefined;
+  while ((queued = PQ.pop(pool[kTaskQueue])) !== undefined) {
+    if (!queued.aborted) queued.reject(err);
   }
 }
 
@@ -554,6 +640,11 @@ function handleWorkerExit<I, O>(pool: WorkerPool<I, O>, entry: WorkerEntry, _cod
   const idx = pool[kIdleWorkers].indexOf(entry);
   if (idx !== -1) pool[kIdleWorkers].splice(idx, 1);
 
+  if (!entry.ready && !pool[kDestroyed]) {
+    // Exit without READY (and without an 'error' event): startup failure.
+    failStartup(pool, entry, new WorkerExitError());
+  }
+
   // Handle in-flight task.
   const task = entry.currentTask as Task<I, O> | undefined;
   entry.currentTask = undefined;
@@ -564,9 +655,12 @@ function handleWorkerExit<I, O>(pool: WorkerPool<I, O>, entry: WorkerEntry, _cod
     }
   }
 
-  // Replace if below minThreads and not destroyed.
-  if (!pool[kDestroyed] && pool[kWorkers].size < pool[kMinThreads]) {
-    spawnWorker(pool);
+  if (entry.ready && !pool[kDestroyed]) {
+    // Replace if below minThreads, then let queued tasks use the freed slot.
+    if (pool[kWorkers].size < pool[kMinThreads]) {
+      spawnWorker(pool);
+    }
+    tryDispatch(pool);
   }
 
   if (pool[kDrainDeferred]) maybeResolveDrain(pool);
@@ -586,25 +680,4 @@ function maybeResolveDrain<I, O>(pool: WorkerPool<I, O>): void {
     pool[kDrainDeferred] = undefined;
     deferred.resolve();
   }
-}
-
-function deserializeError(serialized: SerializedError): Error {
-  const cause =
-    serialized.cause !== undefined
-      ? typeof serialized.cause === "object" &&
-        serialized.cause !== null &&
-        "message" in serialized.cause
-        ? deserializeError(serialized.cause as SerializedError)
-        : serialized.cause
-      : undefined;
-  const err =
-    cause !== undefined ? new Error(serialized.message, { cause }) : new Error(serialized.message);
-  err.name = serialized.name;
-  if (serialized.stack !== undefined) {
-    err.stack = serialized.stack;
-  }
-  for (const key of Object.keys(serialized.properties)) {
-    (err as unknown as Record<string, unknown>)[key] = serialized.properties[key];
-  }
-  return err;
 }

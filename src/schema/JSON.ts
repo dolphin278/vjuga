@@ -1,87 +1,49 @@
 /**
  * JSON — code-generated JSON serializers and parsers from Schema definitions.
  *
- * `stringify(schema)` compiles a schema into a function that serializes typed
- * values to JSON strings without `JSON.stringify` — it knows the exact shape
- * at compile time, so it pre-computes key fragments and avoids key enumeration.
+ * When to use: a schema is known at init time and you want typed parse +
+ * validation in one step (`parse` → `Result<T, SchemaError>`, never throws) or
+ * a serializer that emits exactly the schema's keys. For ad-hoc JSON use
+ * `@dolphin278/vjuga/JSON`. Not a speed win for stringify (see below).
  *
- * `parse(schema)` compiles a schema into a function that parses a JSON string
- * and validates the result in one pass, returning `Result<T, SchemaError>`.
- *
- * When to use: hot-path serialization/deserialization where the schema is known
- * at init time. For cold-path or ad-hoc JSON, use the standard `JSON` module.
- *
- * Performance (Node 25.9, vs native JSON):
- *   stringify 2 fields: 4.4ns vs 49ns (11x faster)
- *   stringify 5 fields: 36ns vs 84ns (2.3x faster)
- *   parse 2 fields: 177ns vs 151ns (17% slower — validation overhead)
- *   parse 5 fields: 304ns vs 261ns (16% slower)
- *   stringify 100-elem array: 5.3µs vs 4.4µs (1.2x slower — C++ advantage)
+ * Performance (Node 26, M1 Pro, output consumed with `Buffer.byteLength`):
+ *   stringify is ~1.2–2.5x slower than native (2 fields 97 vs 79 ns; 5 fields
+ *   265 vs 140 ns; 100 objects 8.3 vs 3.3 µs): generated code builds a rope
+ *   that must be flattened; native writes a flat string in C++.
+ *   parse is ~5–20% slower than bare `JSON.parse` (validation included).
  *
  * Design tradeoffs:
- *   stringify: generated string concatenation with pre-computed key fragments.
- *   All-required objects compile to pure inline expressions — no per-element
- *   function dispatch in array loops.
- *   parse: native `JSON.parse` (C++ in V8) + inline validation. Prototype
- *   pollution guard via `stripDangerousKeys` for `__proto__`/`constructor`.
+ *   stringify: pre-computed key fragments; all-required objects inline into a
+ *   single expression. Unions dispatch by typeof when variant types are
+ *   disjoint, else by each variant's validator; no match throws `TypeError`.
+ *   Non-finite numbers emit `null` like native. parse: native `JSON.parse` +
+ *   generated validation; own `__proto__` keys (also `\u`-escaped spellings)
+ *   are stripped. `constructor` is ordinary data and kept.
  *
  * @example Compile once at init, call on hot path
  * ```ts
  * import * as S from "@dolphin278/vjuga/schema/Schema";
  * import * as SJ from "@dolphin278/vjuga/schema/JSON";
- * const User = S.object({ id: S.integer(), name: S.string() });
+ * const User = S.object({ id: S.integer(), bio: S.optional(S.string()) });
  * const toJson = SJ.stringify(User);
  * const fromJson = SJ.parse(User);
- * toJson({ id: 1, name: "Alice" }); // '{"id":1,"name":"Alice"}'
- * fromJson('{"id":1,"name":"Alice"}'); // [true, { id: 1, name: "Alice" }]
+ * toJson({ id: 1 }); // '{"id":1}' — absent/undefined optional keys are omitted
+ * fromJson('{"id":1}'); // [true, { id: 1 }]
  * ```
- *
- * @example Parse returns Result — never throws
- * ```ts
- * const result = fromJson(untrustedInput);
- * if (!result[0]) {
- *   // result[1] is SchemaError: { path, expected, received }
- *   console.error(`Invalid at ${result[1].path}: expected ${result[1].expected}`);
- *   return;
- * }
- * const user = result[1]; // fully typed User
- * ```
- *
- * @example Optional fields — omitted keys serialize as null in JSON
- * ```ts
- * const Schema = S.object({ name: S.string(), bio: S.optional(S.string()) });
- * const toJson = SJ.stringify(Schema);
- * toJson({ name: "Alice" });            // '{"name":"Alice"}'  (bio omitted)
- * toJson({ name: "Alice", bio: "Hi" }); // '{"name":"Alice","bio":"Hi"}'
- * ```
- *
- * Best practices:
- *   - Compile `stringify`/`parse` at module scope — each call generates a
- *     new function via `new Function`. The compiled function is the hot path.
- *   - `stringify` assumes input matches the schema — validate at system
- *     boundaries, not inside serializers. Use `validate()` for untrusted data.
- *   - `parse` combines parsing + validation in one step. If you only need
- *     parsing without validation, use `vjuga/JSON.safeParse` instead.
  *
  * Pitfalls:
- *   - `parse` returns `Err` for invalid JSON (not undefined, not throws).
- *     Check `result[0]` before accessing `result[1]`.
- *   - `stringify` output for `optional(T)` fields: absent → key omitted,
- *     `undefined` → `"null"`. This matches JSON semantics (no `undefined`).
- *   - For 100+ element arrays of objects, native `JSON.stringify` is ~20%
- *     faster due to C++ `SeqOneByteString` — this gap is fundamental.
- *   - `parse` guards against `__proto__` prototype pollution. The guard
- *     scans the raw JSON string for dangerous tokens before walking the
- *     parsed tree — a false positive (e.g. `"type":"constructor"`) triggers
- *     the walk but produces correct results.
+ *   - `stringify` assumes valid input; `validate()` untrusted data first.
+ *   - `optional(T)` outside an object (tuple slot, array item, root) emits
+ *     `null`, which `parse` rejects. Use `nullable(T)` there instead.
+ *   - Compile at module scope — each factory call runs `new Function`.
  */
 
 import type { Result } from "../Result.js";
 import { ok, err } from "../Result.js";
-import { parse as jsonParse, stripDangerousKeys, escapeJsonString } from "../JSON.js";
+import { parse as jsonParse, escapeJsonString } from "../JSON.js";
 import type { Schema, Infer } from "./Schema.js";
 import type { SchemaError } from "./Validate.js";
-import { emitStandardRefs, emitValidation } from "./Validate.js";
+import { emitStandardRefs, emitValidation, validate } from "./Validate.js";
 import { findDiscriminant } from "./Schema.js";
 import { unreachable } from "../FunctionUtils.js";
 import {
@@ -94,6 +56,37 @@ import {
   compileHelper,
   typeCheckExpr,
 } from "./Codegen.js";
+
+/**
+ * JSON number serialization. Non-finite values have no JSON representation —
+ * emit `null` like native `JSON.stringify` instead of the invalid token
+ * `Infinity`. `x - x === 0` is true exactly for finite numbers.
+ */
+function numberToJson(x: number): string {
+  return x - x === 0 ? "" + x : "null";
+}
+
+/**
+ * Removes own `__proto__` keys from a parsed JSON tree, in place. Only
+ * `__proto__` is dangerous: `JSON.parse` creates it as an own data property,
+ * which a naive merge then turns into a prototype write. `constructor` is an
+ * ordinary key and is preserved.
+ */
+function stripProto(root: unknown): void {
+  const stack: unknown[] = [root];
+  while (stack.length > 0) {
+    const v = stack.pop();
+    if (typeof v !== "object" || v === null) continue;
+    if (Array.isArray(v)) {
+      for (let i = 0; i < v.length; i++) stack.push(v[i]);
+      continue;
+    }
+    const o = v as Record<string, unknown>;
+    if (Object.hasOwn(o, "__proto__")) delete o["__proto__"];
+    const keys = Object.keys(o);
+    for (let i = 0; i < keys.length; i++) stack.push(o[keys[i]]);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // stringify
@@ -109,6 +102,7 @@ import {
 export function stringify<S extends Schema>(schema: S): (value: Infer<S>) => string {
   const buf = createBuffer();
   emitRef(buf, "_esc", escapeJsonString);
+  emitRef(buf, "_num", numberToJson);
 
   emit(buf, "return function stringify(v) {");
   buf.indent++;
@@ -129,7 +123,7 @@ function walkStringify(buf: CodeBuffer, schema: Schema, accessor: string): strin
       return `_esc(${accessor})`;
     case "number":
     case "integer":
-      return `("" + ${accessor})`;
+      return `_num(${accessor})`;
     case "boolean":
       return `(${accessor} ? "true" : "false")`;
     case "null":
@@ -137,7 +131,7 @@ function walkStringify(buf: CodeBuffer, schema: Schema, accessor: string): strin
     case "literal":
       return JSON.stringify(JSON.stringify(schema.meta.value));
     case "enum":
-      return `(typeof ${accessor} === "string" ? _esc(${accessor}) : "" + ${accessor})`;
+      return `(typeof ${accessor} === "string" ? _esc(${accessor}) : _num(${accessor}))`;
     case "object":
       return walkStringifyObject(buf, schema.meta.properties, accessor);
     case "array":
@@ -213,7 +207,9 @@ function walkStringifyObject(
     const { key, expr, optional } = childExprs[i];
     const keyFragment = JSON.stringify(key) + ":";
     if (optional) {
-      body += `  if (o[${JSON.stringify(key)}] !== undefined) {\n`;
+      // Names like `toString` would read an inherited member when absent.
+      const own = key in Object.prototype ? `Object.hasOwn(o, ${JSON.stringify(key)}) && ` : "";
+      body += `  if (${own}o[${JSON.stringify(key)}] !== undefined) {\n`;
       body += `    s += (first ? "" : ",") + ${JSON.stringify(keyFragment)} + ${expr};\n`;
       body += "    first = false;\n";
       body += "  }\n";
@@ -309,37 +305,94 @@ function walkStringifyUnion(
 ): string {
   const variants = schema.meta.variants;
   const discriminant = findDiscriminant(variants);
+  const helperName = freshVar(buf);
+  // Input that matches no variant is a caller bug (stringify assumes valid
+  // input) — fail loudly instead of emitting garbage.
+  const noMatch = '  throw new TypeError("value does not match any union variant");\n}';
 
   if (discriminant !== null) {
-    const helperName = freshVar(buf);
     let body = `function ${helperName}(v) {\n  switch (v[${JSON.stringify(discriminant)}]) {\n`;
     for (let i = 0; i < variants.length; i++) {
-      const obj = variants[i];
-      /* node:coverage disable */
-      if (obj.kind !== "object") continue; // guaranteed by findDiscriminant
-      /* node:coverage enable */
-      const litSchema = obj.meta.properties[discriminant];
-      body += `    case ${JSON.stringify(litSchema.meta.value)}: return ${walkStringify(buf, obj, "v")};\n`;
+      // Every variant is an object — guaranteed by findDiscriminant.
+      const obj = variants[i] as Schema & { readonly kind: "object" };
+      // Literal values are passed by reference, never interpolated as source.
+      const lit = emitRef(buf, freshVar(buf), obj.meta.properties[discriminant].meta.value);
+      body += `    case ${lit}: return ${walkStringify(buf, obj, "v")};\n`;
     }
-    body += '    default: return "{}";\n  }\n}';
+    body += "  }\n" + noMatch;
     const fn = compileHelper<Function>(buf, body);
     emitRef(buf, helperName, fn);
     return `${helperName}(${accessor})`;
   }
 
-  // General: typeof dispatch
-  const helperName = freshVar(buf);
+  // General dispatch. A variant whose runtime types (typeof tags) are disjoint
+  // from every other variant's is selected by a cheap type check. Overlapping
+  // variants (two objects, tuple vs array, literal vs string, ...) are selected
+  // by their full validator in declaration order — the same "first variant
+  // that validates" rule `validate` uses.
+  const tags = variants.map(typeTags);
   let body = `function ${helperName}(v) {\n`;
   for (let i = 0; i < variants.length; i++) {
-    const check = typeCheckExpr(variants[i], "v");
-    if (check !== null) {
-      body += `  if (${check}) return ${walkStringify(buf, variants[i], "v")};\n`;
+    let overlaps = false;
+    for (let j = 0; j < variants.length; j++) {
+      if (j !== i && tags[j].some((t: Tag) => tags[i].includes(t))) overlaps = true;
     }
+    const check = overlaps
+      ? `${emitRef(buf, freshVar(buf), validate(variants[i]))}(v)[0]`
+      : (typeCheckExpr(variants[i], "v") ?? tags[i].map((t: Tag) => TAG_CHECKS[t]).join(" || "));
+    body += `  if (${check}) return ${walkStringify(buf, variants[i], "v")};\n`;
   }
-  body += "  return JSON.stringify(v);\n}";
+  body += noMatch;
   const fn = compileHelper<Function>(buf, body);
   emitRef(buf, helperName, fn);
   return `${helperName}(${accessor})`;
+}
+
+type Tag = "string" | "number" | "boolean" | "null" | "undefined" | "array" | "object";
+
+const TAG_CHECKS: Record<Tag, string> = {
+  string: '(typeof v === "string")',
+  number: '(typeof v === "number")',
+  boolean: '(typeof v === "boolean")',
+  null: "(v === null)",
+  undefined: "(v === undefined)",
+  array: "Array.isArray(v)",
+  object: '(typeof v === "object" && v !== null && !Array.isArray(v))',
+};
+
+function valueTag(x: string | number | boolean | null): Tag {
+  return x === null ? "null" : (typeof x as Tag);
+}
+
+/** Runtime type tags that a value valid for `schema` can carry. */
+function typeTags(schema: Schema): Tag[] {
+  switch (schema.kind) {
+    case "string":
+    case "boolean":
+    case "null":
+      return [schema.kind];
+    case "number":
+    case "integer":
+      return ["number"];
+    case "literal":
+      return [valueTag(schema.meta.value)];
+    case "enum":
+      return (schema.meta.values as (string | number)[]).map(valueTag);
+    case "object":
+    case "record":
+      return ["object"];
+    case "array":
+    case "tuple":
+      return ["array"];
+    case "union":
+      return (schema.meta.variants as Schema[]).flatMap(typeTags);
+    case "optional":
+      return [...typeTags(schema.meta.inner), "undefined"];
+    case "nullable":
+      return [...typeTags(schema.meta.inner), "null"];
+    default:
+      unreachable(schema);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -358,17 +411,17 @@ export function parse<S extends Schema>(
   const buf = createBuffer();
   emitStandardRefs(buf, ok, err);
   emitRef(buf, "_jp", jsonParse);
-  emitRef(buf, "_strip", stripDangerousKeys);
+  emitRef(buf, "_strip", stripProto);
 
   emit(buf, "return function parse(json) {");
   buf.indent++;
   // jsonParse returns undefined on invalid JSON — no try/catch needed
   emit(buf, "var v = _jp(json);");
   emit(buf, 'if (v === undefined) return _err(_me("", "valid JSON", json));');
-  emit(
-    buf,
-    'if (json.indexOf("__proto__") !== -1 || json.indexOf("constructor") !== -1) _strip(v);',
-  );
+  // Cheap pre-check on the raw text. A backslash-u escape can spell the key
+  // without the literal token (e.g. "__proto__"), so any `\u` also
+  // triggers the walk.
+  emit(buf, 'if (json.indexOf("__proto__") !== -1 || json.indexOf("\\\\u") !== -1) _strip(v);');
   emitValidation(buf, schema, "v", '""');
   emit(buf, "return _ok(v);");
   buf.indent--;

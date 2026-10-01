@@ -166,6 +166,18 @@ bench("AoS baseline: read 100 objects", () => {
   return sum;
 });
 
+// Long-lived SOA: measures steady-state get/pop/set (the benches above build a
+// fresh SOA per iteration, so they include cold row-factory setup).
+const warmSOA = makeParticleSOA();
+for (let i = 0; i < 1000; i++) push(warmSOA, { x: i * 0.1, y: i * 0.2, vx: 0.5, vy: 0.3 });
+
+bench("SOA.get (warm, long-lived SOA)", () => get(warmSOA, 5));
+
+bench("SOA.set (warm, long-lived SOA)", () =>
+  set(warmSOA, 5, { x: 1.5, y: 2.5, vx: 0.5, vy: 0.5 }));
+
+bench("SOA.pop+push (warm, long-lived SOA)", () => push(warmSOA, pop(warmSOA)));
+
 await run();
 
 // --- Memory benchmark ---

@@ -1,9 +1,17 @@
 /**
  * Memoization — function memoization with pluggable cache and key strategies.
  *
- * Default cache is an unbounded `Map`; callers should supply a bounded map
- * (e.g., LRUCache-backed) via the `cache` option when the key space is large
- * or unbounded. Default key function is `JSON.stringify(args)`.
+ * Default cache is an unbounded `Map`; callers should supply a bounded cache
+ * (e.g., an LRUCache adapter) via the `cache` option when the key space is
+ * large. `cache` only needs `get`/`has`/`set` (see `MemoizationCache`).
+ *
+ * Caveats:
+ *   - Default key is `JSON.stringify(args)`: `null`/`undefined`/`NaN` collide,
+ *     `0`/`-0` collide, all Maps/Sets collide, BigInt throws. Pass `cacheKeyFn`
+ *     for such arguments.
+ *   - Async results are cached as promises, so a rejection is cached forever;
+ *     `this` is not forwarded to `fn`.
+ *   - `once` retries after a throw and releases `fn` after the first success.
  *
  * When to use: pure functions with repeated identical arguments. Supply a
  * bounded cache when the key space is large. Use `once` for one-shot lazy
@@ -23,19 +31,34 @@
  * expensive(40); // computed
  * expensive(40); // cached
  * const init = Memoization.once(() => loadConfig());
+ * // Bounded cache: wrap an LRUCache handle in { get, has, set }:
+ * // const lru = LRUCache.make<string, number>(100);
+ * // Memoization.memoize(fn, { cache: {
+ * //   get: (k) => LRUCache.get(lru, k),
+ * //   has: (k) => LRUCache.has(lru, k),
+ * //   set: (k, v) => LRUCache.set(lru, k, v),
+ * // } });
  * ```
  */
 
 import type { Fn } from "./FunctionUtils.js";
 
+/** Minimal cache interface accepted by `memoize` (a `Map` satisfies it). */
+export interface MemoizationCache<K, R> {
+  get(key: K): R | undefined;
+  has(key: K): boolean;
+  set(key: K, value: R): unknown;
+}
+
 /**
  * Options for memoize function.
  * Note: the cache is unbounded by default — callers should supply a bounded
- * Map (e.g., an LRU map) via the `cache` option when the key space is large.
+ * cache (e.g., an LRUCache adapter) via the `cache` option when the key space
+ * is large.
  */
 export interface MemoizationOptions<T extends readonly unknown[], R, K = string> {
   cacheKeyFn?: (...args: T) => K;
-  cache?: Map<K, R>;
+  cache?: MemoizationCache<K, R>;
 }
 
 /**
@@ -47,7 +70,7 @@ export function memoize<T extends readonly unknown[], R, K = string>(
   options?: MemoizationOptions<T, R, K>,
 ): Fn<T, R> {
   const cacheKeyFn = (options?.cacheKeyFn ?? defaultCacheKeyFn) as (...args: T) => K;
-  const cache: Map<K, R> = options?.cache ?? new Map();
+  const cache: MemoizationCache<K, R> = options?.cache ?? new Map();
 
   return function memoized(...args: T): R {
     const key: K = Reflect.apply(cacheKeyFn, undefined, args) as K;
@@ -80,15 +103,19 @@ function defaultCacheKeyFn<T extends readonly unknown[]>(...args: T): string {
 
 /**
  * Returns a memoized version of `fn` that only calls the original function once.
+ * If `fn` throws, the error propagates and the next call retries.
  */
 export function once<T extends readonly unknown[], R>(fn: Fn<T, R>): Fn<T, R> {
-  // definite assignment: result is always set before first read (guarded by `called`)
+  // definite assignment: result is always set before first read (guarded by `f`)
   let result!: R;
-  let called = false;
+  // `f` doubles as the "not yet succeeded" flag; it is released after success
+  // so `fn`'s closure can be collected. A throw leaves it set, so the next call
+  // retries.
+  let f: Fn<T, R> | undefined = fn;
   return function memoized(...args: T): R {
-    if (!called) {
-      called = true;
-      result = Reflect.apply(fn, null, args) as R;
+    if (f !== undefined) {
+      result = Reflect.apply(f, null, args) as R;
+      f = undefined;
     }
     return result;
   };

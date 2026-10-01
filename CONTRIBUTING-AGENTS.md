@@ -68,8 +68,10 @@ npx skills add dolphin278/prj-4187-skills --skill dolphin278-craft -y
 - Property tests should use `{ numRuns: 1_000_000 }`.
 - Stateful tests should use
   `{ numRuns: 1_000_000, maxCommands: 50, timeoutMs: 300_000 }`.
-- `npm run test:fuzz` is part of the `prepare` gate.
-- Fuzz tests are intentionally excluded from `npm test`.
+- `npm run verify` is the pre-merge gate; run `npm run test:fuzz` separately
+  (fuzz tests are intentionally excluded from `npm test`).
+- The `test` and `test:fuzz` scripts pass `--expose-gc` (the WeakCache GC tests
+  need it). Keep the flag if you run `node --test` by hand.
 
 ## Module Docstrings
 
@@ -82,7 +84,9 @@ Each public module docstring should include these sections when applicable:
 5. Prior art: external inspiration or source, when applicable.
 6. Usage example: short fenced TypeScript example for directly-consumed APIs.
 
-Keep module docstrings under 40 lines. Per-function JSDoc remains separate.
+Keep module docstrings at most 40 lines (between the `/**` and `*/` delimiters). Per-function JSDoc remains separate.
+`npm run lint:docs` enforces the 40-line limit, the `ModuleName — ` title line,
+and that every `name(` cited for a module in `llms.txt` is a real export.
 
 ## Verification Commands
 
@@ -90,4 +94,4 @@ Keep module docstrings under 40 lines. Per-function JSDoc remains separate.
 - `npm run coverage`
 - `npm run test:fuzz`
 - `npm run lint:docs`
-- `npm run prepare`
+- `npm run verify`

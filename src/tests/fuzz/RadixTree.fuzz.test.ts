@@ -250,3 +250,120 @@ test("stateful: RadixTree matches Map under random operations", () => {
     timeoutMs: 300_000,
   });
 });
+
+// ---------------------------------------------------------------------------
+// Small-alphabet stateful test with structural invariants.
+// A 95-char alphabet almost never produces shared prefixes, so node splits and
+// merges are barely exercised. Alphabet {a, b, c} with short keys hits them on
+// nearly every operation.
+// ---------------------------------------------------------------------------
+
+type Sym = Record<symbol, unknown>;
+const symOf = (o: object, name: string): symbol =>
+  Object.getOwnPropertySymbols(o).find((s) => s.description === name) as symbol;
+
+/** Returns a description of the first structural violation, or null. */
+function structureViolation(tree: RadixTree.RadixTree<number>): string | null {
+  const root = (tree as unknown as Sym)[symOf(tree, "root")] as Sym;
+  const kPrefix = symOf(root, "prefix");
+  const kValue = symOf(root, "value");
+  const kChildren = symOf(root, "children");
+  const stack: [Sym, boolean][] = [[root, true]];
+  while (stack.length > 0) {
+    const [n, isRoot] = stack.pop()!;
+    const kids = n[kChildren] as Sym[];
+    if (!isRoot) {
+      if ((n[kPrefix] as string).length === 0) return "empty prefix on non-root node";
+      if (n[kValue] === undefined && kids.length < 2) {
+        return `valueless node with ${kids.length} children (prefix ${JSON.stringify(n[kPrefix])})`;
+      }
+    }
+    for (let i = 1; i < kids.length; i++) {
+      const a = (kids[i - 1][kPrefix] as string).charCodeAt(0);
+      const b = (kids[i][kPrefix] as string).charCodeAt(0);
+      if (a >= b) return "children not strictly sorted by first char";
+    }
+    for (const c of kids) stack.push([c, false]);
+  }
+  return null;
+}
+
+const smallKeyArb = Arb.map(
+  Arb.array(Arb.constantFrom("a", "b", "c"), { minLength: 0, maxLength: 5 }),
+  (cs) => cs.join(""),
+);
+
+const byKey = (a: [string, number], b: [string, number]): number =>
+  a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0;
+
+/** Wraps a command so the full invariant suite runs after every step. */
+function checked(cmd: ST.Command<Model, Real>): ST.Command<Model, Real> {
+  return {
+    name: cmd.name,
+    check: () => true,
+    run: (m, r) => {
+      cmd.run(m, r);
+      assert.equal(structureViolation(r.tree), null, "structure");
+      assert.equal(RadixTree.size(r.tree), m.map.size, "size");
+      const expected = [...m.map.entries()].sort(byKey);
+      // Exact lexicographic order, not just set equality.
+      assert.deepEqual(RadixTree.entries(r.tree), expected, "entries");
+      for (const [k, v] of m.map) assert.equal(RadixTree.lookup(r.tree, k), v, "lookup");
+    },
+  };
+}
+
+test("stateful (small alphabet): structure, order, size and contents match Map", () => {
+  ST.assertStateful<Model, Real>({
+    initialModel: () => ({ map: new Map() }),
+    initialReal: () => ({ tree: RadixTree.make() }),
+    commands: [
+      (_model) =>
+        Arb.map(Arb.tuple(smallKeyArb, Arb.integer(0, 10000)), ([k, v]) =>
+          checked({
+            name: `insert(${JSON.stringify(k)}, ${v})`,
+            run: (m, r) => {
+              m.map.set(k, v);
+              RadixTree.insert(r.tree, k, v);
+            },
+          }),
+        ),
+      // insert(k, undefined) is defined as remove(k)
+      (_model) =>
+        Arb.map(smallKeyArb, (k) =>
+          checked({
+            name: `insert(${JSON.stringify(k)}, undefined)`,
+            run: (m, r) => {
+              m.map.delete(k);
+              RadixTree.insert(r.tree, k, undefined as unknown as number);
+            },
+          }),
+        ),
+      (_model) =>
+        Arb.map(smallKeyArb, (k) =>
+          checked({
+            name: `remove(${JSON.stringify(k)})`,
+            run: (m, r) => {
+              assert.equal(RadixTree.remove(r.tree, k), m.map.delete(k));
+            },
+          }),
+        ),
+      (_model) =>
+        Arb.map(smallKeyArb, (prefix) =>
+          checked({
+            name: `prefixMatch(${JSON.stringify(prefix)})`,
+            run: (m, r) => {
+              const keys = [...m.map.keys()].filter((k) => k.startsWith(prefix)).sort();
+              assert.deepEqual(
+                RadixTree.prefixMatch(r.tree, prefix),
+                keys.map((k) => m.map.get(k)),
+              );
+            },
+          }),
+        ),
+    ],
+    numRuns: 1_000_000,
+    maxCommands: 50,
+    timeoutMs: 300_000,
+  });
+});

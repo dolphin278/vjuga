@@ -10,6 +10,11 @@
  * integer seconds (POSIX time). If your system uses milliseconds throughout,
  * consider working with `Date.now()` directly and branding only at the edges.
  *
+ * The brand does NOT enforce seconds or integrality: any finite number is
+ * accepted, so a millisecond value such as `Date.now()` passes validation.
+ * Pass seconds (`now()` / `fromDate()` produce them); fractional seconds are
+ * allowed and `toISO` keeps millisecond precision (sub-ms is truncated).
+ *
  * Design tradeoffs: uses `number` rather than `bigint` —
  * `Number.MAX_SAFE_INTEGER` seconds from epoch reaches year ~285,616, and
  * all `Date` APIs operate on numbers. `bigint` would force conversions at
@@ -35,8 +40,9 @@ export type UnixTimestamp = Branded<number, "UnixTimestamp">;
 
 /**
  * Validates and brands a number as a UnixTimestamp.
- * Accepts any finite number (negative values = pre-epoch). Throws RangeError
- * if the value is NaN, Infinity, or -Infinity.
+ * Accepts any finite number (negative values = pre-epoch; no unit or range
+ * check, so milliseconds are not rejected). Throws RangeError if the value is
+ * NaN, Infinity, or -Infinity.
  */
 export function unixTimestamp(value: number): UnixTimestamp {
   if (!Number.isFinite(value))

@@ -150,3 +150,87 @@ test("false-positive rate is approximately ≤ 2× configured fpr", () => {
   const measured = fp / n;
   assert.ok(measured <= fpr * 2, `FPR ${measured.toFixed(4)} exceeds 2× configured fpr ${fpr}`);
 });
+
+// ---------------------------------------------------------------------------
+// Validation / sizing regressions
+// ---------------------------------------------------------------------------
+
+test("make() rejects NaN fpr (used to hang forever)", () => {
+  assert.throws(() => BF.make(100, NaN), RangeError);
+  assert.throws(() => BF.make(NaN, 0.01), RangeError);
+});
+
+test("make() throws RangeError when fpr is unreachable within the 2^32-bit cap", () => {
+  assert.throws(() => BF.make(2 ** 31 - 1, 0.01), /unreachable/);
+  assert.throws(() => BF.make(500_000_000, 1e-3), RangeError);
+});
+
+test("make() with m = 2^32 allocates m/32 words and has no false negatives", () => {
+  // 300M items at 1% needs ~2.9e9 bits -> next power of two is 2^32 (512 MiB, lazily zeroed).
+  const bf = BF.make(300_000_000, 0.01);
+  assert.equal(BF.bitCount(bf), 2 ** 32);
+  for (let i = 0; i < 200; i++) BF.add(bf, "key:" + i);
+  for (let i = 0; i < 200; i++) assert.equal(BF.mightContain(bf, "key:" + i), true);
+  // Not saturated: most absent keys are rejected.
+  let fp = 0;
+  for (let i = 0; i < 2000; i++) if (BF.mightContain(bf, "absent:" + i)) fp++;
+  assert.ok(fp < 20, `unexpected false positives: ${fp}`);
+});
+
+// ---------------------------------------------------------------------------
+// False-positive rate vs the exact theoretical rate, across key families.
+// FNV-1a alone skews structured / non-ASCII keys (low output bits depend only on
+// the low bits of each code unit); the fmix32 finalizer brings them to theory.
+// ---------------------------------------------------------------------------
+
+function theoreticalFpr(m: number, k: number, n: number): number {
+  return Math.pow(1 - Math.exp((-k * n) / m), k);
+}
+
+const families: Record<string, (i: number) => string> = {
+  decimalIds: (i) => "user:" + i,
+  base36Short: (i) => "k" + i.toString(36),
+  hexLike: (i) => (Math.imul(i, 0x9e3779b1) >>> 0).toString(16) + "-" + (i * 7919).toString(16),
+  cjk: (i) => "用户:" + String.fromCharCode(0x4e00 + (i % 5000), 0x4e00 + Math.floor(i / 5000)),
+  // Code units that differ only in their high byte (low byte constant).
+  highByteOnly: (i) =>
+    "user:" +
+    String.fromCharCode(
+      0x4100 + ((i % 50) << 8),
+      0x4100 + ((Math.floor(i / 50) % 50) << 8),
+      0x4100 + (Math.floor(i / 2500) << 8),
+    ),
+  emoji: (i) => "\u{1F600}" + i.toString(36) + String.fromCharCode(0xd800 + (i % 1000)),
+};
+
+for (const [name, key] of Object.entries(families)) {
+  test(`false-positive rate matches theory for key family: ${name}`, () => {
+    const n = 5000;
+    const probes = 100_000;
+    for (const fpr of [0.1, 0.01]) {
+      const bf = BF.make(n, fpr);
+      for (let i = 0; i < n; i++) BF.add(bf, key(i));
+      const expected = theoreticalFpr(BF.bitCount(bf), BF.hashCount(bf), n);
+      let fp = 0;
+      for (let i = n; i < n + probes; i++) if (BF.mightContain(bf, key(i))) fp++;
+      const measured = fp / probes;
+      // Statistical noise at these sizes is ~5%; 1.35x also catches a skewed hash.
+      assert.ok(
+        measured <= expected * 1.35 + 0.0005,
+        `${name} fpr=${fpr}: measured ${measured.toFixed(5)} vs theoretical ${expected.toFixed(5)}`,
+      );
+      assert.ok(measured <= fpr, `${name}: measured ${measured} exceeds requested ${fpr}`);
+    }
+  });
+}
+
+test("keys differing only in high bits of a code unit do not collide systematically", () => {
+  // With raw FNV-1a, "user:A" and "user:䁁" hashed to the same low bits.
+  const bf = BF.make(1000, 0.01);
+  BF.add(bf, "user:A");
+  let hits = 0;
+  for (let hi = 1; hi < 200; hi++) {
+    if (BF.mightContain(bf, "user:" + String.fromCharCode(0x41 + (hi << 8)))) hits++;
+  }
+  assert.ok(hits <= 3, `${hits}/199 high-bit variants collided`);
+});

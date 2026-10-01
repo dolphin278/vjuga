@@ -2,6 +2,7 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as S from "../../schema/Schema.js";
 import { validate, type SchemaError } from "../../schema/Validate.js";
+import { jsLiteral, eqExpr, neExpr } from "../../schema/Codegen.js";
 import { assertOk, assertErr } from "./_helpers.js";
 
 // ---------------------------------------------------------------------------
@@ -221,7 +222,7 @@ test("object — nested error path", () => {
 
 test("object — returns input as-is on success", () => {
   const input = { name: "test", extra: true };
-  const v = validate(S.object({ name: S.string() }));
+  const v = validate(S.object({ name: S.string() }, { additionalProperties: true }));
   const r = assertOk(v(input));
   // Returns the same reference — zero allocation on success path
   assert.equal(r, input);
@@ -493,7 +494,10 @@ test("deeply nested schema", () => {
 test("empty object", () => {
   const v = validate(S.object({}));
   assertOk(v({}));
-  assertOk(v({ extra: true }));
+  const e = assertErr(v({ extra: true }));
+  assert.equal(e.path, "extra");
+  assert.equal(e.expected, "no additional properties");
+  assertOk(validate(S.object({}, { additionalProperties: true }))({ extra: true }));
   assertErr(v(null));
   assertErr(v(42));
 });
@@ -503,10 +507,12 @@ test("-0 is a valid number", () => {
   assertOk(v(-0));
 });
 
-test("Infinity is a valid number", () => {
+test("number — rejects ±Infinity (not JSON-representable)", () => {
   const v = validate(S.number());
-  assertOk(v(Infinity));
-  assertOk(v(-Infinity));
+  assert.equal(assertErr(v(Infinity)).expected, "number");
+  assertErr(v(-Infinity));
+  assertOk(v(Number.MAX_VALUE));
+  assertOk(v(-Number.MIN_VALUE));
 });
 
 test("array of arrays", () => {
@@ -544,11 +550,11 @@ test("object — special chars in key error path", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Coverage: quickTypeCheck branches
+// Coverage: exactCheck branches (inline union variant checks)
 // ---------------------------------------------------------------------------
 
 test("union — integer | boolean | null dispatch", () => {
-  // Exercises quickTypeCheck for integer, boolean, null cases
+  // Exercises exactCheck for integer, boolean, null cases
   const v = validate(S.union(S.integer(), S.boolean(), S.null_()));
   assertOk(v(42));
   assertOk(v(true));
@@ -565,8 +571,8 @@ test("union — large enum as last variant", () => {
   assertErr(v(true));
 });
 
-test("union — array | tuple dispatch", () => {
-  // Exercises quickTypeCheck for array/tuple kinds
+test("union — array | string dispatch", () => {
+  // Array variants have no exact inline check — tried via a boolean sub-validator
   const v = validate(S.union(S.array(S.number()), S.string()));
   assertOk(v([1, 2]));
   assertOk(v("hello"));
@@ -574,7 +580,7 @@ test("union — array | tuple dispatch", () => {
 });
 
 test("union — object | string dispatch (non-discriminated)", () => {
-  // Exercises emitObjectVariantTest path for non-discriminated object unions
+  // Object variants are tried via a compiled boolean sub-validator
   const v = validate(S.union(S.object({ x: S.number(), y: S.number() }), S.string()));
   assertOk(v({ x: 1, y: 2 }));
   assertOk(v("hello"));
@@ -588,8 +594,8 @@ test("union — non-discriminated objects fall through on property mismatch", ()
   assertOk(v({ y: 42 }));
 });
 
-test("union — nested union in quickTypeCheck", () => {
-  // Exercises the union case in quickTypeCheck (recursive)
+test("union — nested union with an exact inline check", () => {
+  // A union of exact-checkable variants is itself exact-checkable (recursive)
   const inner = S.union(S.string(), S.number());
   const v = validate(S.union(inner, S.boolean()));
   assertOk(v("hello"));
@@ -606,31 +612,37 @@ test("enum — large set (>8 values)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Coverage: union — non-discriminated objects with object variant test
+// Coverage: union — non-discriminated object variants (boolean sub-validators)
 // ---------------------------------------------------------------------------
 
-test("union — object variant without quick type check", () => {
-  // Two object schemas where the first variant can't be distinguished by typeof —
-  // triggers emitObjectVariantTest (tests object shape matching)
+test("union — object variant without an exact inline check", () => {
+  // Two object schemas: the first variant is tried by a full sub-validator
   const v = validate(
     S.union(S.object({ x: S.integer(), y: S.integer() }), S.object({ name: S.string() })),
   );
   assertOk(v({ x: 1, y: 2 }));
   assertOk(v({ name: "hi" }));
-  // First variant tried first — fails shape check, falls through to second
-  assertOk(v({ name: "hi", extra: true }));
+  // First variant fails, second rejects the undeclared key
+  assertErr(v({ name: "hi", extra: true }));
+  const open = validate(
+    S.union(
+      S.object({ x: S.integer() }),
+      S.object({ name: S.string() }, { additionalProperties: true }),
+    ),
+  );
+  assertOk(open({ name: "hi", extra: true }));
 });
 
-test("union — quickTypeCheck null literal", () => {
+test("union — null variant exact check", () => {
   const v = validate(S.union(S.null_(), S.string()));
   assertOk(v(null));
   assertOk(v("hello"));
   assertErr(v(42));
 });
 
-test("union — non-discriminated object-only variants (emitObjectVariantTest)", () => {
-  // Both variants are objects without a discriminant key — triggers
-  // emitObjectVariantTest which probes object shape with labeled breaks
+test("union — non-discriminated object-only variants", () => {
+  // Both variants are objects without a discriminant key — the first is tried
+  // via a boolean sub-validator, the last inline (its error is reported)
   const v = validate(S.union(S.object({ x: S.integer() }), S.object({ y: S.string() })));
   assertOk(v({ x: 1 }));
   assertOk(v({ y: "hi" }));
@@ -638,9 +650,8 @@ test("union — non-discriminated object-only variants (emitObjectVariantTest)",
   assertErr(v(null));
 });
 
-test("union — quickTypeCheck returns null for literal kind", () => {
-  // literal and enum don't have a quickTypeCheck, so the union falls back
-  // to trying each variant via emitValidation on the last variant
+test("union — literal variants use inline equality checks", () => {
+  // Literals are exact-checkable: `v === "a"` for non-last variants
   const v = validate(S.union(S.literal("a"), S.literal("b")));
   assertOk(v("a"));
   assertOk(v("b"));
@@ -711,10 +722,10 @@ test("number — Infinity rejected by maximum constraint", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Coverage: union with large enum (quickTypeCheck null) — Bug 1 fix
+// Coverage: union with large enum (no exact check -> sub-validator)
 // ---------------------------------------------------------------------------
 
-test("union — large enum + integer (enum quickTypeCheck null)", () => {
+test("union — large enum + integer (enum via sub-validator)", () => {
   const v = validate(S.union(S.enum_("a", "b", "c", "d", "e"), S.integer()));
   assertOk(v("a"));
   assertOk(v("e"));
@@ -782,4 +793,508 @@ test("string format: unknown format — silently skipped", () => {
   // Unknown format strings should not cause errors
   const v = validate(S.string({ format: "custom-thing" as "email" }));
   assertOk(v("anything"));
+});
+
+// ---------------------------------------------------------------------------
+// Code injection — hostile strings never reach generated source unescaped
+// ---------------------------------------------------------------------------
+
+const HOSTILE = [
+  '"',
+  "'",
+  "\\",
+  '\\"',
+  "\n",
+  "\r\n",
+  " ",
+  " ",
+  "${globalThis.__pwned = 1}",
+  "`",
+  "*/",
+  "//",
+  '"+(globalThis.__pwned=1)+"',
+  "');globalThis.__pwned=1;('",
+  "a+b",
+  "__proto__",
+  "constructor",
+  "toString",
+  "hasOwnProperty",
+  "",
+];
+
+function assertNotPwned(): void {
+  assert.equal((globalThis as Record<string, unknown>).__pwned, undefined);
+}
+
+test("injection — hostile object keys: correct accept/reject and exact error path", () => {
+  for (const key of HOSTILE) {
+    const v = validate(S.object({ [key]: S.string() }));
+    const good = { [key]: "ok" };
+    assertOk(v(good));
+    const e = assertErr(v({ [key]: 1 }));
+    assert.equal(e.path, key);
+    assert.equal(e.expected, "string");
+    // An empty key is indistinguishable from the root in dot paths
+    if (key === "") continue;
+    // Nested under a static parent and under a dynamic (array) parent
+    const nested = validate(S.object({ p: S.array(S.object({ [key]: S.integer() })) }));
+    const ne = assertErr(nested({ p: [{ [key]: 1 }, { [key]: "x" }] }));
+    assert.equal(ne.path, "p.1." + key);
+    const deep = validate(S.object({ [key]: S.object({ [key]: S.boolean() }) }));
+    const de = assertErr(deep({ [key]: { [key]: 0 } }));
+    assert.equal(de.path, key + "." + key);
+    // Extra-key error under a hostile parent path
+    const strict = validate(S.object({ [key]: S.object({}) }));
+    const se = assertErr(strict({ [key]: { z: 1 } }));
+    assert.equal(se.path, key + ".z");
+    // Record values under hostile parent (dynamic path)
+    const rec = validate(S.object({ [key]: S.record(S.number()) }));
+    const re = assertErr(rec({ [key]: { [key]: "x" } }));
+    assert.equal(re.path, key + "." + key);
+  }
+  assertNotPwned();
+});
+
+test("injection — hostile extra key names in error paths", () => {
+  const v = validate(S.object({ a: S.number() }));
+  for (const key of HOSTILE) {
+    if (key === "a") continue;
+    const input = { a: 1, [key]: 1 };
+    const e = assertErr(v(input));
+    assert.equal(e.path, key);
+    assert.equal(e.expected, "no additional properties");
+  }
+  assertNotPwned();
+});
+
+test("injection — hostile regex patterns are labels, never code", () => {
+  const patterns = [
+    '^"[a-z]+"$',
+    '^a"$',
+    '^"+(globalThis.__pwned=1)+"',
+    "^\\\\$",
+    " ",
+    "${x}",
+    "`",
+  ];
+  for (const pattern of patterns) {
+    const v = validate(S.string({ pattern }));
+    const re = new RegExp(pattern);
+    for (const s of ['"abc"', "abc", "zzz", "\\", " ", "${x}", "`", 'a"']) {
+      const r = v(s);
+      assert.equal(r[0], re.test(s), `pattern ${pattern} on ${s}`);
+      if (!r[0]) assert.equal(r[1].expected, `string(pattern=${pattern})`);
+    }
+  }
+  // Same via untrusted JSON Schema text
+  const text = JSON.stringify({ type: "string", pattern: '^"+(globalThis.__pwned=1)+"' });
+  const [ok, schema] = S.fromJsonSchema(JSON.parse(text) as S.JsonSchemaObject);
+  assert.ok(ok);
+  assertErr(validate(schema as S.StringSchema)("zzz"));
+  assertNotPwned();
+});
+
+test("injection — hostile literal, enum, and discriminant values", () => {
+  for (const s of HOSTILE) {
+    const lit = validate(S.literal(s));
+    assertOk(lit(s));
+    const le = assertErr(lit(s + "x"));
+    assert.equal(le.expected, "literal(" + jsLiteral(s) + ")");
+    const small = validate(S.enum_(s, "other"));
+    assertOk(small(s));
+    assertErr(small(s + "x"));
+    const big = validate(S.enum_(s, "1", "2", "3", "4", "5", "6", "7", "8"));
+    assertOk(big(s));
+    assertErr(big(s + "x"));
+    const inUnion = validate(S.union(S.literal(s), S.enum_(s + "x", "q"), S.number()));
+    assertOk(inUnion(s));
+    assertOk(inUnion(s + "x"));
+    assertErr(inUnion(s + "y"));
+    const disc = validate(
+      S.union(
+        S.object({ [s === "t" ? "u" : "t"]: S.literal(s), a: S.number() }),
+        S.object({ [s === "t" ? "u" : "t"]: S.literal(s + "!"), b: S.string() }),
+      ),
+    );
+    const tk = s === "t" ? "u" : "t";
+    assertOk(disc({ [tk]: s, a: 1 }));
+    assertOk(disc({ [tk]: s + "!", b: "x" }));
+    const de = assertErr(disc({ [tk]: s + "?", a: 1 }));
+    assert.equal(de.path, tk);
+  }
+  assertNotPwned();
+});
+
+test("injection — non-primitive constraint values throw TypeError at compile time", () => {
+  const evil = { toString: () => "0) || (globalThis.__pwned = 1" } as unknown as number;
+  assert.throws(() => validate(S.string({ minLength: evil })), TypeError);
+  assert.throws(() => validate(S.number({ minimum: evil })), TypeError);
+  assert.throws(() => validate(S.array(S.string(), { maxItems: evil })), TypeError);
+  assert.throws(() => validate(S.literal(evil)), TypeError);
+  assertNotPwned();
+});
+
+// ---------------------------------------------------------------------------
+// Codegen literal helpers
+// ---------------------------------------------------------------------------
+
+test("Codegen.jsLiteral — round-trips primitives through eval", () => {
+  const values: unknown[] = [
+    ...HOSTILE,
+    0,
+    -0,
+    1.5,
+    -2,
+    1e21,
+    5e-324,
+    NaN,
+    Infinity,
+    -Infinity,
+    true,
+    false,
+    null,
+    undefined,
+  ];
+  for (const v of values) {
+    const back = new Function("return " + jsLiteral(v))() as unknown;
+    assert.ok(Object.is(back, v), `round-trip ${String(v)}`);
+  }
+  assert.equal(jsLiteral("  "), '"\\u2028\\u2029"');
+  assert.equal(jsLiteral(-0), "-0");
+  assert.throws(() => jsLiteral({}), TypeError);
+  assert.throws(() => jsLiteral(1n), TypeError);
+  assert.throws(() => jsLiteral(Symbol("s")), TypeError);
+});
+
+test("Codegen.eqExpr / neExpr — SameValueZero semantics", () => {
+  const check = (expr: string, x: unknown) => new Function("x", "return " + expr)(x) as boolean;
+  assert.equal(check(eqExpr("x", NaN), NaN), true);
+  assert.equal(check(eqExpr("x", NaN), 1), false);
+  assert.equal(check(neExpr("x", NaN), NaN), false);
+  assert.equal(check(eqExpr("x", 0), -0), true);
+  assert.equal(check(eqExpr("x", "a"), "a"), true);
+  assert.equal(check(neExpr("x", "a"), "b"), true);
+});
+
+// ---------------------------------------------------------------------------
+// Unions accept a value only if some variant FULLY validates it
+// ---------------------------------------------------------------------------
+
+test("union — negative: object variants are validated deeply", () => {
+  const v = validate(S.union(S.object({ a: S.string() }), S.object({ b: S.number() })));
+  assertErr(v({}));
+  assertErr(v({ a: 5 }));
+  assertErr(v({ a: "x", b: 1 })); // matches neither strict shape
+  assertOk(v({ a: "x" }));
+  assertOk(v({ b: 1 }));
+});
+
+test("union — negative: constrained primitives are not shallow-checked", () => {
+  const strMin = validate(S.union(S.string({ minLength: 5 }), S.number()));
+  assertErr(strMin("x"));
+  assertOk(strMin("hello"));
+  assertOk(strMin(1));
+  const intMin = validate(S.union(S.integer({ minimum: 0 }), S.string()));
+  assertErr(intMin(-5));
+  assertOk(intMin(5));
+  const pat = validate(S.union(S.string({ pattern: "^a" }), S.boolean()));
+  assertErr(pat("b"));
+  assertOk(pat("a"));
+  const fmt = validate(S.union(S.string({ format: "uuid" }), S.null_()));
+  assertErr(fmt("nope"));
+  const lenOnly = validate(S.union(S.string({ maxLength: 2 }), S.null_()));
+  assertErr(lenOnly("abc"));
+  assertOk(lenOnly("ab"));
+  const num = validate(S.union(S.number({ multipleOf: 2 }), S.string()));
+  assertErr(num(3));
+});
+
+test("union — negative: arrays, tuples, records, nested wrappers", () => {
+  const arr = validate(S.union(S.array(S.string()), S.null_()));
+  assertErr(arr([1, 2]));
+  assertOk(arr(["a"]));
+  const tup = validate(S.union(S.tuple(S.string(), S.number()), S.null_()));
+  assertErr(tup([1, "a"]));
+  assertOk(tup(["a", 1]));
+  const rec = validate(S.union(S.record(S.number()), S.string()));
+  assertErr(rec({ a: "x" }));
+  const opt = validate(S.union(S.optional(S.object({ x: S.number() })), S.string()));
+  assertErr(opt({ x: "no" }));
+  assertOk(opt(undefined));
+  assertOk(opt({ x: 1 }));
+  const nul = validate(S.union(S.nullable(S.integer({ maximum: 3 })), S.boolean()));
+  assertErr(nul(10));
+  assertOk(nul(null));
+  const optExact = validate(S.union(S.optional(S.string()), S.nullable(S.number()), S.boolean()));
+  assertOk(optExact(undefined));
+  assertOk(optExact(null));
+  assertErr(optExact({}));
+  const nested = validate(S.union(S.union(S.string(), S.array(S.number())), S.boolean()));
+  assertErr(nested(["x"]));
+  assertOk(nested([1]));
+  const nonFinite = validate(S.union(S.number(), S.string()));
+  assertErr(nonFinite(Infinity));
+  assertErr(nonFinite(NaN));
+});
+
+test("union — sub-validators nest (union inside object inside union)", () => {
+  const v = validate(
+    S.union(
+      S.object({ k: S.union(S.array(S.integer()), S.object({ z: S.string() })) }),
+      S.string(),
+    ),
+  );
+  assertOk(v({ k: [1] }));
+  assertOk(v({ k: { z: "a" } }));
+  assertErr(v({ k: { z: 1 } }));
+  assertErr(v({ k: ["a"] }));
+});
+
+test("union — empty union matches nothing", () => {
+  const v = validate(S.union());
+  const e = assertErr(v(1));
+  assert.equal(e.expected, "never");
+  assertErr(validate(S.union(S.union(), S.string()))(1));
+  assertOk(validate(S.union(S.union(), S.string()))("a"));
+});
+
+// ---------------------------------------------------------------------------
+// additionalProperties: false (the default) is enforced
+// ---------------------------------------------------------------------------
+
+test("additionalProperties — strict default rejects undeclared own keys", () => {
+  const v = validate(S.object({ a: S.string(), b: S.optional(S.number()) }));
+  assertOk(v({ a: "x" }));
+  assertOk(v({ a: "x", b: 1 }));
+  // Optional key present with value undefined is declared, not extra
+  assertOk(v({ a: "x", b: undefined }));
+  const e = assertErr(v({ a: "x", evil: 1 }));
+  assert.equal(e.path, "evil");
+  assert.equal(e.received, 1);
+  // Extra + absent optional: counts can match by coincidence — slow path catches it
+  assertErr(v({ a: "x", c: 1 }));
+  // Inherited enumerable keys are not "own" — not extras
+  const proto = { inherited: 1 };
+  const child = Object.create(proto) as Record<string, unknown>;
+  child.a = "x";
+  assertOk(v(child));
+  // Non-enumerable own extras are invisible (same as Object.keys)
+  const hidden = { a: "x" };
+  Object.defineProperty(hidden, "secret", { value: 1, enumerable: false });
+  assertOk(v(hidden));
+  // Symbol keys are ignored
+  assertOk(v({ a: "x", [Symbol("s")]: 1 }));
+});
+
+test("additionalProperties — true allows extras; nested strict objects still checked", () => {
+  const v = validate(
+    S.object({ inner: S.object({ x: S.number() }) }, { additionalProperties: true }),
+  );
+  assertOk(v({ inner: { x: 1 }, extra: true }));
+  const e = assertErr(v({ inner: { x: 1, y: 2 } }));
+  assert.equal(e.path, "inner.y");
+});
+
+test("additionalProperties — required key whose schema accepts undefined", () => {
+  const v = validate(
+    S.object({
+      a: S.union(S.optional(S.string()), S.number()),
+      b: S.nullable(S.optional(S.string())),
+      c: S.literal(undefined as unknown as null),
+    }),
+  );
+  assertOk(v({}));
+  assertOk(v({ a: "x", b: null }));
+  assertErr(v({ z: 1 }));
+});
+
+test("additionalProperties — discriminated union variants are strict", () => {
+  const v = validate(
+    S.union(
+      S.object({ type: S.literal("a"), x: S.number() }),
+      S.object({ type: S.literal("b") }, { additionalProperties: true }),
+    ),
+  );
+  assertOk(v({ type: "a", x: 1 }));
+  const e = assertErr(v({ type: "a", x: 1, y: 2 }));
+  assert.equal(e.path, "y");
+  assertOk(v({ type: "b", anything: 1 }));
+});
+
+test("additionalProperties — wide objects", () => {
+  const props: Record<string, S.IntegerSchema> = {};
+  const value: Record<string, number> = {};
+  for (let i = 0; i < 40; i++) {
+    props["k" + i] = S.integer();
+    value["k" + i] = i;
+  }
+  const v = validate(S.object(props));
+  assertOk(v(value));
+  assert.equal(assertErr(v({ ...value, k40: 1 })).path, "k40");
+});
+
+// ---------------------------------------------------------------------------
+// Own-property semantics
+// ---------------------------------------------------------------------------
+
+test("own properties — keys that exist on Object.prototype", () => {
+  const v = validate(
+    S.object({
+      constructor: S.optional(S.string()),
+      toString: S.optional(S.number()),
+      hasOwnProperty: S.optional(S.boolean()),
+    }),
+  );
+  assertOk(v({}));
+  assertOk(v(JSON.parse("{}")));
+  assertOk(v({ constructor: "c", toString: 1, hasOwnProperty: true }));
+  assertErr(v({ constructor: 1 }));
+  const req = validate(S.object({ constructor: S.string() }));
+  assert.equal(assertErr(req({})).path, "constructor");
+});
+
+test("own properties — declared __proto__ key", () => {
+  const v = validate(S.object({ ["__proto__"]: S.optional(S.string()), a: S.number() }));
+  assertOk(v({ a: 1 }));
+  assertOk(v(JSON.parse('{"__proto__":"x","a":1}')));
+  assertErr(v(JSON.parse('{"__proto__":5,"a":1}')));
+  const req = validate(S.object({ ["__proto__"]: S.string() }));
+  assertErr(req({}));
+  assertOk(req(JSON.parse('{"__proto__":"x"}')));
+});
+
+test("own properties — inherited values never satisfy a property", () => {
+  const v = validate(S.object({ name: S.string() }));
+  assertErr(v(Object.create({ name: "x" })));
+  class WithGetter {
+    get name(): string {
+      return "x";
+    }
+  }
+  assertErr(v(new WithGetter()));
+  class WithField {
+    name = "x";
+  }
+  assertOk(v(new WithField()));
+  const nullProto = Object.create(null) as Record<string, unknown>;
+  nullProto.name = "x";
+  assertOk(v(nullProto));
+  const disc = validate(S.union(S.object({ t: S.literal("a") }), S.object({ t: S.literal("b") })));
+  assertErr(disc(Object.create({ t: "a" })));
+  const own = Object.create({ inherited: 1 }) as Record<string, unknown>;
+  own.t = "a";
+  assertOk(disc(own));
+  // An own __proto__ data property (from JSON.parse) disables the fast read path
+  const j = validate(S.object({ name: S.string() }, { additionalProperties: true }));
+  assertOk(j(JSON.parse('{"__proto__":{"name":1},"name":"x"}')));
+  assertErr(j(JSON.parse('{"__proto__":{"name":"x"}}')));
+});
+
+test("own properties — only proto-colliding keys skip the prototype flag", () => {
+  const v = validate(S.object({ toString: S.string() }));
+  assertOk(v({ toString: "x" }));
+  assertErr(v({}));
+  const disc = validate(
+    S.union(S.object({ constructor: S.literal("a") }), S.object({ constructor: S.literal("b") })),
+  );
+  assertOk(disc({ constructor: "a" }));
+  assertErr(disc({}));
+});
+
+test("hoisting — each property is read exactly once", () => {
+  let reads = 0;
+  const o = {};
+  Object.defineProperty(o, "a", {
+    enumerable: true,
+    get() {
+      reads++;
+      return reads === 1 ? 5 : "changed";
+    },
+  });
+  const v = validate(S.object({ a: S.integer({ minimum: 0, maximum: 10, multipleOf: 5 }) }));
+  assertOk(v(o));
+  assert.equal(reads, 1);
+});
+
+// ---------------------------------------------------------------------------
+// Formats
+// ---------------------------------------------------------------------------
+
+test("string format — prototype member names are unknown formats, never lookups", () => {
+  for (const format of ["constructor", "toString", "__proto__", "hasOwnProperty", "date"]) {
+    const v = validate(S.string({ format: format as "email" }));
+    assertOk(v("hello"));
+    assertErr(v(1));
+    const u = validate(S.union(S.string({ format: format as "email" }), S.null_()));
+    assertOk(u("hello"));
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Non-finite and special numeric values in literals / enums / discriminants
+// ---------------------------------------------------------------------------
+
+test("literal / enum — Infinity, -Infinity, NaN, -0 are matched exactly", () => {
+  const inf = validate(S.enum_(Infinity, "x"));
+  assertOk(inf(Infinity));
+  assertErr(inf(null));
+  assert.equal(assertErr(inf(1)).expected, 'enum(Infinity,"x")');
+  const nan = validate(S.enum_(NaN, 1));
+  assertOk(nan(NaN));
+  assertErr(nan(null));
+  const bigNan = validate(S.enum_(NaN, 1, 2, 3, 4, 5, 6, 7, 8));
+  assertOk(bigNan(NaN));
+  assertErr(bigNan(null));
+  const litNan = validate(S.literal(NaN));
+  assertOk(litNan(NaN));
+  assert.equal(assertErr(litNan(0)).expected, "literal(NaN)");
+  const litNegInf = validate(S.literal(-Infinity));
+  assertOk(litNegInf(-Infinity));
+  assertErr(litNegInf(null));
+  const zero = validate(S.literal(0));
+  assertOk(zero(-0));
+  const negZero = validate(S.literal(-0));
+  assertOk(negZero(0));
+  const u = validate(S.union(S.enum_(-Infinity, "a"), S.literal(NaN), S.string()));
+  assertErr(u(null));
+  assertOk(u(-Infinity));
+  assertOk(u(NaN));
+});
+
+test("discriminated union — Infinity tag; NaN tag falls back to untagged union", () => {
+  const u = validate(
+    S.union(S.object({ k: S.literal(Infinity), a: S.number() }), S.object({ k: S.literal(1) })),
+  );
+  assertOk(u({ k: Infinity, a: 1 }));
+  assertErr(u({ k: null, a: 1 }));
+  const e = assertErr(u({ k: 2 }));
+  assert.equal(e.expected, "one of: Infinity, 1");
+  const n = validate(
+    S.union(S.object({ k: S.literal(NaN), a: S.number() }), S.object({ k: S.literal(1) })),
+  );
+  assertOk(n({ k: NaN, a: 1 }));
+  assertOk(n({ k: 1 }));
+  assertErr(n({ k: null, a: 1 }));
+});
+
+// ---------------------------------------------------------------------------
+// multipleOf
+// ---------------------------------------------------------------------------
+
+test("multipleOf — relative tolerance for fractional divisors", () => {
+  const tiny = validate(S.number({ multipleOf: 1e-10 }));
+  assertErr(tiny(1.5e-10));
+  assertErr(tiny(3.7e-11));
+  assertOk(tiny(3e-10));
+  const tenth = validate(S.number({ multipleOf: 0.1 }));
+  assertOk(tenth(0.3));
+  assertOk(tenth(0.1 + 0.2));
+  assertOk(tenth(123456789.1));
+  assertOk(tenth(-0.7));
+  assertOk(tenth(0));
+  assertErr(tenth(0.35));
+  assertErr(tenth(50000000.05));
+  const neg = validate(S.number({ multipleOf: -0.5 }));
+  assertOk(neg(1.5));
+  assertErr(neg(1.25));
 });

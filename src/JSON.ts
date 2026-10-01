@@ -104,8 +104,8 @@ export function stripDangerousKeys(value: JSONValue): boolean {
  * - `Ok` with the sanitized value on success
  * - `Err` with an error message on invalid JSON
  *
- * Fast path: scans the raw JSON string for `"__proto__"` and `"constructor"`
- * before parsing. If neither substring is present (the 99.9% case for
+ * Fast path: scans the raw JSON string for `__proto__`, `constructor` and any
+ * `\u` escape (which can spell either token) before parsing. If none is present (the common case for
  * real-world payloads), the expensive post-parse tree walk is skipped
  * entirely. V8's `String.indexOf` is SIMD-accelerated, making the scan
  * cost ~2-5 ns for typical API payloads.
@@ -121,7 +121,13 @@ export const safeParse = (json: string): Result<JSONValue, string> => {
     // Fast path: skip tree walk when no dangerous tokens exist in the source.
     // indexOf is O(n) but with SIMD acceleration it's far cheaper than
     // Object.keys + iteration on every parsed object node.
-    if (json.indexOf(PROTO_TOKEN) !== -1 || json.indexOf(CONSTRUCTOR_TOKEN) !== -1) {
+    // A \u escape can spell either token ("\u005f_proto__"), which the raw-text scan
+    // cannot see, so any \u in the source forces the walk too.
+    if (
+      json.indexOf(PROTO_TOKEN) !== -1 ||
+      json.indexOf(CONSTRUCTOR_TOKEN) !== -1 ||
+      json.indexOf(ESCAPE_TOKEN) !== -1
+    ) {
       stripDangerousKeys(value);
     }
     return ok(value);
@@ -132,6 +138,7 @@ export const safeParse = (json: string): Result<JSONValue, string> => {
 
 const PROTO_TOKEN = "__proto__";
 const CONSTRUCTOR_TOKEN = "constructor";
+const ESCAPE_TOKEN = "\\u";
 
 // ---------------------------------------------------------------------------
 // JSON string escaping — shared by src/JSON.ts and schema/JSON.ts

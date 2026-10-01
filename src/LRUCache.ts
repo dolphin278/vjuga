@@ -27,8 +27,9 @@
  * `capacity` explicitly; an unbounded `Map` is simpler when the key space is
  * known to be small. If cached values are large objects that should be
  * released under memory pressure, prefer `WeakCache`. To memoize with a
- * bounded LRU cache, pass an LRUCache-backed `Map` to `Memoization.memoize`
- * via `opts.cache`.
+ * bounded LRU cache, pass an adapter `{ get, has, set }` that delegates to the
+ * free functions here via `opts.cache` of `Memoization.memoize` (an LRUCache
+ * handle is not itself a `Map`).
  *
  * @example
  * ```ts

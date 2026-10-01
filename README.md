@@ -4,7 +4,7 @@ A zero-dependency toolkit for TypeScript that actually ships.
 
 > "Tired of installing 5 packages for things I use every day." — every developer
 
-Every utility you reach for, minus the dependency tree. Optimized for real-world workloads, tested with property-based testing and coverage-guided fuzzing, built to not slow your app down.
+Every utility you reach for, minus the dependency tree. Optimized for real-world workloads, tested with property-based testing and fuzzing, built to not slow your app down.
 
 ## Install
 
@@ -46,25 +46,25 @@ BatchExecutor implements the dataloader pattern - batches N concurrent calls int
 Queue - FIFO/LIFO with O(1) push/pop/shift/unshift, circular buffer that auto-grows, handles more than 16 items efficiently. PriorityQueue - binary min-heap with custom comparators, handles duplicate values. RadixTree - prefix-keyed lookup, autocomplete, URL routing, outperforms Map for prefix scans. BloomFilter - probabilistic membership with no false negatives, tunable false positive rate, use before expensive DB lookups. BitSet - compact Uint32Array-backed bit vector with set algebra (and, or, xor, not) for dense boolean vectors, graph adjacency, row-level flags. OrderedMap - AVL tree sorted key-value map with floor, ceiling, range queries in sorted order. SOA - structure of arrays for cache-friendly iteration in tight loops, columnar data, ECS patterns.
 
 ### Schema
-Validate compiles schemas to code-generated validators - one pass validation at runtime. JSON stringify/parse fast JSON with prototype-pollution guard - TOON is 40-50% smaller than JSON for token-efficient contexts. Schema composable type definitions with 14 kinds: primitive, array, object, record, union, tuple, nullable, optional, literal, enum, and more.
+Validate compiles schemas to code-generated validators - one pass validation at runtime. JSON stringify/parse generate typed one-pass parse+validate and schema-exact serializers with a prototype-pollution guard. TOON is up to ~50% smaller than JSON for tabular data (token-efficient contexts). Schema composable type definitions with 14 kinds: primitive, array, object, record, union, tuple, nullable, optional, literal, enum, and more.
 
 ### Types
 Branded ISOTimestamp, UnixTimestamp validates and brands at construction time. UUID v4 random and v7 time-ordered.
 
 ### Testing
-Property.check() runs property-based tests - generates random input, shrinks to minimal counterexamples automatically. StatefulTest.assertStateful() for model-based stateful testing with oracle model. CoverageGuided.fuzz() uses V8 inspector for coverage-guided fuzzing.
+Property.check() runs property-based tests - generates random input, shrinks to minimal counterexamples automatically. StatefulTest.assertStateful() for model-based stateful testing with oracle model. CoverageGuided.fuzz() is time-boxed random fuzzing; fuzzAsync() adds V8 coverage feedback.
 
 ## Why this exists
 
-- **15KB gzipped** — no bloat, no excuses
+- **Zero dependencies** — import only the modules you use
 - **100% test coverage** — baseline unit tests + property-based + fuzz testing verifies correctness
 - **Node.js + Bun** — every change profiled on both runtimes, sub-microsecond hot paths on hot code paths
-- **Fuzzed** — coverage-guided fuzzing using V8 inspector steers generation toward uncovered branches, CoverageGuided.fuzz() finds crash inputs, shrinks to minimal reproducing case
+- **Fuzzed** — CoverageGuided.fuzz() finds crash inputs under a time budget and shrinks to a minimal reproducing case; fuzzAsync() uses V8 coverage feedback to steer generation (~5–10x slower per run than property tests)
 
 ## Design
 
 - Named exports only, no default exports - always use namespace imports or named destructuring
-- Make + free functions, no classes (except WorkerPoolDestroyedError)
+- Make + free functions; classes exist only for errors (e.g. WorkerPoolDestroyedError, ValidationError)
 - ESM-only, zero runtime dependencies
 - No root export — import `@dolphin278/vjuga/<Module>`
 - Extensionless subpath imports are supported; `.js` subpaths remain compatible

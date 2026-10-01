@@ -23,6 +23,9 @@ const invalidJson = "{ invalid json here }";
 const protoJson =
   '{"__proto__":{"polluted":true},"safe":"value","nested":{"__proto__":{"bad":true}}}';
 
+const escapedKeyJson = '{"\\u005f_proto__":{"polluted":true},"safe":"value"}';
+const unicodeTextJson = '{"name":"caf\\u00e9","note":"na\\u00efve"}';
+
 // --- Warm-up ---
 {
   for (let i = 0; i < 100_000; i++) {
@@ -100,6 +103,14 @@ bench("JSON roundtrip (stringify + parseExn): simple", () => {
 
 bench("JSON roundtrip (stringify + parseExn): nested", () => {
   return parseExn(stringify(nestedObj));
+});
+
+bench("JSON.safeParse: escaped __proto__ key (\\u)", () => {
+  return safeParse(escapedKeyJson);
+});
+
+bench("JSON.safeParse: benign \\u escapes (slow path)", () => {
+  return safeParse(unicodeTextJson);
 });
 
 await run();

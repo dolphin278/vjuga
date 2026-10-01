@@ -1,98 +1,49 @@
 /**
  * TOON — code-generated Token-Oriented Object Notation serializers and parsers.
  *
- * TOON is a human-readable, indentation-based format optimized for token
- * efficiency (LLM context windows, config files, structured logs). Typical
- * output is 40-50% smaller than JSON for tabular data.
+ * When to use: compact, human-readable output for LLM prompts, logs or config,
+ * mostly for arrays of uniform objects. Tabular data is ~40–50% smaller than
+ * JSON; flat objects only ~20% smaller; nested objects/lists can be as large
+ * as JSON. For machine-to-machine interchange prefer `schema/JSON`.
  *
- * `stringify(schema)` compiles a schema-specific TOON serializer. Format
- * selection (inline arrays, tabular arrays, expanded objects) is decided at
- * compile time based on schema shape — no runtime format detection.
+ * `stringify(schema)` / `parse(schema)` compile schema-specific functions.
+ * Layout is chosen at compile time: primitive arrays inline (`k[2]: a,b`),
+ * arrays of primitive-field objects tabular (`k[2]{a,b}:` + rows), anything
+ * else as `- ` list items (objects put their first field on the hyphen line).
+ * `parse` expects schema field order unless `flexibleOrder: true`.
  *
- * `parse(schema)` compiles a schema-specific TOON parser. Default mode
- * expects fields in schema-declared order (fast path). With
- * `flexibleOrder: true`, fields may appear in any order (key lookup).
+ * Design tradeoffs:
+ *   Spec: TOON 3.0 subset — no key folding, no `[N|]` delimiter markers on
+ *   output (accepted on input). Keys are quoted only when needed to parse.
+ *   Every shape `stringify` accepts round-trips through `parse`. Shapes TOON
+ *   cannot encode unambiguously throw `TypeError("TOON: unsupported ...")` at
+ *   compile time: `optional(compound)` outside an object field, and unions
+ *   mixing compound variants unless they are discriminated object unions.
+ *   Unions of primitives decode the token's type (quoted → string), then pick
+ *   the first variant that validates. Parsing is strict (`strict` is a no-op):
+ *   exact item/row counts, JSON-grammar numbers, an empty cell means "absent".
+ *   `__proto__` keys are dropped on parse; non-finite numbers emit `null`.
  *
- * Spec conformance: TOON 3.0 (2025-11-24). Subset: no key folding, no path
- * expansion. Delimiter configurable (comma default).
- *
- * @example Basic object — key: value format, one field per line
+ * @example Objects, tabular arrays, round-trip
  * ```ts
  * import * as S from "@dolphin278/vjuga/schema/Schema";
  * import * as ST from "@dolphin278/vjuga/schema/TOON";
- * const User = S.object({ id: S.integer(), name: S.string() });
- * const toToon = ST.stringify(User);
- * const fromToon = ST.parse(User);
- * toToon({ id: 1, name: "Alice" });
- * // "id: 1\nname: Alice"
- * fromToon("id: 1\nname: Alice"); // [true, { id: 1, name: "Alice" }]
- * ```
- *
- * @example Tabular arrays — uniform object arrays use compact table format
- * ```ts
- * // Arrays of objects with only primitive fields → tabular format:
- * //   users[3]{id,name,role}:
- * //     1,Alice,admin
- * //     2,Bob,user
- * //     3,Charlie,user
- * const Schema = S.object({
- *   users: S.array(S.object({ id: S.integer(), name: S.string(), role: S.string() })),
+ * const Team = S.object({
+ *   name: S.string(),
+ *   users: S.array(S.object({ id: S.integer(), role: S.string() })),
  * });
- * // Output is ~50% smaller than JSON for this shape.
+ * const out = ST.stringify(Team)({ name: "core", users: [{ id: 1, role: "admin" }] });
+ * // "name: core\nusers[1]{id,role}:\n  1,admin"
+ * ST.parse(Team)(out); // [true, { name: "core", users: [{ id: 1, role: "admin" }] }]
  * ```
- *
- * @example Inline primitive arrays — compact single-line format
- * ```ts
- * // Arrays of primitives → inline: "tags[3]: admin,user,moderator"
- * const Schema = S.object({ tags: S.array(S.string()) });
- * ```
- *
- * @example Flexible order parse — for external TOON where field order varies
- * ```ts
- * const fromToon = ST.parse(User, { flexibleOrder: true });
- * // Parses "name: Alice\nid: 1" (reversed order) correctly.
- * // ~2x slower than schema-order parse — use only when order is unknown.
- * ```
- *
- * @example Options — delimiter and indent
- * ```ts
- * ST.stringify(schema, { delimiter: "\t", indent: 4 });
- * ST.parse(schema, { delimiter: "\t", indent: 4 });
- * ```
- *
- * Best practices:
- *   - Default (schema-order) parse is fastest — use it when you control the
- *     producer. Use `flexibleOrder` only for external/user-generated TOON.
- *   - Compile `stringify`/`parse` at module scope, not per-request.
- *   - TOON is most beneficial for tabular data (arrays of uniform objects)
- *     where the column header eliminates repeated key names.
- *   - Use comma delimiter (default) for most cases. Tab (`\t`) is useful
- *     when values contain commas. Pipe (`|`) for values containing tabs.
- *
- * Pitfalls:
- *   - `flexibleOrder` only supports flat objects with primitive fields.
- *     Nested objects/arrays inside flexible-order schemas use schema-order.
- *   - Union parse only attempts the first variant — no backtracking.
- *     Prefer discriminated unions or put the most common variant first.
- *   - Strings containing the delimiter, quotes, or colons are automatically
- *     quoted. Strings starting/ending with whitespace are also quoted.
- *     Parsing unquotes transparently.
- *   - TOON `null` is the literal string "null". The parser distinguishes
- *     `nullable(T)` fields: "null" → null, other → parse as T.
- *   - Root-level arrays/tuples are supported for parse but not for
- *     stringify (wrap in an object for round-trip).
- *
- * V8 optimization: both compiled stringify and parse functions reach
- * Turbofan (top tier) after warm-up. The `readField` helper keeps per-field
- * bytecode minimal, preserving Turbofan eligibility for large schemas.
  */
 
 import type { Result } from "../Result.js";
 import { ok, err } from "../Result.js";
 import { escapeJsonString } from "../JSON.js";
 import type { Schema, Infer } from "./Schema.js";
-import { type SchemaError, emitStandardRefs } from "./Validate.js";
-import { isPrimitive } from "./Schema.js";
+import { type SchemaError, emitStandardRefs, validate } from "./Validate.js";
+import { findDiscriminant, isPrimitive as isLeaf } from "./Schema.js";
 import { unreachable } from "../FunctionUtils.js";
 import {
   type CodeBuffer,
@@ -101,16 +52,16 @@ import {
   emitRef,
   freshVar,
   compileFunction,
-  typeCheckExpr,
+  childPath,
+  dynamicChildPath,
 } from "./Codegen.js";
 
 // ---------------------------------------------------------------------------
-// TOON helpers — captured by generated code
+// Runtime helpers — captured by generated code via emitRef
 // ---------------------------------------------------------------------------
 
-// Pre-computed escape table for control characters (0x00-0x1f) in TOON strings.
-// Same pattern as JSON.ts ESCAPE_TABLE. Eliminates toString(16)+padStart(4,"0")
-// allocation per control char on the hot path.
+// Pre-computed escapes for control characters (0x00-0x1f) — avoids a
+// toString(16)+padStart allocation per control char on the hot path.
 const TOON_ESCAPE_TABLE: string[] = [];
 for (let i = 0; i < 32; i++) {
   TOON_ESCAPE_TABLE[i] = "\\u" + i.toString(16).padStart(4, "0");
@@ -119,235 +70,390 @@ TOON_ESCAPE_TABLE[0x09] = "\\t";
 TOON_ESCAPE_TABLE[0x0a] = "\\n";
 TOON_ESCAPE_TABLE[0x0d] = "\\r";
 
+/** True if `s` has whitespace at either end, including Unicode whitespace that `trim()` removes. */
+function hasEdgeSpace(s: string, first: number, last: number): boolean {
+  if (first <= 0x20 || last <= 0x20) return true;
+  // NBSP, BOM, U+2028 etc. — only pay for trim() when an end is non-ASCII.
+  return (first > 0x7e || last > 0x7e) && s.trim().length !== s.length;
+}
+
+/** True if `c` is one of `: " \ [ ] { }` or a control character. */
+function isStructural(c: number): boolean {
+  return (
+    c < 0x20 ||
+    c === 0x3a ||
+    c === 0x22 ||
+    c === 0x5c ||
+    c === 0x5b ||
+    c === 0x5d ||
+    c === 0x7b ||
+    c === 0x7d
+  );
+}
+
 /**
- * Check if a TOON string value needs quoting. Single-pass charCode scan
- * replaces the previous regex (NEEDS_QUOTE_RE) which accounted for ~8% of
- * TOON stringify CPU time. The delimiter check is folded into the same scan,
- * eliminating a separate indexOf call.
- *
- * Rules: quote if empty, starts/ends with whitespace, is a reserved word
- * (true/false/null), looks numeric, contains special chars (: " \ [ ] { }),
- * contains control chars, or contains the delimiter.
+ * Check if a TOON string value needs quoting. Single-pass charCode scan.
+ * Quote if empty, edge whitespace, reserved word (true/false/null), lone `-`,
+ * numeric-looking (starts with a digit or `-digit`), structural/control
+ * chars, or the active delimiter.
  */
 function needsQuote(s: string, delimCode: number): boolean {
   const len = s.length;
   if (len === 0) return true;
-
   const first = s.charCodeAt(0);
-  const last = s.charCodeAt(len - 1);
-
-  // Leading/trailing whitespace
-  if (first <= 0x20 || last <= 0x20) return true;
-
-  // Reserved words: true (4), false (5), null (4)
-  if (len === 4 && (s === "true" || s === "null")) return true;
-  if (len === 5 && s === "false") return true;
-
-  // Lone dash
-  if (len === 1 && first === 0x2d) return true;
-
-  // Numeric-looking: starts with digit or dash-then-digit, or leading-zero pattern
-  if (first >= 0x30 && first <= 0x39) return true; // starts with 0-9
-  /* node:coverage ignore next 2 */
-  if (first === 0x2d && len > 1 && s.charCodeAt(1) >= 0x30 && s.charCodeAt(1) <= 0x39) return true;
-
-  // Scan for special chars, control chars, and delimiter
+  if (hasEdgeSpace(s, first, s.charCodeAt(len - 1))) return true;
+  if (s === "true" || s === "false" || s === "null" || s === "-") return true;
+  if (first >= 0x30 && first <= 0x39) return true;
+  if (first === 0x2d) {
+    const second = s.charCodeAt(1);
+    if (second >= 0x30 && second <= 0x39) return true;
+  }
   for (let i = 0; i < len; i++) {
     const c = s.charCodeAt(i);
-    if (
-      c === 0x3a || // :
-      c === 0x22 || // "
-      c === 0x5c || // \
-      c === 0x5b || // [
-      c === 0x5d || // ]
-      c === 0x7b || // {
-      c === 0x7d || // }
-      c < 0x20 || // control chars
-      c === delimCode // delimiter
-    ) {
-      return true;
-    }
+    if (isStructural(c) || c === delimCode) return true;
   }
   return false;
 }
 
-/**
- * Quote a TOON string value. Uses needsQuote() for the fast-path check
- * (charCode scan, no regex), then escapes in a single pass.
- */
-function toonQuote(s: string, delim: string): string {
-  if (!needsQuote(s, delim.charCodeAt(0))) return s;
+/** Keys are quoted only when they would not parse back unquoted. */
+function needsKeyQuote(k: string, delimCode: number): boolean {
+  const len = k.length;
+  if (len === 0 || hasEdgeSpace(k, k.charCodeAt(0), k.charCodeAt(len - 1))) return true;
+  for (let i = 0; i < len; i++) {
+    const c = k.charCodeAt(i);
+    if (isStructural(c) || c === delimCode) return true;
+  }
+  return false;
+}
+
+/** Always-quoted, escaped form of `s`. */
+function quote(s: string): string {
   let out = '"';
   let last = 0;
   for (let i = 0; i < s.length; i++) {
     const c = s.charCodeAt(i);
-    // charCode switch — V8 compiles to a jump table for dense integer ranges
-    if (c === 0x5c) {
-      out += s.slice(last, i) + "\\\\";
-      last = i + 1;
-    } else if (c === 0x22) {
-      out += s.slice(last, i) + '\\"';
-      last = i + 1;
-    } else if (c === 0x0a) {
-      out += s.slice(last, i) + "\\n";
-      last = i + 1;
-    } else if (c === 0x0d) {
-      out += s.slice(last, i) + "\\r";
-      last = i + 1;
-    } else if (c === 0x09) {
-      out += s.slice(last, i) + "\\t";
-      last = i + 1;
-    } else if (c < 0x20) {
-      // Remaining control chars (0x00-0x08, 0x0b, 0x0c, 0x0e-0x1f) — escape
-      // via pre-computed table. Avoids toString(16)+padStart allocation per char.
-      out += s.slice(last, i) + TOON_ESCAPE_TABLE[c];
+    if (c === 0x5c || c === 0x22 || c < 0x20) {
+      out += s.slice(last, i) + (c === 0x5c ? "\\\\" : c === 0x22 ? '\\"' : TOON_ESCAPE_TABLE[c]);
       last = i + 1;
     }
   }
   return out + s.slice(last) + '"';
 }
 
-function toonUnquote(s: string): string {
-  if (s.length < 2 || s.charCodeAt(0) !== 0x22 || s.charCodeAt(s.length - 1) !== 0x22) return s;
-  // Fast path: no escape sequences → slice without scanning char-by-char
-  if (s.indexOf("\\") === -1) return s.slice(1, -1);
-  let out = "";
-  let last = 1;
-  for (let i = 1; i < s.length - 1; i++) {
-    if (s.charCodeAt(i) === 0x5c && i + 1 < s.length - 1) {
-      out += s.slice(last, i);
-      const next = s.charCodeAt(i + 1);
-      if (next === 0x5c) out += "\\";
-      else if (next === 0x22) out += '"';
-      else if (next === 0x6e) out += "\n";
-      else if (next === 0x72) out += "\r";
-      else if (next === 0x74) out += "\t";
-      else if (next === 0x75 && i + 5 < s.length - 1) {
-        // \uXXXX escape — decode 4 hex digits to a char code
-        const hex = s.slice(i + 2, i + 6);
-        const code = parseInt(hex, 16);
-        /* node:coverage disable */
-        if (code === code) {
-          out += String.fromCharCode(code);
-          i += 5;
-          last = i + 1;
-          continue;
-        }
-        out += s[i];
-        last = i + 1;
-        continue;
-      } else {
-        out += s[i];
-        last = i + 1;
-        continue;
-      }
-      /* node:coverage enable */
-      i++;
-      last = i + 1;
-    }
-  }
-  return out + s.slice(last, s.length - 1);
+/** Quote a TOON string value only when needed. */
+function toonQuote(s: string, delim: string): string {
+  return needsQuote(s, delim.charCodeAt(0)) ? quote(s) : s;
 }
 
-/** Canonicalize number per TOON spec. NaN/Infinity → null. */
+/** Key encoding. `delimCode` is -1 outside tabular headers. */
+function encodeKey(k: string, delimCode: number): string {
+  return needsKeyQuote(k, delimCode) ? quote(k) : k;
+}
+
+const HEX4_RE = /^[0-9a-fA-F]{4}$/;
+
+/** Decode a quoted token; unquoted tokens are returned as-is. */
+function toonUnquote(s: string): string {
+  const end = s.length - 1;
+  if (end < 1 || s.charCodeAt(0) !== 0x22 || s.charCodeAt(end) !== 0x22) return s;
+  if (s.indexOf("\\") === -1) return s.slice(1, end);
+  let out = "";
+  let last = 1;
+  for (let i = 1; i < end - 1; i++) {
+    if (s.charCodeAt(i) !== 0x5c) continue;
+    const next = s.charCodeAt(i + 1);
+    let rep: string;
+    let skip = 1;
+    if (next === 0x6e) rep = "\n";
+    else if (next === 0x72) rep = "\r";
+    else if (next === 0x74) rep = "\t";
+    else if (next === 0x5c || next === 0x22) rep = s[i + 1];
+    else if (next === 0x75 && HEX4_RE.test(s.slice(i + 2, i + 6)) && i + 5 < end) {
+      rep = String.fromCharCode(parseInt(s.slice(i + 2, i + 6), 16));
+      skip = 5;
+    } else continue; // unknown escape: kept verbatim
+    out += s.slice(last, i) + rep;
+    i += skip;
+    last = i + 1;
+  }
+  return out + s.slice(last, end);
+}
+
+/** Number → TOON token. JS shortest round-trip form; NaN/±Infinity → null. */
 function canonicalNumber(n: number): string {
-  if (n !== n || !isFinite(n)) return "null";
-  const s = "" + n;
-  if (s.indexOf("e") === -1 && s.indexOf("E") === -1) return s;
-  return n.toFixed(20).replace(/\.?0+$/, "");
+  return n - n === 0 ? "" + n : "null";
 }
 
 /**
- * Split inline values by delimiter, respecting quoted strings.
- * Uses slice-based accumulation to avoid per-character string allocation.
- * When `expected` is provided, pre-allocates the result array to avoid
- * dynamic growth (saves ~1.4% of TOON parse CPU on tabular data).
+ * Strict number token → number, or NaN. Rejects what `+s` would accept but
+ * the JSON/TOON number grammar does not: hex/octal/binary, `Infinity`,
+ * padding, leading `+`/`.`, trailing `.`, empty string. No allocation.
  */
-function splitByDelimiter(s: string, delim: string, expected?: number): string[] {
-  // Pre-compute delimiter charCode once — avoids per-iteration string comparison.
-  // V8 compiles charCodeAt comparisons to a single integer cmp instruction.
-  const dc = delim.charCodeAt(0);
-  if (expected !== undefined) {
-    // Pre-allocated path: indexed assignment instead of push
-    const result = Array<string>(expected);
-    let idx = 0;
-    let start = 0;
-    let inQuote = false;
-    for (let i = 0; i < s.length; i++) {
-      const c = s.charCodeAt(i);
-      /* node:coverage disable */
-      if (inQuote) {
-        if (c === 0x5c && i + 1 < s.length) i++;
-        else if (c === 0x22) inQuote = false;
-      } else if (c === 0x22) {
-        inQuote = true;
-      } /* node:coverage enable */ else if (c === dc) {
-        result[idx++] = s.slice(start, i);
-        start = i + 1;
-      }
-    }
-    result[idx++] = s.slice(start);
-    // Fill remaining slots with empty string to avoid undefined holes when
-    // actual field count < expected (e.g., truncated tabular input).
-    // Skip fill on the common path where all fields are present.
-    /* node:coverage disable */
-    if (idx < expected) for (; idx < expected; idx++) result[idx] = "";
-    /* node:coverage enable */
-    return result;
+function parseNumber(s: string): number {
+  const len = s.length;
+  const first = s.charCodeAt(0);
+  const last = s.charCodeAt(len - 1);
+  if (!(first === 0x2d || (first >= 0x30 && first <= 0x39)) || !(last >= 0x30 && last <= 0x39)) {
+    return NaN;
   }
-  /* node:coverage disable */
-  const result: string[] = [];
+  for (let i = 1; i < len - 1; i++) {
+    const c = s.charCodeAt(i);
+    // 0-9 . + - e E
+    if (
+      !((c >= 0x30 && c <= 0x39) || (c >= 0x2b && c <= 0x2e && c !== 0x2c) || (c | 0x20) === 0x65)
+    ) {
+      return NaN;
+    }
+  }
+  const n = +s;
+  return n - n === 0 ? n : NaN;
+}
+
+/**
+ * Decode an untyped primitive token (primitive unions, literals,
+ * discriminants): quoted → string, true/false/null, number grammar → number,
+ * empty → undefined (absent), anything else → the unquoted text.
+ */
+function decodePrimitive(raw: string): unknown {
+  if (raw === "") return undefined;
+  if (raw.charCodeAt(0) === 0x22) return toonUnquote(raw);
+  if (raw === "true") return true;
+  if (raw === "false") return false;
+  if (raw === "null") return null;
+  const n = parseNumber(raw);
+  return n === n ? n : raw;
+}
+
+/** Serialize any primitive value (literal, enum and primitive-union cells). */
+function primitiveToToon(v: unknown, delim: string): string {
+  if (typeof v === "string") return toonQuote(v, delim);
+  if (typeof v === "number") return canonicalNumber(v);
+  if (typeof v === "boolean") return v ? "true" : "false";
+  return v === null ? "null" : "";
+}
+
+/**
+ * Split delimited cells, respecting quoted strings. Returns null unless
+ * exactly `expected` cells are present.
+ */
+function splitByDelimiter(s: string, delim: string, expected: number): string[] | null {
+  const dc = delim.charCodeAt(0);
+  const result = Array<string>(expected);
+  let idx = 0;
   let start = 0;
   let inQuote = false;
   for (let i = 0; i < s.length; i++) {
     const c = s.charCodeAt(i);
     if (inQuote) {
-      if (c === 0x5c && i + 1 < s.length)
-        i++; // skip escaped char
+      if (c === 0x5c) i++;
       else if (c === 0x22) inQuote = false;
     } else if (c === 0x22) {
       inQuote = true;
     } else if (c === dc) {
-      result.push(s.slice(start, i));
+      if (idx === expected - 1) return null;
+      result[idx++] = s.slice(start, i);
       start = i + 1;
     }
   }
-  result.push(s.slice(start));
+  if (idx !== expected - 1) return null;
+  result[idx] = s.slice(start);
   return result;
-  /* node:coverage enable */
 }
 
-/** True if array(object({all primitives})) — qualifies for tabular format. */
-/* node:coverage disable */
-function isTabular(schema: Schema): boolean {
-  if (schema.kind !== "array") return false;
-  const items = schema.meta.items;
-  if (items.kind !== "object") return false;
-  const keys = Object.keys(items.meta.properties);
-  for (let i = 0; i < keys.length; i++) {
-    if (!isPrimitive(items.meta.properties[keys[i]])) return false;
+/** Error context: the current line, or "end of input". */
+function getErrorCtx(lines: readonly string[], li: number): string {
+  return li < lines.length ? lines[li] : "end of input";
+}
+
+/** Value part of a primitive field line `prefix + value`, or null. */
+function readField(
+  lines: readonly string[],
+  li: number,
+  prefix: string,
+  prefixLen: number,
+): string | null {
+  if (li >= lines.length || !lines[li].startsWith(prefix)) return null;
+  return lines[li].slice(prefixLen);
+}
+
+/** Tail (`:...` or `[...`) of a compound field line `prefix + tail`, or null. */
+function readTail(
+  lines: readonly string[],
+  li: number,
+  prefix: string,
+  prefixLen: number,
+): string | null {
+  if (li >= lines.length || !lines[li].startsWith(prefix)) return null;
+  const c = lines[li].charCodeAt(prefixLen);
+  return c === 0x3a || c === 0x5b ? lines[li].slice(prefixLen) : null;
+}
+
+/**
+ * Split a key line (known to start with `padLen` indentation) into
+ * [decoded key, tail]; the tail starts with `:` or `[`. Null for deeper,
+ * blank or non-key lines.
+ */
+function splitKeyLine(line: string, padLen: number): [string, string] | null {
+  const c = line.charCodeAt(padLen);
+  if (c === 0x20) return null;
+  let end = padLen;
+  if (c === 0x22) {
+    end++;
+    while (end < line.length && line.charCodeAt(end) !== 0x22) {
+      end += line.charCodeAt(end) === 0x5c ? 2 : 1;
+    }
+    end++;
+  } else {
+    while (end < line.length && line.charCodeAt(end) !== 0x3a && line.charCodeAt(end) !== 0x5b) {
+      end++;
+    }
   }
-  return keys.length > 0;
-}
-/* node:coverage enable */
-
-// ---------------------------------------------------------------------------
-// Stringify context — bundles config to avoid parameter sprawl
-// ---------------------------------------------------------------------------
-
-interface EmitCtx {
-  readonly buf: CodeBuffer;
-  readonly indent: number;
-  readonly delim: string;
+  const t = line.charCodeAt(end);
+  if (end === padLen || (t !== 0x3a && t !== 0x5b)) return null;
+  return [toonUnquote(line.slice(padLen, end)), line.slice(end)];
 }
 
-/** JS expression for TOON inline value serialization. */
-function inlineExpr(schema: Schema, accessor: string): string {
-  if (schema.kind === "optional")
-    return `(${accessor} === undefined ? "" : ${inlineExpr(schema.meta.inner, accessor)})`;
-  if (schema.kind === "nullable")
-    return `(${accessor} === null ? "null" : ${inlineExpr(schema.meta.inner, accessor)})`;
-  return primitiveExpr(schema, accessor);
+/** Array header `[N]` (or `[N<delim>]`) at the start of `tail` → N, or -1. */
+function headerCount(tail: string, delimCode: number): number {
+  if (tail.charCodeAt(0) !== 0x5b) return -1;
+  let i = 1;
+  let n = 0;
+  for (let c = tail.charCodeAt(i); c >= 0x30 && c <= 0x39; c = tail.charCodeAt(++i)) {
+    n = n * 10 + (c - 0x30);
+  }
+  if (i === 1) return -1;
+  if (tail.charCodeAt(i) === delimCode) i++;
+  return tail.charCodeAt(i) === 0x5d ? n : -1;
+}
+
+/** Find the line `prefix + value` within the block at `pad`; returns the raw value or null. */
+function findDiscriminantValue(
+  lines: readonly string[],
+  li: number,
+  pad: string,
+  prefix: string,
+): string | null {
+  for (let i = li; i < lines.length && lines[i].startsWith(pad); i++) {
+    if (lines[i].startsWith(prefix)) return lines[i].slice(prefix.length);
+  }
+  return null;
+}
+
+/**
+ * Flexible-order scan: index the key lines of the block at `pad` (deeper
+ * child lines are skipped). Each key line is rewritten with the canonical key
+ * spelling so the schema-order field reader matches it (e.g. `"id": 1` →
+ * `id: 1`). Returns [key → line index, end of block].
+ */
+function scanBlock(lines: string[], li: number, pad: string): [Record<string, number>, number] {
+  const map: Record<string, number> = Object.create(null);
+  const padLen = pad.length;
+  let i = li;
+  for (; i < lines.length && lines[i].startsWith(pad); i++) {
+    const kv = splitKeyLine(lines[i], padLen);
+    if (kv === null) {
+      if (lines[i].charCodeAt(padLen) === 0x20) continue; // child line
+      break;
+    }
+    map[kv[0]] = i;
+    lines[i] = pad + encodeKey(kv[0], -1) + kv[1];
+  }
+  return [map, i];
+}
+
+// ---------------------------------------------------------------------------
+// Schema classification (compile time)
+// ---------------------------------------------------------------------------
+
+interface Unwrapped {
+  readonly core: Schema;
+  readonly opt: boolean;
+  readonly nul: boolean;
+}
+
+/** Strip optional/nullable wrappers and single-variant unions. */
+function unwrap(schema: Schema): Unwrapped {
+  let s = schema;
+  let opt = false;
+  let nul = false;
+  for (;;) {
+    if (s.kind === "optional") {
+      opt = true;
+      s = s.meta.inner;
+    } else if (s.kind === "nullable") {
+      nul = true;
+      s = s.meta.inner;
+    } else if (s.kind === "union" && s.meta.variants.length === 1) {
+      s = s.meta.variants[0];
+    } else if (s.kind === "union" && nonNullVariants(s.meta.variants).length === 1) {
+      // union(T, null) ≡ nullable(T)
+      nul = true;
+      s = nonNullVariants(s.meta.variants)[0];
+    } else {
+      return { core: s, opt, nul };
+    }
+  }
+}
+
+function nonNullVariants(variants: readonly Schema[]): Schema[] {
+  return variants.filter((v) => v.kind !== "null");
+}
+
+/** True if values of `schema` are single tokens (incl. wrapped and unions of primitives). */
+function isPrimitive(schema: Schema): boolean {
+  if (isLeaf(schema)) return true; // leaf kinds, possibly optional/nullable-wrapped
+  const s = unwrap(schema).core;
+  return s.kind === "union" ? (s.meta.variants as Schema[]).every(isPrimitive) : isLeaf(s);
+}
+
+/** True for array(object) whose object has ≥1 field, all primitive. */
+function isTabular(schema: Schema & { readonly kind: "array" }): boolean {
+  const items = schema.meta.items as Schema;
+  if (items.kind !== "object") return false;
+  const props = items.meta.properties as Record<string, Schema>;
+  const keys = Object.keys(props);
+  return keys.length > 0 && keys.every((k) => isPrimitive(props[k]));
+}
+
+function unsupported(msg: string): TypeError {
+  return new TypeError("TOON: unsupported schema shape — " + msg);
+}
+
+/**
+ * Compile-time gate shared by `stringify` and `parse`, so both factories
+ * accept exactly the same shapes. `field` = object property position.
+ */
+function assertSupported(schema: Schema, field: boolean): void {
+  if (isPrimitive(schema)) return;
+  const { core, opt } = unwrap(schema);
+  if (opt && !field) {
+    throw unsupported(`optional(${core.kind}) is only supported as an object field`);
+  }
+  switch (core.kind) {
+    case "object": {
+      const props = core.meta.properties as Record<string, Schema>;
+      for (const k of Object.keys(props)) assertSupported(props[k], true);
+      return;
+    }
+    case "record":
+      return assertSupported(core.meta.values, false);
+    case "array":
+      return assertSupported(core.meta.items, false);
+    case "tuple":
+      for (const item of core.meta.items as Schema[]) assertSupported(item, false);
+      return;
+    case "union":
+      if (findDiscriminant(core.meta.variants) === null) {
+        throw unsupported(
+          "unions with compound variants must be discriminated object unions (or use nullable)",
+        );
+      }
+      for (const v of core.meta.variants as Schema[]) assertSupported(v, false);
+      return;
+    default:
+      // Primitive kinds were accepted by isPrimitive; anything else is invalid.
+      return unreachable(core as never);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -359,399 +465,268 @@ export interface ToonStringifyOptions {
   readonly delimiter?: "," | "\t" | "|";
 }
 
-/** Compiles a schema into a TOON stringify function via `new Function`. */
+interface Gen {
+  readonly buf: CodeBuffer;
+  readonly indent: number;
+  readonly delim: string;
+  readonly flexible: boolean;
+}
+
+/** Line prefix: compile-time constant `c`, or a runtime JS expression `e`. */
+type Prefix =
+  | { readonly c: string; readonly e?: undefined }
+  | { readonly c?: undefined; readonly e: string };
+
+/** JS expression for `prefix + suffix` (suffix is a constant). */
+function pre(p: Prefix, suffix: string): string {
+  return p.e === undefined
+    ? escapeJsonString(p.c + suffix)
+    : `${p.e} + ${escapeJsonString(suffix)}`;
+}
+
+/**
+ * JS expression reading own property `k` of `acc`. Names that exist on
+ * Object.prototype (`toString`, `constructor`, ...) would otherwise read the
+ * inherited member when the property is absent.
+ */
+function propAcc(acc: string, k: string): string {
+  const lit = escapeJsonString(k);
+  return k in Object.prototype
+    ? `(Object.hasOwn(${acc}, ${lit}) ? ${acc}[${lit}] : undefined)`
+    : `${acc}[${lit}]`;
+}
+
+function pad(g: Gen, depth: number): string {
+  return " ".repeat(depth * g.indent);
+}
+
+/**
+ * Compiles a schema into a TOON stringify function via `new Function`.
+ * Throws `TypeError("TOON: unsupported ...")` for shapes TOON cannot
+ * round-trip. The compiled function assumes valid input; a value matching no
+ * discriminated-union variant throws `TypeError`.
+ */
 export function stringify<S extends Schema>(
   schema: S,
   options?: ToonStringifyOptions,
 ): (value: Infer<S>) => string {
-  /* node:coverage ignore next 4 */
-  const ctx: EmitCtx = {
+  assertSupported(schema, false);
+  const g: Gen = {
     buf: createBuffer(),
     indent: options?.indent ?? 2,
     delim: options?.delimiter ?? ",",
+    flexible: false,
   };
-  emitRef(ctx.buf, "_q", toonQuote);
-  emitRef(ctx.buf, "_cn", canonicalNumber);
-  emitRef(ctx.buf, "_delim", ctx.delim);
+  emitRef(g.buf, "_q", toonQuote);
+  emitRef(g.buf, "_cn", canonicalNumber);
+  emitRef(g.buf, "_pv", primitiveToToon);
+  emitRef(g.buf, "_delim", g.delim);
 
-  emit(ctx.buf, "return function toonStringify(v) {");
-  ctx.buf.indent++;
-  emitStringifyBody(ctx, schema, "v", "", 0, true);
-  ctx.buf.indent--;
-  emit(ctx.buf, "}");
-
-  return compileFunction<(value: Infer<S>) => string>(ctx.buf);
-}
-
-function emitStringifyBody(
-  ctx: EmitCtx,
-  schema: Schema,
-  accessor: string,
-  key: string,
-  depth: number,
-  isRoot: boolean,
-): void {
-  switch (schema.kind) {
-    case "string":
-    case "number":
-    case "integer":
-    case "boolean":
-    case "null":
-    case "literal":
-    case "enum":
-      emitPrimLine(ctx, primitiveExpr(schema, accessor), key, depth, isRoot);
-      break;
-    case "object":
-      emitObjectStringify(ctx, schema, accessor, key, depth, isRoot);
-      break;
-    case "array":
-      emitArrayStringify(ctx, schema, accessor, key, depth);
-      break;
-    case "tuple":
-      emitTupleStringify(ctx, schema, accessor, key, depth);
-      break;
-    case "record":
-      emitRecordStringify(ctx, schema, accessor, key, depth, isRoot);
-      break;
-    case "union":
-      emitUnionStringify(ctx, schema, accessor, key, depth, isRoot);
-      break;
-    case "optional":
-      if (key !== "") {
-        emit(ctx.buf, `if (${accessor} !== undefined) {`);
-        ctx.buf.indent++;
-        emitStringifyBody(ctx, schema.meta.inner, accessor, key, depth, false);
-        ctx.buf.indent--;
-        emit(ctx.buf, "}");
-      } else {
-        emitStringifyBody(ctx, schema.meta.inner, accessor, key, depth, isRoot);
-      }
-      break;
-    case "nullable":
-      emit(ctx.buf, `if (${accessor} === null) {`);
-      ctx.buf.indent++;
-      emitPrimLine(ctx, `"null"`, key, depth, isRoot);
-      ctx.buf.indent--;
-      emit(ctx.buf, "} else {");
-      ctx.buf.indent++;
-      emitStringifyBody(ctx, schema.meta.inner, accessor, key, depth, isRoot);
-      ctx.buf.indent--;
-      emit(ctx.buf, "}");
-      break;
-    default:
-      unreachable(schema);
+  emit(g.buf, "return function toonStringify(v) {");
+  g.buf.indent++;
+  if (isPrimitive(schema)) {
+    emit(g.buf, `return ${cellExpr(schema, "v")};`);
+  } else {
+    const { core, nul } = unwrap(schema);
+    if (nul) emit(g.buf, 'if (v === null) return "null";');
+    emit(g.buf, 'var s = "";');
+    if (core.kind === "array" || core.kind === "tuple") emitArrayStr(g, core, "v", { c: "" }, 0);
+    else emitBodyStr(g, core, "v", 0);
+    emit(g.buf, "return s.slice(0, -1);");
   }
+  g.buf.indent--;
+  emit(g.buf, "}");
+
+  return compileFunction<(value: Infer<S>) => string>(g.buf);
 }
 
-/** JS expression that converts a primitive schema value to TOON string. */
-function primitiveExpr(schema: Schema, accessor: string): string {
+/** JS expression serializing a primitive-shaped value as one token. */
+function cellExpr(schema: Schema, acc: string): string {
   switch (schema.kind) {
+    case "optional":
+      return `(${acc} === undefined ? "" : ${cellExpr(schema.meta.inner, acc)})`;
+    case "nullable":
+      return `(${acc} === null ? "null" : ${cellExpr(schema.meta.inner, acc)})`;
     case "string":
-      return `_q(${accessor}, _delim)`;
+      return `_q(${acc}, _delim)`;
     case "number":
     case "integer":
-      return `_cn(${accessor})`;
+      return `_cn(${acc})`;
     case "boolean":
-      return `(${accessor} ? "true" : "false")`;
+      return `(${acc} ? "true" : "false")`;
     case "null":
       return `"null"`;
     default:
-      // literal, enum — runtime type dispatch
-      return `(typeof ${accessor} === "string" ? _q(${accessor}, _delim) : typeof ${accessor} === "number" ? _cn(${accessor}) : ${accessor} === null ? "null" : ${accessor} ? "true" : "false")`;
+      // literal, enum, union of primitives — dispatch on the runtime type
+      return `_pv(${acc}, _delim)`;
   }
 }
 
-/** Emit a `s += pad + "key: " + valueExpr + "\n"` line, or `return valueExpr` at root. */
-function emitPrimLine(
-  ctx: EmitCtx,
-  valueExpr: string,
-  key: string,
-  depth: number,
-  isRoot: boolean,
-): void {
-  if (isRoot && key === "") {
-    emit(ctx.buf, `return ${valueExpr};`);
-  } else {
-    const pad = escapeJsonString(" ".repeat(depth * ctx.indent));
-    emit(ctx.buf, `s += ${pad} + ${escapeJsonString(key + ": ")} + ${valueExpr} + "\\n";`);
-  }
-}
-
-function emitObjectStringify(
-  ctx: EmitCtx,
-  schema: Schema & { readonly kind: "object" },
-  accessor: string,
-  key: string,
-  depth: number,
-  isRoot: boolean,
-): void {
-  const props = schema.meta.properties;
-  const keys = Object.keys(props);
-
-  if (!isRoot || key !== "") {
-    const pad = escapeJsonString(" ".repeat(depth * ctx.indent));
-    emit(ctx.buf, `s += ${pad} + ${escapeJsonString(key + ":\n")};`);
-    for (let i = 0; i < keys.length; i++) {
-      emitStringifyBody(
-        ctx,
-        props[keys[i]],
-        `${accessor}[${escapeJsonString(keys[i])}]`,
-        keys[i],
-        depth + 1,
-        false,
-      );
-    }
-  } else {
-    emit(ctx.buf, 'var s = "";');
-    for (let i = 0; i < keys.length; i++) {
-      emitStringifyBody(
-        ctx,
-        props[keys[i]],
-        `${accessor}[${escapeJsonString(keys[i])}]`,
-        keys[i],
-        depth,
-        false,
-      );
-    }
-    emit(ctx.buf, "return s.slice(0, -1);");
-  }
-}
-
-function emitArrayStringify(
-  ctx: EmitCtx,
-  schema: Schema & { readonly kind: "array" },
-  accessor: string,
-  key: string,
-  depth: number,
-): void {
-  const pad = escapeJsonString(" ".repeat(depth * ctx.indent));
-  const header = key;
-
-  if (isTabular(schema)) {
-    emitTabularStringify(ctx, schema, accessor, header, depth);
+/** Emit a field (`key: v`, `key:` + block, or `key[N]...`) for `acc` at `depth`. */
+function emitFieldStr(g: Gen, schema: Schema, acc: string, p: Prefix, depth: number): void {
+  if (isPrimitive(schema)) {
+    emit(g.buf, `s += ${pre(p, ": ")} + ${cellExpr(schema, acc)} + "\\n";`);
     return;
   }
-
-  if (isPrimitive(schema.meta.items)) {
-    // Inline the array serialization loop directly — eliminates a compiled
-    // helper function call, keeping everything in one function for Turbofan.
-    emit(ctx.buf, `s += ${pad} + ${escapeJsonString(header)} + "[" + ${accessor}.length + "]: ";`);
-    const idx = freshVar(ctx.buf);
-    const elemExpr0 = inlineExpr(schema.meta.items, `${accessor}[0]`);
-    const elemExprI = inlineExpr(schema.meta.items, `${accessor}[${idx}]`);
-    emit(ctx.buf, `if (${accessor}.length > 0) {`);
-    ctx.buf.indent++;
-    emit(ctx.buf, `s += ${elemExpr0};`);
-    emit(
-      ctx.buf,
-      `for (var ${idx} = 1; ${idx} < ${accessor}.length; ${idx}++) s += _delim + ${elemExprI};`,
-    );
-    ctx.buf.indent--;
-    emit(ctx.buf, "}");
-    emit(ctx.buf, `s += "\\n";`);
-    return;
+  const { core, nul } = unwrap(schema);
+  if (nul) {
+    emit(g.buf, `if (${acc} === null) s += ${pre(p, ": null\n")};`);
+    emit(g.buf, "else {");
+    g.buf.indent++;
   }
-
-  // Expanded format
-  emit(ctx.buf, `s += ${pad} + ${escapeJsonString(header)} + "[" + ${accessor}.length + "]:\\n";`);
-  const idx = freshVar(ctx.buf);
-  emit(ctx.buf, `for (var ${idx} = 0; ${idx} < ${accessor}.length; ${idx}++) {`);
-  ctx.buf.indent++;
-  const itemPad = escapeJsonString(" ".repeat((depth + 1) * ctx.indent));
-  emit(
-    ctx.buf,
-    `s += ${itemPad} + "- " + ${inlineExpr(schema.meta.items, `${accessor}[${idx}]`)} + "\\n";`,
-  );
-  ctx.buf.indent--;
-  emit(ctx.buf, "}");
-}
-
-function emitTabularStringify(
-  ctx: EmitCtx,
-  schema: Schema & { readonly kind: "array" },
-  accessor: string,
-  header: string,
-  depth: number,
-): void {
-  const objSchema = schema.meta.items;
-  const fields = Object.keys(objSchema.meta.properties);
-  const pad = escapeJsonString(" ".repeat(depth * ctx.indent));
-  const childPad = escapeJsonString(" ".repeat((depth + 1) * ctx.indent));
-  const fieldHeader = "{" + fields.join(ctx.delim) + "}";
-
-  emit(
-    ctx.buf,
-    `s += ${pad} + ${escapeJsonString(header)} + "[" + ${accessor}.length + "]${fieldHeader}:\\n";`,
-  );
-
-  // Inline cell expressions directly in the loop body — eliminates one level
-  // of function call indirection. V8 can now inline _q/_cn calls directly
-  // instead of going through a helper, reducing Turbofan's inlining budget.
-  const idx = freshVar(ctx.buf);
-  emit(ctx.buf, `for (var ${idx} = 0; ${idx} < ${accessor}.length; ${idx}++) {`);
-  ctx.buf.indent++;
-  const cellExprs = fields.map((f) => {
-    const child = objSchema.meta.properties[f];
-    return inlineExpr(child, `${accessor}[${idx}][${escapeJsonString(f)}]`);
-  });
-  emit(ctx.buf, `s += ${childPad} + ${cellExprs.join(" + _delim + ")} + "\\n";`);
-  ctx.buf.indent--;
-  emit(ctx.buf, "}");
-}
-
-function emitTupleStringify(
-  ctx: EmitCtx,
-  schema: Schema & { readonly kind: "tuple" },
-  accessor: string,
-  key: string,
-  depth: number,
-): void {
-  const items = schema.meta.items;
-  const pad = escapeJsonString(" ".repeat(depth * ctx.indent));
-  const header = key;
-  const parts: string[] = [];
-  for (let i = 0; i < items.length; i++) {
-    parts.push(inlineExpr(items[i], `${accessor}[${i}]`));
-  }
-  /* node:coverage ignore next */
-  const joined = parts.length > 0 ? parts.join(" + _delim + ") : '""';
-  emit(
-    ctx.buf,
-    `s += ${pad} + ${escapeJsonString(header)} + "[${items.length}]: " + ${joined} + "\\n";`,
-  );
-}
-
-function emitRecordStringify(
-  ctx: EmitCtx,
-  schema: Schema & { readonly kind: "record" },
-  accessor: string,
-  key: string,
-  depth: number,
-  isRoot: boolean,
-): void {
-  const pad = escapeJsonString(" ".repeat(depth * ctx.indent));
-
-  if (!isRoot || key !== "") {
-    emit(ctx.buf, `s += ${pad} + ${escapeJsonString(key + ":\n")};`);
+  if (core.kind === "array" || core.kind === "tuple") {
+    emitArrayStr(g, core, acc, p, depth);
   } else {
-    emit(ctx.buf, 'var s = "";');
+    emit(g.buf, `s += ${pre(p, ":\n")};`);
+    emitBodyStr(g, core, acc, depth + 1);
   }
-
-  const innerPad = escapeJsonString(
-    " ".repeat((isRoot && key === "" ? depth : depth + 1) * ctx.indent),
-  );
-  const ks = freshVar(ctx.buf);
-  const ki = freshVar(ctx.buf);
-  emit(ctx.buf, `var ${ks} = Object.keys(${accessor});`);
-  emit(ctx.buf, `for (var ${ki} = 0; ${ki} < ${ks}.length; ${ki}++) {`);
-  ctx.buf.indent++;
-  const valExpr = inlineExpr(schema.meta.values, `${accessor}[${ks}[${ki}]]`);
-  // Quote record keys — keys containing ": ", delimiters, or control chars
-  // would break the parse round-trip (parser splits on indexOf(": ")).
-  emit(ctx.buf, `s += ${innerPad} + _q(${ks}[${ki}], _delim) + ": " + ${valExpr} + "\\n";`);
-  ctx.buf.indent--;
-  emit(ctx.buf, "}");
-
-  if (isRoot && key === "") {
-    emit(ctx.buf, "return s.slice(0, -1);");
+  if (nul) {
+    g.buf.indent--;
+    emit(g.buf, "}");
   }
 }
 
-function emitUnionStringify(
-  ctx: EmitCtx,
-  schema: Schema & { readonly kind: "union" },
-  accessor: string,
-  key: string,
-  depth: number,
-  isRoot: boolean,
-): void {
-  const variants = schema.meta.variants;
-  for (let i = 0; i < variants.length; i++) {
-    const check = typeCheckExpr(variants[i], accessor);
-    if (check !== null && i < variants.length - 1) {
-      emit(ctx.buf, `if (${check}) {`);
-      ctx.buf.indent++;
-      emitStringifyBody(ctx, variants[i], accessor, key, depth, isRoot);
-      ctx.buf.indent--;
-      emit(ctx.buf, "} else {");
-      ctx.buf.indent++;
-    } else {
-      emitStringifyBody(ctx, variants[i], accessor, key, depth, isRoot);
-    }
-  }
-  for (let i = 0; i < variants.length - 1; i++) {
-    if (typeCheckExpr(variants[i], accessor) !== null) {
-      ctx.buf.indent--;
-      emit(ctx.buf, "}");
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Parse helpers — captured by generated code via emitRef.
-// Each is small (~5 lines) and monomorphic — individually Turbofan-eligible.
-// Extracting these from inline codegen reduces generated parse bytecode by
-// ~35-40%, enabling the compiled parser to reach Turbofan tier.
-// ---------------------------------------------------------------------------
-
-/**
- * Get error context from current parse position. Returns the current line
- * or "end of input" if past the end. Extracted as a helper to reduce
- * generated bytecode — this expression appeared inline per field (~30 chars
- * each), inflating generated parse functions beyond Turbofan's promotion
- * threshold.
- */
-function getErrorCtx(lines: readonly string[], li: number): string {
-  return li < lines.length ? lines[li] : "end of input";
-}
-
-/**
- * Read a field line: check that lines[li] starts with `prefix`, return the
- * value portion (after slicing the prefix). Returns null on mismatch.
- * Monomorphic: always receives (string[], number, string, number).
- */
-function readField(
-  lines: readonly string[],
-  li: number,
-  prefix: string,
-  prefixLen: number,
-): string | null {
-  if (li >= lines.length || !lines[li].startsWith(prefix)) return null;
-  return lines[li].slice(prefixLen);
-}
-
-/**
- * Split a record line into [key, value] at the ": " separator.
- * Handles quoted keys: if line starts with `"`, find the closing `"`
- * and expect `: ` immediately after. Returns null if no valid split found.
- */
-function splitRecordLine(line: string): [string, string] | null {
-  /* node:coverage disable */
-  if (line.charCodeAt(0) === 0x22) {
-    // Quoted key — find closing quote (skip escaped quotes)
-    for (let i = 1; i < line.length; i++) {
-      if (line.charCodeAt(i) === 0x5c) {
-        i++; // skip escaped char
-      } else if (line.charCodeAt(i) === 0x22) {
-        // Expect ": " immediately after closing quote
-        if (
-          i + 2 < line.length &&
-          line.charCodeAt(i + 1) === 0x3a &&
-          line.charCodeAt(i + 2) === 0x20
-        ) {
-          return [line.slice(0, i + 1), line.slice(i + 3)];
-        }
-        return null; // malformed
+/** Emit the lines of an object / record / discriminated union at `depth` (no header line). */
+function emitBodyStr(g: Gen, core: Schema, acc: string, depth: number): void {
+  const padStr = pad(g, depth);
+  if (core.kind === "object") {
+    const props = core.meta.properties as Record<string, Schema>;
+    for (const k of Object.keys(props)) {
+      const child = props[k];
+      const childAcc = propAcc(acc, k);
+      const p: Prefix = { c: padStr + encodeKey(k, -1) };
+      if (unwrap(child).opt) {
+        emit(g.buf, `if (${childAcc} !== undefined) {`);
+        g.buf.indent++;
+        emitFieldStr(g, child, childAcc, p, depth);
+        g.buf.indent--;
+        emit(g.buf, "}");
+      } else {
+        emitFieldStr(g, child, childAcc, p, depth);
       }
     }
-    return null; // unclosed quote
+  } else if (core.kind === "record") {
+    const ks = freshVar(g.buf);
+    const ki = freshVar(g.buf);
+    emit(g.buf, `var ${ks} = Object.keys(${acc});`);
+    emit(g.buf, `for (var ${ki} = 0; ${ki} < ${ks}.length; ${ki}++) {`);
+    g.buf.indent++;
+    const p: Prefix = { e: `${escapeJsonString(padStr)} + _q(${ks}[${ki}], _delim)` };
+    emitFieldStr(g, core.meta.values, `${acc}[${ks}[${ki}]]`, p, depth);
+    g.buf.indent--;
+    emit(g.buf, "}");
+  } else {
+    // Discriminated object union (guaranteed by assertSupported)
+    const variants = (core as Schema & { readonly kind: "union" }).meta.variants as Schema[];
+    const disc = findDiscriminant(variants) as string;
+    emit(g.buf, `switch (${acc}[${escapeJsonString(disc)}]) {`);
+    for (const variant of variants) {
+      const obj = variant as Schema & { readonly kind: "object" };
+      // Literal values are passed by reference, never interpolated as source.
+      const lit = emitRef(g.buf, freshVar(g.buf), obj.meta.properties[disc].meta.value);
+      emit(g.buf, `case ${lit}:`);
+      g.buf.indent++;
+      emitBodyStr(g, obj, acc, depth);
+      emit(g.buf, "break;");
+      g.buf.indent--;
+    }
+    emit(g.buf, 'default: throw new TypeError("value does not match any union variant");');
+    emit(g.buf, "}");
   }
-  /* node:coverage enable */
-  // Unquoted key — simple indexOf
-  const ci = line.indexOf(": ");
-  /* node:coverage ignore next 2 */
-  if (ci === -1) return null;
-  return [line.slice(0, ci), line.slice(ci + 2)];
+}
+
+/** Emit an array/tuple: header `prefix[N]...` at `depth`, children at depth+1. */
+function emitArrayStr(
+  g: Gen,
+  core: Schema & { readonly kind: "array" | "tuple" },
+  acc: string,
+  p: Prefix,
+  depth: number,
+): void {
+  if (core.kind === "tuple") {
+    const items = core.meta.items as Schema[];
+    if (items.every(isPrimitive)) {
+      const cells = items.map((it, i) => cellExpr(it, `${acc}[${i}]`)).join(" + _delim + ");
+      emit(g.buf, `s += ${pre(p, `[${items.length}]: `)} + ${cells || '""'} + "\\n";`);
+      return;
+    }
+    emit(g.buf, `s += ${pre(p, `[${items.length}]:\n`)};`);
+    for (let i = 0; i < items.length; i++) emitListItemStr(g, items[i], `${acc}[${i}]`, depth + 1);
+    return;
+  }
+
+  const items = core.meta.items as Schema;
+  const idx = freshVar(g.buf);
+  if (isPrimitive(items)) {
+    // Inline loop — keeps everything in one function for Turbofan.
+    emit(g.buf, `s += ${pre(p, "[")} + ${acc}.length + "]: ";`);
+    emit(g.buf, `if (${acc}.length > 0) {`);
+    emit(g.buf, `  s += ${cellExpr(items, `${acc}[0]`)};`);
+    emit(
+      g.buf,
+      `  for (var ${idx} = 1; ${idx} < ${acc}.length; ${idx}++) s += _delim + ${cellExpr(items, `${acc}[${idx}]`)};`,
+    );
+    emit(g.buf, "}");
+    emit(g.buf, 's += "\\n";');
+    return;
+  }
+  if (isTabular(core)) {
+    const obj = items as Schema & { readonly kind: "object" };
+    const fields = Object.keys(obj.meta.properties);
+    const dc = g.delim.charCodeAt(0);
+    const header = "]{" + fields.map((f) => encodeKey(f, dc)).join(g.delim) + "}:\n";
+    emit(g.buf, `s += ${pre(p, "[")} + ${acc}.length + ${escapeJsonString(header)};`);
+    emit(g.buf, `for (var ${idx} = 0; ${idx} < ${acc}.length; ${idx}++) {`);
+    g.buf.indent++;
+    const row = freshVar(g.buf);
+    emit(g.buf, `var ${row} = ${acc}[${idx}];`);
+    const cells = fields.map((f) => cellExpr(obj.meta.properties[f], propAcc(row, f)));
+    const childPad = escapeJsonString(pad(g, depth + 1));
+    emit(g.buf, `s += ${childPad} + ${cells.join(" + _delim + ")} + "\\n";`);
+    g.buf.indent--;
+    emit(g.buf, "}");
+    return;
+  }
+  emit(g.buf, `s += ${pre(p, "[")} + ${acc}.length + "]:\\n";`);
+  emit(g.buf, `for (var ${idx} = 0; ${idx} < ${acc}.length; ${idx}++) {`);
+  g.buf.indent++;
+  emitListItemStr(g, items, `${acc}[${idx}]`, depth + 1);
+  g.buf.indent--;
+  emit(g.buf, "}");
+}
+
+/** Emit one `- ` list item for `acc`; the hyphen sits at `depth`. */
+function emitListItemStr(g: Gen, schema: Schema, acc: string, depth: number): void {
+  const hyphen = pad(g, depth) + "-";
+  if (isPrimitive(schema)) {
+    emit(g.buf, `s += ${escapeJsonString(hyphen + " ")} + ${cellExpr(schema, acc)} + "\\n";`);
+    return;
+  }
+  const { core, nul } = unwrap(schema);
+  if (nul) {
+    emit(g.buf, `if (${acc} === null) s += ${escapeJsonString(hyphen + " null\n")};`);
+    emit(g.buf, "else {");
+    g.buf.indent++;
+  }
+  if (core.kind === "array" || core.kind === "tuple") {
+    emitArrayStr(g, core, acc, { c: hyphen + " " }, depth);
+  } else {
+    // Render the body one level deeper into a fresh buffer, then move its
+    // first line onto the hyphen line (`- first: v`); empty body → bare `-`.
+    const saved = freshVar(g.buf);
+    emit(g.buf, `var ${saved} = s;`);
+    emit(g.buf, 's = "";');
+    emitBodyStr(g, core, acc, depth + 1);
+    const bodyPadLen = pad(g, depth + 1).length;
+    emit(
+      g.buf,
+      `s = ${saved} + (s === "" ? ${escapeJsonString(hyphen + "\n")} : ${escapeJsonString(hyphen + " ")} + s.slice(${bodyPadLen}));`,
+    );
+  }
+  if (nul) {
+    g.buf.indent--;
+    emit(g.buf, "}");
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -761,673 +736,476 @@ function splitRecordLine(line: string): [string, string] | null {
 export interface ToonParseOptions {
   readonly indent?: number;
   readonly delimiter?: "," | "\t" | "|";
+  /** @deprecated No effect — parsing is always strict (counts, number grammar, literals). */
   readonly strict?: boolean;
+  /**
+   * Accept object fields in any order, at every nesting level (~2.5x slower
+   * for a 3-field object; see TOON.bench).
+   * Tabular headers must still list fields in schema order.
+   */
   readonly flexibleOrder?: boolean;
 }
 
-/** Compiles a schema into a TOON parse function via `new Function`. */
+/**
+ * Compiles a schema into a TOON parse function via `new Function`. Throws
+ * `TypeError("TOON: unsupported ...")` for the same shapes as `stringify`.
+ * The compiled function never throws; it returns `Err` on malformed input.
+ */
 export function parse<S extends Schema>(
   schema: S,
   options?: ToonParseOptions,
 ): (toon: string) => Result<Infer<S>, SchemaError> {
-  const indent = options?.indent ?? 2;
-  const delim = options?.delimiter ?? ",";
-  const flexible = options?.flexibleOrder ?? false;
-
-  const buf = createBuffer();
+  assertSupported(schema, false);
+  const g: Gen = {
+    buf: createBuffer(),
+    indent: options?.indent ?? 2,
+    delim: options?.delimiter ?? ",",
+    flexible: options?.flexibleOrder ?? false,
+  };
+  const buf = g.buf;
   emitStandardRefs(buf, ok, err);
   emitRef(buf, "_uq", toonUnquote);
+  emitRef(buf, "_pn", parseNumber);
+  emitRef(buf, "_dec", decodePrimitive);
   emitRef(buf, "_rf", readField);
+  emitRef(buf, "_rt", readTail);
   emitRef(buf, "_ge", getErrorCtx);
   emitRef(buf, "_split", splitByDelimiter);
-  emitRef(buf, "_srl", splitRecordLine);
-  emitRef(buf, "_delim", delim);
-  // Single shared regex for all array header parsing — avoids duplicate instances
-  emitRef(buf, "_hdrRe", /^[^[]*\[(\d+)\](\{[^}]*\})?:\s*(.*)?$/);
+  emitRef(buf, "_kl", splitKeyLine);
+  emitRef(buf, "_hc", headerCount);
+  emitRef(buf, "_fd", findDiscriminantValue);
+  emitRef(buf, "_scan", scanBlock);
+  emitRef(buf, "_delim", g.delim);
 
   emit(buf, "return function toonParse(input) {");
   buf.indent++;
   emit(buf, 'var lines = input.split("\\n");');
-  // No trailing empty line trim needed — parsers break/return before reaching
-  // trailing empty lines. Removing the while/pop loop eliminates array mutation
-  // and .trim() calls, reducing bytecode for faster Turbofan promotion.
   emit(buf, "var li = 0;");
-  emitParseBody(buf, schema, 0, '""', indent, delim, flexible);
+  const out = freshVar(buf);
+  if (isPrimitive(schema)) {
+    emit(buf, "var raw = lines[li++].trim();");
+    emitCell(g, schema, "raw", '""', out);
+  } else {
+    const { core, nul } = unwrap(schema);
+    emit(buf, `var ${out} = null;`);
+    if (nul) {
+      emit(buf, 'if (input.trim() === "null") li = lines.length;');
+      emit(buf, "else {");
+      buf.indent++;
+    }
+    const v = freshVar(buf);
+    if (core.kind === "array" || core.kind === "tuple") {
+      emitHeaderParse(g, core, "lines[0]", 0, '""', v);
+    } else {
+      emitBodyParse(g, core, 0, '""', v);
+    }
+    emit(buf, `${out} = ${v};`);
+    if (nul) {
+      buf.indent--;
+      emit(buf, "}");
+    }
+  }
+  // Everything must be consumed (trailing blank lines allowed) — leftovers
+  // mean the input does not match the schema's layout.
+  emit(buf, 'while (li < lines.length && lines[li].trim() === "") li++;');
+  emit(buf, 'if (li < lines.length) return _err(_me("", "end of input", lines[li]));');
+  emit(buf, `return _ok(${out});`);
   buf.indent--;
   emit(buf, "}");
 
   return compileFunction<(toon: string) => Result<Infer<S>, SchemaError>>(buf);
 }
 
-function emitParseBody(
-  buf: CodeBuffer,
-  schema: Schema,
-  depth: number,
-  pathExpr: string,
-  indent: number,
-  delim: string,
-  flexible: boolean,
-): void {
-  switch (schema.kind) {
+/**
+ * Emit code decoding the token in variable `raw` for a primitive-shaped
+ * schema into `out` (declared here). An empty token means "absent": it yields
+ * `undefined` when an `optional` wrapper allows it, an error otherwise.
+ */
+function emitCell(g: Gen, schema: Schema, raw: string, path: string, out: string): void {
+  const buf = g.buf;
+  const { core, opt, nul } = unwrap(schema);
+  emit(buf, `var ${out};`);
+  const fail = (expected: string): string =>
+    `return _err(_me(${path}, ${escapeJsonString(expected)}, ${raw}));`;
+  let open = 0;
+  if (opt) {
+    emit(buf, `if (${raw} === "") ${out} = undefined; else {`);
+    open++;
+  }
+  if (nul) {
+    emit(buf, `if (${raw} === "null") ${out} = null; else {`);
+    open++;
+  }
+  switch (core.kind) {
     case "string":
+      emit(buf, `if (${raw} === "") ${fail("string")}`);
+      emit(buf, `${out} = _uq(${raw});`);
+      break;
     case "number":
+      emit(buf, `${out} = _pn(${raw});`);
+      emit(buf, `if (${out} !== ${out}) ${fail("number")}`);
+      break;
     case "integer":
+      emit(buf, `${out} = _pn(${raw});`);
+      emit(buf, `if (!_isSafe(${out})) ${fail("integer")}`);
+      break;
     case "boolean":
+      emit(buf, `if (${raw} === "true") ${out} = true;`);
+      emit(buf, `else if (${raw} === "false") ${out} = false;`);
+      emit(buf, `else ${fail("boolean")}`);
+      break;
     case "null":
-    case "literal":
-    case "enum":
-      if (depth === 0) emitRootPrimParse(buf, schema, pathExpr);
+      emit(buf, `if (${raw} !== "null") ${fail("null")}`);
+      emit(buf, `${out} = null;`);
       break;
-    case "object":
-      emitObjectParse(buf, schema, depth, pathExpr, indent, delim, flexible);
-      break;
-    case "array":
-    case "tuple":
-      emitRootArrayParse(buf, schema, depth, pathExpr, indent, delim);
-      break;
-    case "record":
-      emitRecordParse(buf, schema, depth, pathExpr, indent);
-      break;
-    case "union": {
-      // Limitation: TOON parse currently only attempts the first variant.
-      // Full union dispatch would require save/restore of line index (li)
-      // with backtracking on parse failure — deferred to a future iteration.
-      const variants = schema.meta.variants;
-      if (variants.length > 0)
-        emitParseBody(buf, variants[0], depth, pathExpr, indent, delim, flexible);
+    case "literal": {
+      const value = core.meta.value as string | number | boolean | null;
+      const lit = emitRef(buf, freshVar(buf), value);
+      emit(buf, `${out} = ${typeof value === "string" ? "_uq" : "_dec"}(${raw});`);
+      const label = "literal(" + JSON.stringify(value) + ")";
+      emit(buf, `if (${raw} === "" || ${out} !== ${lit}) ${fail(label)}`);
       break;
     }
-    case "optional":
-    case "nullable":
-      emitParseBody(buf, schema.meta.inner, depth, pathExpr, indent, delim, flexible);
-      break;
-    default:
-      unreachable(schema);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Parse: primitive value emission
-// ---------------------------------------------------------------------------
-
-function emitRootPrimParse(buf: CodeBuffer, schema: Schema, pathExpr: string): void {
-  emit(
-    buf,
-    `if (li >= lines.length) return _err(_me(${pathExpr}, "${schema.kind}", "end of input"));`,
-  );
-  emit(buf, "var raw = lines[li++].trim();");
-  emitPrimValueParse(buf, schema, "raw", pathExpr, "result");
-  emit(buf, "return _ok(result);");
-}
-
-/** Emit code that parses a raw TOON string into a typed value, assigning to `resultVar`. */
-function emitPrimValueParse(
-  buf: CodeBuffer,
-  schema: Schema,
-  rawVar: string,
-  pathExpr: string,
-  resultVar: string,
-): void {
-  switch (schema.kind) {
-    case "string":
-      emit(buf, `var ${resultVar} = _uq(${rawVar});`);
-      break;
-    case "number":
-      emit(buf, `var ${resultVar} = +${rawVar};`);
-      emit(
-        buf,
-        `if (${rawVar} === "" || ${resultVar} !== ${resultVar}) return _err(_me(${pathExpr}, "number", ${rawVar}));`,
-      );
-      break;
-    case "integer":
-      emit(buf, `var ${resultVar} = +${rawVar};`);
-      emit(buf, `if (!_isSafe(${resultVar})) return _err(_me(${pathExpr}, "integer", ${rawVar}));`);
-      break;
-    case "boolean":
-      emit(
-        buf,
-        `if (${rawVar} !== "true" && ${rawVar} !== "false") return _err(_me(${pathExpr}, "boolean", ${rawVar}));`,
-      );
-      emit(buf, `var ${resultVar} = ${rawVar} === "true";`);
-      break;
-    case "null":
-      emit(buf, `if (${rawVar} !== "null") return _err(_me(${pathExpr}, "null", ${rawVar}));`);
-      emit(buf, `var ${resultVar} = null;`);
-      break;
-    case "literal":
-      emitLiteralParse(buf, schema, rawVar, pathExpr, resultVar);
-      break;
-    case "enum":
-      emitEnumParse(buf, schema, rawVar, pathExpr, resultVar);
-      break;
-    case "optional":
-      emitPrimValueParse(buf, schema.meta.inner, rawVar, pathExpr, resultVar);
-      break;
-    case "nullable":
-      emit(buf, `var ${resultVar};`);
-      emit(buf, `if (${rawVar} === "null") { ${resultVar} = null; } else {`);
-      buf.indent++;
-      const innerVar = freshVar(buf);
-      emitPrimValueParse(buf, schema.meta.inner, rawVar, pathExpr, innerVar);
-      emit(buf, `${resultVar} = ${innerVar};`);
-      buf.indent--;
+    case "enum": {
+      const set = emitRef(buf, freshVar(buf), new Set(core.meta.values as (string | number)[]));
+      // Typed decode first (quoted "1" vs number 1), then the plain text for
+      // string members written without quotes.
+      emit(buf, `${out} = _dec(${raw});`);
+      emit(buf, `if (!${set}.has(${out})) {`);
+      emit(buf, `  ${out} = _uq(${raw});`);
+      emit(buf, `  if (${raw} === "" || !${set}.has(${out})) ${fail("enum")}`);
       emit(buf, "}");
       break;
-    default:
-      emit(buf, `var ${resultVar} = _uq(${rawVar});`);
+    }
+    default: {
+      // Union of primitives: decode the token's own type, then the first
+      // variant whose validator accepts it wins.
+      const variants = (core as Schema & { readonly kind: "union" }).meta.variants as Schema[];
+      emit(buf, `${out} = _dec(${raw});`);
+      const checks = variants.map((v) => `!${emitRef(buf, freshVar(buf), validate(v))}(${out})[0]`);
+      emit(buf, `if (${checks.join(" && ") || "true"}) ${fail("union")}`);
       break;
+    }
   }
+  for (; open > 0; open--) emit(buf, "}");
 }
 
-function emitLiteralParse(
-  buf: CodeBuffer,
-  schema: Schema & { readonly kind: "literal" },
-  rawVar: string,
-  pathExpr: string,
-  resultVar: string,
-): void {
-  const ref = freshVar(buf);
-  emitRef(buf, ref, schema.meta.value);
-  const label = escapeJsonString("literal(" + JSON.stringify(schema.meta.value) + ")");
-  if (typeof schema.meta.value === "string") {
-    emit(buf, `var ${resultVar} = _uq(${rawVar});`);
-    emit(buf, `if (${resultVar} !== ${ref}) return _err(_me(${pathExpr}, ${label}, ${rawVar}));`);
-  } else if (typeof schema.meta.value === "number") {
-    emit(buf, `var ${resultVar} = +${rawVar};`);
-    emit(buf, `if (${resultVar} !== ${ref}) return _err(_me(${pathExpr}, ${label}, ${rawVar}));`);
-  } else if (typeof schema.meta.value === "boolean") {
-    emit(buf, `var ${resultVar} = ${rawVar} === "true";`);
-    emit(buf, `if (${resultVar} !== ${ref}) return _err(_me(${pathExpr}, ${label}, ${rawVar}));`);
-  } else {
-    emit(buf, `if (${rawVar} !== "null") return _err(_me(${pathExpr}, ${label}, ${rawVar}));`);
-    emit(buf, `var ${resultVar} = null;`);
-  }
+/** Emit parsing of an object / record / discriminated-union body at `depth` into `out`. */
+function emitBodyParse(g: Gen, core: Schema, depth: number, path: string, out: string): void {
+  if (core.kind === "object") emitObjectParse(g, core, depth, path, out);
+  else if (core.kind === "record") emitRecordParse(g, core, depth, path, out);
+  else emitDiscParse(g, core as Schema & { readonly kind: "union" }, depth, path, out);
 }
-
-function emitEnumParse(
-  buf: CodeBuffer,
-  schema: Schema & { readonly kind: "enum" },
-  rawVar: string,
-  pathExpr: string,
-  resultVar: string,
-): void {
-  // Use Set for O(1) lookup instead of indexOf O(n) on the hot path
-  const setRef = freshVar(buf);
-  emitRef(buf, setRef, new Set(schema.meta.values));
-  emit(buf, `var ${resultVar} = _uq(${rawVar});`);
-  emit(buf, `var ${resultVar}_n = +${rawVar};`);
-  emit(
-    buf,
-    `if (!isNaN(${resultVar}_n) && ${setRef}.has(${resultVar}_n)) ${resultVar} = ${resultVar}_n;`,
-  );
-  emit(
-    buf,
-    `else if (!${setRef}.has(${resultVar})) return _err(_me(${pathExpr}, "enum", ${rawVar}));`,
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Parse: object
-// ---------------------------------------------------------------------------
 
 function emitObjectParse(
-  buf: CodeBuffer,
+  g: Gen,
   schema: Schema & { readonly kind: "object" },
   depth: number,
-  pathExpr: string,
-  indent: number,
-  delim: string,
-  flexible: boolean,
+  path: string,
+  out: string,
 ): void {
-  const props = schema.meta.properties;
-  const keys = Object.keys(props);
-  const resultVar = freshVar(buf);
-  emit(buf, `var ${resultVar} = {};`);
-
-  if (flexible) {
-    emitFlexibleObjectParse(buf, schema, depth, pathExpr, indent, resultVar);
-  } else {
-    for (let i = 0; i < keys.length; i++) {
-      const key = keys[i];
-      const child = props[key];
-      const inner = child.kind === "optional" ? child.meta.inner : child;
-      const isOpt = child.kind === "optional";
-      /* node:coverage ignore next 5 */
-      const padStr = depth === 0 ? "" : " ".repeat(depth * indent);
-      const keyPrefix = padStr + key;
-      const childPath =
-        pathExpr === '""'
-          ? escapeJsonString(key)
-          : escapeJsonString(JSON.parse(pathExpr) + "." + key);
-
-      if (isCompound(inner)) {
-        emitCompoundFieldParse(
-          buf,
-          inner,
-          key,
-          keyPrefix,
-          depth,
-          childPath,
-          indent,
-          delim,
-          resultVar,
-          isOpt,
-        );
-      } else {
-        emitPrimFieldParse(buf, inner, key, keyPrefix, childPath, resultVar, isOpt);
-      }
+  const buf = g.buf;
+  const padStr = pad(g, depth);
+  const props = schema.meta.properties as Record<string, Schema>;
+  emit(buf, `var ${out} = {};`);
+  const scan = freshVar(buf);
+  if (g.flexible) emit(buf, `var ${scan} = _scan(lines, li, ${escapeJsonString(padStr)});`);
+  for (const k of Object.keys(props)) {
+    const child = props[k];
+    const { core, opt, nul } = unwrap(child);
+    const kLit = escapeJsonString(k);
+    const kPath = childPath(path, k);
+    const prefix = padStr + encodeKey(k, -1);
+    const missing = `return _err(_me(${kPath}, ${escapeJsonString("key '" + k + "'")}, _ge(lines, li)));`;
+    if (g.flexible) {
+      emit(buf, `if (${kLit} in ${scan}[0]) {`);
+      emit(buf, `li = ${scan}[0][${kLit}];`);
     }
+    const tmp = freshVar(buf);
+    const v = freshVar(buf);
+    const prim = isPrimitive(child);
+    if (prim) {
+      const pfx = prefix + ": ";
+      emit(buf, `var ${tmp} = _rf(lines, li, ${escapeJsonString(pfx)}, ${pfx.length});`);
+    } else {
+      emit(buf, `var ${tmp} = _rt(lines, li, ${escapeJsonString(prefix)}, ${prefix.length});`);
+    }
+    emit(buf, opt ? `if (${tmp} !== null) {` : `if (${tmp} === null) ${missing}`);
+    if (prim) {
+      emit(buf, "li++;");
+      emitCell(g, child, tmp, kPath, v);
+    } else {
+      emitTailParse(g, core, nul, tmp, depth, kPath, v);
+    }
+    // Absent optionals stay absent; `__proto__` is never assigned (pollution).
+    if (k !== "__proto__") emit(buf, `if (${v} !== undefined) ${out}[${kLit}] = ${v};`);
+    if (opt) emit(buf, "}");
+    if (g.flexible) emit(buf, opt ? "}" : `} else ${missing}`);
   }
-
-  if (depth === 0) emit(buf, `return _ok(${resultVar});`);
+  if (g.flexible) emit(buf, `li = ${scan}[1];`);
 }
 
-function emitPrimFieldParse(
-  buf: CodeBuffer,
-  schema: Schema,
-  key: string,
-  keyPrefix: string,
-  pathExpr: string,
-  resultVar: string,
-  isOptional: boolean,
+/**
+ * Emit parsing of a compound value whose key line is `lines[li]`; `tail`
+ * (a variable) holds the text after the key: `:`, `: null` or `[N]...`.
+ */
+function emitTailParse(
+  g: Gen,
+  core: Schema,
+  nul: boolean,
+  tail: string,
+  depth: number,
+  path: string,
+  out: string,
 ): void {
-  const expectedPrefix = keyPrefix + ": ";
-  const rawVar = freshVar(buf);
-
-  // _rf does startsWith + slice in a single monomorphic helper call,
-  // reducing generated bytecode and enabling Turbofan on the compiled parser.
-  emit(
-    buf,
-    `var ${rawVar} = _rf(lines, li, ${escapeJsonString(expectedPrefix)}, ${expectedPrefix.length});`,
-  );
-
-  if (isOptional) {
-    emit(buf, `if (${rawVar} !== null) {`);
+  const buf = g.buf;
+  emit(buf, `var ${out} = null;`);
+  if (nul) {
+    emit(buf, `if (${tail} === ": null") li++;`);
+    emit(buf, "else {");
     buf.indent++;
+  }
+  const v = freshVar(buf);
+  if (core.kind === "array" || core.kind === "tuple") {
+    emitHeaderParse(g, core, tail, depth, path, v);
   } else {
+    emit(buf, `if (${tail} !== ":") return _err(_me(${path}, "nested block", lines[li]));`);
+    emit(buf, "li++;");
+    emitBodyParse(g, core, depth + 1, path, v);
+  }
+  emit(buf, `${out} = ${v};`);
+  if (nul) {
+    buf.indent--;
+    emit(buf, "}");
+  }
+}
+
+/** Emit parsing of an array/tuple whose header line is `lines[li]`; `tail` starts at `[`. */
+function emitHeaderParse(
+  g: Gen,
+  core: Schema & { readonly kind: "array" | "tuple" },
+  tail: string,
+  depth: number,
+  path: string,
+  out: string,
+): void {
+  const buf = g.buf;
+  const n = freshVar(buf);
+  const rest = freshVar(buf);
+  const idx = freshVar(buf);
+  emit(buf, `var ${n} = _hc(${tail}, ${g.delim.charCodeAt(0)});`);
+  emit(buf, `if (${n} < 0) return _err(_me(${path}, "array header", _ge(lines, li)));`);
+  emit(buf, `var ${rest} = ${tail}.slice(${tail}.indexOf("]") + 1);`);
+  emit(buf, "li++;");
+  emit(buf, `var ${out} = [];`);
+  const fixed = core.kind === "tuple" ? (core.meta.items as Schema[]) : null;
+  if (fixed !== null) {
     emit(
       buf,
-      `if (${rawVar} === null) return _err(_me(${pathExpr}, ${escapeJsonString("key '" + key + "'")}, _ge(lines, li)));`,
+      `if (${n} !== ${fixed.length}) return _err(_me(${path}, "${fixed.length} items", "" + ${n}));`,
     );
   }
+  const inline = fixed !== null ? fixed.every(isPrimitive) : isPrimitive(core.meta.items);
 
-  emit(buf, "li++;");
-  const valVar = freshVar(buf);
-  emitPrimValueParse(buf, schema, rawVar, pathExpr, valVar);
-  emit(buf, `${resultVar}[${escapeJsonString(key)}] = ${valVar};`);
-
-  if (isOptional) {
-    buf.indent--;
-    emit(buf, "}");
-  }
-}
-
-function emitCompoundFieldParse(
-  buf: CodeBuffer,
-  schema: Schema,
-  key: string,
-  keyPrefix: string,
-  depth: number,
-  pathExpr: string,
-  indent: number,
-  delim: string,
-  resultVar: string,
-  isOptional: boolean,
-): void {
-  // Unwrap nullable — the compound inner type determines parse logic.
-  // For nullable compound fields, the "null" literal is handled at the value
-  // level, not the structure level (TOON represents null objects as absent lines).
-  const unwrapped = schema.kind === "nullable" ? schema.meta.inner : schema;
-  if (unwrapped.kind === "array" || unwrapped.kind === "tuple") {
-    const headerPrefix = keyPrefix + "[";
-    if (isOptional) {
-      emit(
-        buf,
-        `if (li < lines.length && lines[li].startsWith(${escapeJsonString(headerPrefix)})) {`,
-      );
+  if (inline) {
+    const cells = freshVar(buf);
+    emit(buf, `var ${cells} = ${n} === 0 && (${rest} === ":" || ${rest} === ": ") ? [] :`);
+    emit(buf, `  ${rest}.startsWith(": ") ? _split(${rest}.slice(2), _delim, ${n}) : null;`);
+    emit(buf, `if (${cells} === null) return _err(_me(${path}, ${n} + " inline items", ${rest}));`);
+    if (fixed !== null) {
+      for (let i = 0; i < fixed.length; i++) {
+        const v = freshVar(buf);
+        emit(buf, `var ${v}_r = ${cells}[${i}];`);
+        emitCell(g, fixed[i], `${v}_r`, childPath(path, String(i)), v);
+        emit(buf, `${out}.push(${v});`);
+      }
+    } else {
+      emit(buf, `for (var ${idx} = 0; ${idx} < ${n}; ${idx}++) {`);
       buf.indent++;
-    }
-    emitArrayHeaderParse(buf, unwrapped, key, depth, pathExpr, indent, delim, resultVar);
-    if (isOptional) {
+      const v = freshVar(buf);
+      emit(buf, `var ${v}_r = ${cells}[${idx}];`);
+      emitCell(g, core.meta.items, `${v}_r`, dynamicChildPath(path, idx), v);
+      emit(buf, `${out}.push(${v});`);
       buf.indent--;
       emit(buf, "}");
     }
-  } else if (unwrapped.kind === "object") {
-    const nestedLine = keyPrefix + ":";
-    if (isOptional) {
-      emit(buf, `if (li < lines.length && lines[li] === ${escapeJsonString(nestedLine)}) {`);
-      buf.indent++;
-    } else {
-      emit(
-        buf,
-        `if (li >= lines.length || lines[li] !== ${escapeJsonString(nestedLine)}) return _err(_me(${pathExpr}, ${escapeJsonString("key '" + key + "'")}, _ge(lines, li)));`,
-      );
-    }
+  } else if (fixed === null && isTabular(core as Schema & { readonly kind: "array" })) {
+    const obj = core.meta.items as Schema & { readonly kind: "object" };
+    const props = obj.meta.properties as Record<string, Schema>;
+    const fields = Object.keys(props);
+    const dc = g.delim.charCodeAt(0);
+    const header = "{" + fields.map((f) => encodeKey(f, dc)).join(g.delim) + "}:";
+    const rowPad = pad(g, depth + 1);
+    emit(
+      buf,
+      `if (${rest} !== ${escapeJsonString(header)}) return _err(_me(${path}, ${escapeJsonString("tabular header " + header)}, ${rest}));`,
+    );
+    emit(buf, `for (var ${idx} = 0; ${idx} < ${n}; ${idx}++) {`);
+    buf.indent++;
+    const rowPath = dynamicChildPath(path, idx);
+    const cells = freshVar(buf);
+    emit(
+      buf,
+      `var ${cells} = li < lines.length && lines[li].startsWith(${escapeJsonString(rowPad)}) ? _split(lines[li].slice(${rowPad.length}), _delim, ${fields.length}) : null;`,
+    );
+    emit(
+      buf,
+      `if (${cells} === null) return _err(_me(${rowPath}, "tabular row", _ge(lines, li)));`,
+    );
     emit(buf, "li++;");
-    const innerVar = freshVar(buf);
-    emit(buf, `var ${innerVar} = {};`);
-    const innerProps = unwrapped.meta.properties;
-    const innerKeys = Object.keys(innerProps);
-    for (let i = 0; i < innerKeys.length; i++) {
-      const ik = innerKeys[i];
-      const ic = innerProps[ik];
-      /* node:coverage ignore next 7 */
-      const iInner = ic.kind === "optional" ? ic.meta.inner : ic;
-      const iOpt = ic.kind === "optional";
-      const innerPad = " ".repeat((depth + 1) * indent);
-      const iKeyPrefix = innerPad + ik;
-      const iPath =
-        pathExpr === '""'
-          ? escapeJsonString(ik)
-          : escapeJsonString(JSON.parse(pathExpr) + "." + ik);
-      if (isCompound(iInner)) {
-        emitCompoundFieldParse(
-          buf,
-          iInner,
-          ik,
-          iKeyPrefix,
-          depth + 1,
-          iPath,
-          indent,
-          delim,
-          innerVar,
-          iOpt,
-        );
-      } else {
-        emitPrimFieldParse(buf, iInner, ik, iKeyPrefix, iPath, innerVar, iOpt);
+    const row = freshVar(buf);
+    emit(buf, `var ${row} = {};`);
+    for (let j = 0; j < fields.length; j++) {
+      const f = fields[j];
+      const v = freshVar(buf);
+      emit(buf, `var ${v}_r = ${cells}[${j}];`);
+      // Field names are untrusted (e.g. from fromJsonSchema): always emitted
+      // as escaped string literals, never raw inside generated source.
+      emitCell(g, props[f], `${v}_r`, `${rowPath} + ${escapeJsonString("." + f)}`, v);
+      if (f !== "__proto__") {
+        emit(buf, `if (${v} !== undefined) ${row}[${escapeJsonString(f)}] = ${v};`);
       }
     }
-    emit(buf, `${resultVar}[${escapeJsonString(key)}] = ${innerVar};`);
-    if (isOptional) {
+    emit(buf, `${out}.push(${row});`);
+    buf.indent--;
+    emit(buf, "}");
+  } else {
+    emit(buf, `if (${rest} !== ":") return _err(_me(${path}, "list header", ${rest}));`);
+    if (fixed !== null) {
+      for (let i = 0; i < fixed.length; i++) {
+        const v = freshVar(buf);
+        emitListItemParse(g, fixed[i], depth + 1, childPath(path, String(i)), v);
+        emit(buf, `${out}.push(${v});`);
+      }
+    } else {
+      emit(buf, `for (var ${idx} = 0; ${idx} < ${n}; ${idx}++) {`);
+      buf.indent++;
+      const v = freshVar(buf);
+      emitListItemParse(g, core.meta.items, depth + 1, dynamicChildPath(path, idx), v);
+      emit(buf, `${out}.push(${v});`);
       buf.indent--;
       emit(buf, "}");
     }
-  } else if (unwrapped.kind === "record") {
-    const nestedLine = keyPrefix + ":";
-    emit(buf, `if (li < lines.length && lines[li] === ${escapeJsonString(nestedLine)}) { li++; }`);
-    const recVar = emitRecordParse(buf, unwrapped, depth + 1, pathExpr, indent);
-    emit(buf, `${resultVar}[${escapeJsonString(key)}] = ${recVar};`);
   }
 }
 
-// ---------------------------------------------------------------------------
-// Parse: array / tuple / record
-// ---------------------------------------------------------------------------
-
-function emitArrayHeaderParse(
-  buf: CodeBuffer,
-  schema: Schema,
-  key: string,
-  depth: number,
-  pathExpr: string,
-  indent: number,
-  delim: string,
-  resultVar: string,
-): void {
-  const mv = freshVar(buf);
-  emit(buf, `var ${mv} = lines[li].match(_hdrRe);`);
-  emit(buf, `if (!${mv}) return _err(_me(${pathExpr}, "array header", lines[li]));`);
-  emit(buf, "li++;");
-  emit(buf, `var ${mv}_n = +${mv}[1];`);
-  emit(buf, `var ${mv}_d = (${mv}[3] || "").trim();`);
-
-  const arrVar = freshVar(buf);
-  emit(buf, `var ${arrVar} = [];`);
-
-  if (schema.kind === "array" && isTabular(schema)) {
-    emitTabularParse(buf, schema, arrVar, mv, depth, pathExpr, indent, delim);
-  } else if (schema.kind === "array" && isPrimitive(schema.meta.items)) {
-    emitInlineArrayParse(buf, schema, arrVar, mv, pathExpr);
-  } else if (schema.kind === "tuple") {
-    emitInlineTupleParse(buf, schema, arrVar, mv, pathExpr);
-  } else if (schema.kind === "array") {
-    // Expanded format: each item on its own line prefixed with "- "
-    emitExpandedArrayParse(buf, schema, arrVar, mv, depth, pathExpr, indent);
+/** Emit parsing of one `- ` list item whose hyphen sits at `depth`. */
+function emitListItemParse(g: Gen, schema: Schema, depth: number, path: string, out: string): void {
+  const buf = g.buf;
+  const hyphen = pad(g, depth) + "-";
+  const hl = hyphen.length;
+  const line = freshVar(buf);
+  const content = freshVar(buf);
+  emit(
+    buf,
+    `if (li >= lines.length || !lines[li].startsWith(${escapeJsonString(hyphen)})) return _err(_me(${path}, "list item", _ge(lines, li)));`,
+  );
+  emit(buf, `var ${line} = lines[li];`);
+  // After the hyphen: nothing (bare `-`), or one space and the content.
+  emit(
+    buf,
+    `if (${line}.length > ${hl} && ${line}.charCodeAt(${hl}) !== 32) return _err(_me(${path}, "list item", ${line}));`,
+  );
+  emit(buf, `var ${content} = ${line}.slice(${hl + 1});`);
+  if (isPrimitive(schema)) {
+    emit(buf, "li++;");
+    emitCell(g, schema, content, path, out);
+    return;
   }
-
-  emit(buf, `${resultVar}[${escapeJsonString(key)}] = ${arrVar};`);
-}
-
-function emitTabularParse(
-  buf: CodeBuffer,
-  schema: Schema & { readonly kind: "array" },
-  arrVar: string,
-  matchVar: string,
-  depth: number,
-  pathExpr: string,
-  indent: number,
-  _delim: string,
-): void {
-  const objSchema = schema.meta.items;
-  const fields = Object.keys(objSchema.meta.properties);
-  const childPad = " ".repeat((depth + 1) * indent);
-  const idx = freshVar(buf);
-
-  emit(buf, `for (var ${idx} = 0; ${idx} < ${matchVar}_n; ${idx}++) {`);
-  buf.indent++;
-  emit(
-    buf,
-    `if (li >= lines.length) return _err(_me(${pathExpr}, "tabular row", "end of input"));`,
-  );
-  emit(buf, `var row = lines[li++];`);
-  emit(
-    buf,
-    `var cells = _split(row.startsWith(${escapeJsonString(childPad)}) ? row.slice(${childPad.length}) : row.trim(), _delim, ${fields.length});`,
-  );
-  emit(buf, `var obj = {};`);
-  for (let j = 0; j < fields.length; j++) {
-    const f = fields[j];
-    const fc = objSchema.meta.properties[f];
-    const inner = fc.kind === "optional" ? fc.meta.inner : fc;
-    const cellVar = freshVar(buf);
-    emit(buf, `if (${j} < cells.length) {`);
+  const { core, nul } = unwrap(schema);
+  emit(buf, `var ${out} = null;`);
+  if (nul) {
+    emit(buf, `if (${content} === "null") li++;`);
+    emit(buf, "else {");
     buf.indent++;
-    emitPrimValueParse(buf, inner, `cells[${j}]`, `${pathExpr} + ".${f}"`, cellVar);
-    emit(buf, `obj[${escapeJsonString(f)}] = ${cellVar};`);
+  }
+  const v = freshVar(buf);
+  if (core.kind === "array" || core.kind === "tuple") {
+    emitHeaderParse(g, core, content, depth, path, v);
+  } else {
+    // `- first: v` → re-indent the hyphen line to body depth and parse the
+    // body normally; a bare `-` is an empty body.
+    emit(buf, `if (${content} === "") li++;`);
+    emit(buf, `else lines[li] = ${escapeJsonString(pad(g, depth + 1))} + ${content};`);
+    emitBodyParse(g, core, depth + 1, path, v);
+  }
+  emit(buf, `${out} = ${v};`);
+  if (nul) {
     buf.indent--;
     emit(buf, "}");
   }
-  emit(buf, `${arrVar}.push(obj);`);
-  buf.indent--;
-  emit(buf, "}");
 }
 
-function emitInlineArrayParse(
-  buf: CodeBuffer,
-  schema: Schema & { readonly kind: "array" },
-  arrVar: string,
-  matchVar: string,
-  pathExpr: string,
-): void {
-  emit(buf, `if (${matchVar}_d !== "") {`);
-  buf.indent++;
-  emit(buf, `var items = _split(${matchVar}_d, _delim);`);
-  const idx = freshVar(buf);
-  emit(buf, `for (var ${idx} = 0; ${idx} < items.length; ${idx}++) {`);
-  buf.indent++;
-  const itemVar = freshVar(buf);
-  emitPrimValueParse(buf, schema.meta.items, `items[${idx}]`, pathExpr, itemVar);
-  emit(buf, `${arrVar}.push(${itemVar});`);
-  buf.indent--;
-  emit(buf, "}");
-  buf.indent--;
-  emit(buf, "}");
-}
-
-function emitInlineTupleParse(
-  buf: CodeBuffer,
-  schema: Schema & { readonly kind: "tuple" },
-  arrVar: string,
-  matchVar: string,
-  pathExpr: string,
-): void {
-  emit(buf, `var items = _split(${matchVar}_d, _delim);`);
-  for (let i = 0; i < schema.meta.items.length; i++) {
-    const itemVar = freshVar(buf);
-    emitPrimValueParse(buf, schema.meta.items[i], `items[${i}]`, pathExpr, itemVar);
-    emit(buf, `${arrVar}.push(${itemVar});`);
-  }
-}
-
-function emitExpandedArrayParse(
-  buf: CodeBuffer,
-  schema: Schema & { readonly kind: "array" },
-  arrVar: string,
-  matchVar: string,
-  depth: number,
-  pathExpr: string,
-  indent: number,
-): void {
-  // Expanded format: items on separate lines prefixed with "  - value"
-  const itemPad = " ".repeat((depth + 1) * indent) + "- ";
-  const idx = freshVar(buf);
-  emit(buf, `for (var ${idx} = 0; ${idx} < ${matchVar}_n; ${idx}++) {`);
-  buf.indent++;
-  emit(buf, `if (li >= lines.length) return _err(_me(${pathExpr}, "array item", "end of input"));`);
-  const rawVar = freshVar(buf);
-  emit(
-    buf,
-    `var ${rawVar} = lines[li].startsWith(${escapeJsonString(itemPad)}) ? lines[li].slice(${itemPad.length}) : lines[li].trim().slice(2);`,
-  );
-  emit(buf, "li++;");
-  const valVar = freshVar(buf);
-  emitPrimValueParse(buf, schema.meta.items, rawVar, pathExpr, valVar);
-  emit(buf, `${arrVar}.push(${valVar});`);
-  buf.indent--;
-  emit(buf, "}");
-}
-
-/** Emits a record parse block. Returns the generated variable name. */
 function emitRecordParse(
-  buf: CodeBuffer,
+  g: Gen,
   schema: Schema & { readonly kind: "record" },
   depth: number,
-  pathExpr: string,
-  indent: number,
-): string {
-  const padStr = " ".repeat(depth * indent);
-  const recVar = freshVar(buf) + "_rec";
-  emit(buf, `var ${recVar} = {};`);
-
-  emit(buf, "while (li < lines.length) {");
+  path: string,
+  out: string,
+): void {
+  const buf = g.buf;
+  const padStr = pad(g, depth);
+  const values = schema.meta.values as Schema;
+  const kv = freshVar(buf);
+  const key = freshVar(buf);
+  const tail = freshVar(buf);
+  emit(buf, `var ${out} = {};`);
+  emit(buf, `while (li < lines.length && lines[li].startsWith(${escapeJsonString(padStr)})) {`);
   buf.indent++;
-  const cv = freshVar(buf);
-  if (depth === 0) {
-    emit(buf, `var ${cv} = lines[li];`);
+  emit(buf, `var ${kv} = _kl(lines[li], ${padStr.length});`);
+  emit(buf, `if (${kv} === null) break;`);
+  emit(buf, `var ${key} = ${kv}[0], ${tail} = ${kv}[1];`);
+  const vPath = dynamicChildPath(path, key);
+  const v = freshVar(buf);
+  if (isPrimitive(values)) {
+    emit(buf, `if (!${tail}.startsWith(": ")) return _err(_me(${vPath}, "value", lines[li]));`);
+    emit(buf, "li++;");
+    emit(buf, `var ${v}_r = ${tail}.slice(2);`);
+    emitCell(g, values, `${v}_r`, vPath, v);
   } else {
-    emit(buf, `if (!lines[li].startsWith(${escapeJsonString(padStr)})) break;`);
-    emit(buf, `var ${cv} = lines[li].slice(${padStr.length});`);
+    const { core, nul } = unwrap(values);
+    emitTailParse(g, core, nul, tail, depth, vPath, v);
   }
-  emit(buf, `if (${cv}.startsWith(" ")) break;`);
-  // splitRecordLine handles quoted keys (containing ": " or special chars)
-  const kvVar = freshVar(buf);
-  emit(buf, `var ${kvVar} = _srl(${cv});`);
-  emit(buf, `if (${kvVar} === null) break;`);
-  emit(buf, `var rk = _uq(${kvVar}[0]);`);
-  // Prototype pollution guard — skip dangerous keys from untrusted input
-  emit(buf, 'if (rk === "__proto__" || rk === "constructor") { li++; continue; }');
-  emit(buf, `var rv = ${kvVar}[1];`);
-  emit(buf, "li++;");
-  const valVar = freshVar(buf);
-  emitPrimValueParse(buf, schema.meta.values, "rv", pathExpr, valVar);
-  emit(buf, `${recVar}[rk] = ${valVar};`);
+  // Prototype pollution guard — never assign an own `__proto__` key.
+  emit(buf, `if (${key} !== "__proto__") ${out}[${key}] = ${v};`);
   buf.indent--;
   emit(buf, "}");
-
-  if (depth === 0) emit(buf, `return _ok(${recVar});`);
-  return recVar;
 }
 
-function emitRootArrayParse(
-  buf: CodeBuffer,
-  schema: Schema,
+function emitDiscParse(
+  g: Gen,
+  schema: Schema & { readonly kind: "union" },
   depth: number,
-  pathExpr: string,
-  indent: number,
-  delim: string,
+  path: string,
+  out: string,
 ): void {
-  const tmpVar = freshVar(buf);
-  emit(buf, `var ${tmpVar} = {};`);
-  emitArrayHeaderParse(buf, schema, "", depth, pathExpr, indent, delim, tmpVar);
-  emit(buf, `return _ok(${tmpVar}[""]);`);
-}
-
-// ---------------------------------------------------------------------------
-// Parse: flexible order
-// ---------------------------------------------------------------------------
-
-function emitFlexibleObjectParse(
-  buf: CodeBuffer,
-  schema: Schema & { readonly kind: "object" },
-  depth: number,
-  pathExpr: string,
-  indent: number,
-  resultVar: string,
-): void {
-  const mapVar = freshVar(buf);
-
-  // Null-prototype object prevents __proto__ pollution from untrusted input
-  emit(buf, `var ${mapVar} = Object.create(null);`);
-  emit(buf, "while (li < lines.length) {");
-  buf.indent++;
-  const cv = freshVar(buf);
-  // Flexible order only operates at root level (depth 0) — nested objects
-  // are parsed via emitCompoundFieldParse with schema-order.
-  emit(buf, `var ${cv} = lines[li];`);
-  emit(buf, `if (${cv}.startsWith(" ")) break;`);
-  emit(buf, `var ci = ${cv}.indexOf(": ");`);
-  emit(buf, "if (ci === -1) break;");
-  emit(buf, `${mapVar}[${cv}.slice(0, ci)] = ${cv}.slice(ci + 2);`);
-  emit(buf, "li++;");
-  buf.indent--;
-  emit(buf, "}");
-
-  const props = schema.meta.properties;
-  const keys = Object.keys(props);
-  for (let i = 0; i < keys.length; i++) {
-    const key = keys[i];
-    const child = props[key];
-    const inner = child.kind === "optional" ? child.meta.inner : child;
-    const isOpt = child.kind === "optional";
-    /* node:coverage ignore next 4 */
-    const childPath =
-      pathExpr === '""'
-        ? escapeJsonString(key)
-        : escapeJsonString(JSON.parse(pathExpr) + "." + key);
-
-    if (isOpt) {
-      emit(buf, `if (${escapeJsonString(key)} in ${mapVar}) {`);
-      buf.indent++;
-    } else {
-      emit(
-        buf,
-        `if (!(${escapeJsonString(key)} in ${mapVar})) return _err(_me(${childPath}, ${escapeJsonString("key '" + key + "'")}, "not found"));`,
-      );
-    }
-
-    const valVar = freshVar(buf);
-    emitPrimValueParse(buf, inner, `${mapVar}[${escapeJsonString(key)}]`, childPath, valVar);
-    emit(buf, `${resultVar}[${escapeJsonString(key)}] = ${valVar};`);
-
-    if (isOpt) {
-      buf.indent--;
-      emit(buf, "}");
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function isCompound(schema: Schema): boolean {
-  let inner: Schema = schema;
-  // Unwrap optional and nullable wrappers to check if the core type is compound
-  while (inner.kind === "optional" || inner.kind === "nullable") inner = inner.meta.inner;
-  return (
-    inner.kind === "object" ||
-    inner.kind === "array" ||
-    inner.kind === "record" ||
-    inner.kind === "tuple"
+  const buf = g.buf;
+  const variants = schema.meta.variants as (Schema & { readonly kind: "object" })[];
+  const disc = findDiscriminant(variants) as string;
+  const padStr = pad(g, depth);
+  const prefix = padStr + encodeKey(disc, -1) + ": ";
+  const raw = freshVar(buf);
+  const dv = freshVar(buf);
+  const discPath = childPath(path, disc);
+  emit(
+    buf,
+    `var ${raw} = _fd(lines, li, ${escapeJsonString(padStr)}, ${escapeJsonString(prefix)});`,
   );
+  emit(
+    buf,
+    `if (${raw} === null) return _err(_me(${discPath}, ${escapeJsonString("key '" + disc + "'")}, _ge(lines, li)));`,
+  );
+  emit(buf, `var ${dv} = _dec(${raw});`);
+  emit(buf, `var ${out} = null;`);
+  for (let i = 0; i < variants.length; i++) {
+    const lit = emitRef(buf, freshVar(buf), variants[i].meta.properties[disc].meta.value);
+    emit(buf, `${i === 0 ? "" : "else "}if (${dv} === ${lit}) {`);
+    buf.indent++;
+    const v = freshVar(buf);
+    emitObjectParse(g, variants[i], depth, path, v);
+    emit(buf, `${out} = ${v};`);
+    buf.indent--;
+    emit(buf, "}");
+  }
+  emit(buf, `else return _err(_me(${discPath}, "discriminant", ${raw}));`);
 }

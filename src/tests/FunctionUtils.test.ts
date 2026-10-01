@@ -14,7 +14,7 @@ import {
   positiveInteger,
   nonNegativeInteger,
 } from "../FunctionUtils.js";
-import type { Branded } from "../FunctionUtils.js";
+import type { Branded, NonNegativeInteger } from "../FunctionUtils.js";
 
 describe("FunctionUtils", () => {
   it("partial", () => {
@@ -47,6 +47,7 @@ describe("FunctionUtils", () => {
 
   describe("pipe composition", (_t) => {
     it("should throw if no functions are passed", () => {
+      // @ts-expect-error pipe() requires at least one function at the type level
       assert.throws(() => pipe(), Error);
     });
 
@@ -174,5 +175,13 @@ describe("Branded", () => {
       brand<number, "Integer">(3) as number,
     ) as PositiveInteger;
     assert.equal(n, 3);
+  });
+});
+
+// G1-11: PositiveInteger is assignable to NonNegativeInteger (type-level).
+describe("brands (type-level)", () => {
+  it("PositiveInteger is assignable to NonNegativeInteger", () => {
+    const nn: NonNegativeInteger = positiveInteger(1);
+    assert.equal(nn, 1);
   });
 });

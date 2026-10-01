@@ -4,8 +4,8 @@
  * Recursively applies `readonly` to all properties, Map → ReadonlyMap,
  * Set → ReadonlySet. Supports primitives, containers, and Promises.
  *
- * Functions are excluded since they can modify internal state in arbitrary
- * ways. Array → ReadonlyArray is handled by the object case to preserve
+ * Functions are left as-is (callable, not recursed into) since they can
+ * modify internal state in arbitrary ways. Array → ReadonlyArray is handled by the object case to preserve
  * tuple type information.
  *
  * When to use: marking API boundaries where callers should not mutate returned
@@ -19,10 +19,11 @@
  * // config.port = 8080;  // TS error: Cannot assign to 'port' — readonly
  * ```
  */
-export type Immutable<T> =
-  T extends Map<infer K, infer V>
+export type Immutable<T> = T extends (...args: never[]) => unknown
+  ? T
+  : T extends ReadonlyMap<infer K, infer V>
     ? ReadonlyMap<Immutable<K>, Immutable<V>>
-    : T extends Set<infer U>
+    : T extends ReadonlySet<infer U>
       ? ReadonlySet<Immutable<U>>
       : T extends Promise<infer U>
         ? Promise<Immutable<U>>

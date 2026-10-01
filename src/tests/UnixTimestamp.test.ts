@@ -127,3 +127,15 @@ test("validator() returns Err for Infinity", () => {
   assert.equal(r[0], false);
   assert.ok(r[1] instanceof ValidationError);
 });
+
+test("toISO() matches native for negative and fractional seconds", () => {
+  for (const s of [-1, -86400, -0.5, 1.0005, 1705312200.25]) {
+    const iso = UnixTimestamp.toISO(UnixTimestamp.unixTimestamp(s));
+    assert.equal(iso, new Date(s * 1000).toISOString());
+  }
+  assert.equal(UnixTimestamp.toISO(UnixTimestamp.unixTimestamp(-1)), "1969-12-31T23:59:59.000Z");
+});
+
+test("unixTimestamp() accepts millisecond-magnitude values (documented: no unit check)", () => {
+  assert.equal(UnixTimestamp.unixTimestamp(1705312200000), 1705312200000);
+});

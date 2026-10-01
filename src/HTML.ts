@@ -8,11 +8,17 @@
  * allocations on inputs with few escape points.
  *
  * When to use: any time you interpolate user-controlled content into HTML.
- * For JSON inside `<script>` tags, `JSON.stringify` is sufficient.
+ * Do NOT use this for JSON embedded in `<script>` tags, and
+ * `JSON.stringify` alone is not safe there either (`</script>` and `<!--` in a
+ * string value break out of the element). Escape `<` as `\u003c` (and
+ * `U+2028`/`U+2029`) in the serialized JSON, or use a data attribute.
  *
  * Design tradeoffs:
- *   - charCode switch is ~2× faster than `String.prototype.replace(/regex/)` in
- *     V8 because it avoids regexp compilation and match-object allocation.
+ *   - charCode switch vs `String.prototype.replace(/[&<>"']/g, fn)` in Node
+ *     (see `src/benchmarks/HTML.bench.ts`): 2-3x faster on strings with
+ *     escapes (few: 89 vs 268 ns, many: 195 vs 623 ns, long: 7.3 vs 14.9 us),
+ *     but only on par on short clean strings (57 vs 51 ns), where the regex
+ *     scan wins slightly.
  *   - On Bun, delegates to the native `Bun.escapeHTML` (C++ SIMD path) with a
  *     post-processing `replaceAll("&#x27;", "&#039;")` to normalize the single-
  *     quote encoding to match the Node fallback output.

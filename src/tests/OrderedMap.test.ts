@@ -419,3 +419,100 @@ test("random insert and delete maintain invariants", () => {
   const sortedRef = [...ref.keys()].sort((a, b) => a - b);
   assert.deepEqual([...OM.keys(m)], sortedRef);
 });
+
+// ---------------------------------------------------------------------------
+// Default comparator: NaN is a proper key (sorts last); -0 == 0
+// ---------------------------------------------------------------------------
+
+test("default comparator: NaN is its own key, sorts last, and does not clobber others", () => {
+  const m = OM.make<number, string>();
+  OM.set(m, 1, "one");
+  OM.set(m, 3, "three");
+  OM.set(m, NaN, "nan");
+  OM.set(m, 2, "two");
+  assert.equal(OM.size(m), 4);
+  assert.equal(OM.get(m, 2), "two");
+  assert.equal(OM.get(m, 1), "one");
+  assert.equal(OM.get(m, NaN), "nan");
+  assert.equal(OM.has(m, NaN), true);
+  assert.deepEqual([...OM.keys(m)].map(String), ["1", "2", "3", "NaN"]);
+  assert.deepEqual(OM.max(m), [NaN, "nan"]);
+  OM.set(m, NaN, "nan2"); // overwrites the NaN entry only
+  assert.equal(OM.size(m), 4);
+  assert.equal(OM.get(m, NaN), "nan2");
+  assert.equal(OM.del(m, NaN), true);
+  assert.equal(OM.del(m, NaN), false);
+  assert.deepEqual([...OM.keys(m)], [1, 2, 3]);
+  assert.equal(OM.get(m, 2), "two");
+  // NaN before/after other keys and NaN-only maps
+  const only = OM.make<number, number>();
+  OM.set(only, NaN, 1);
+  OM.set(only, NaN, 2);
+  OM.set(only, -Infinity, 3);
+  assert.equal(OM.size(only), 2);
+  assert.deepEqual([...OM.keys(only)].map(String), ["-Infinity", "NaN"]);
+});
+
+test("default comparator: -0 and 0 are the same key", () => {
+  const m = OM.make<number, string>();
+  OM.set(m, -0, "neg");
+  OM.set(m, 0, "pos");
+  assert.equal(OM.size(m), 1);
+  assert.equal(OM.get(m, -0), "pos");
+});
+
+// ---------------------------------------------------------------------------
+// AVL balance: bounded comparator calls per lookup (an unbalanced BST would
+// need O(n) calls for sorted inserts)
+// ---------------------------------------------------------------------------
+
+function maxLookupCalls(keys: number[], present: number[]): number {
+  let calls = 0;
+  const m = OM.make<number, number>((a, b) => {
+    calls++;
+    return a - b;
+  });
+  for (const k of present) OM.set(m, k, k);
+  let worst = 0;
+  for (const k of keys) {
+    calls = 0;
+    OM.get(m, k);
+    if (calls > worst) worst = calls;
+  }
+  return worst;
+}
+
+// AVL height < 1.4405 * log2(n + 2); a lookup makes at most `height` comparisons.
+const avlBound = (n: number): number => Math.ceil(1.4405 * Math.log2(n + 2));
+
+test("AVL stays balanced for ascending, descending and interleaved inserts", () => {
+  const n = 4095;
+  const asc = Array.from({ length: n }, (_, i) => i);
+  const desc = asc.slice().reverse();
+  const zig: number[] = [];
+  for (let i = 0, j = n - 1; i <= j; i++, j--) zig.push(i, j);
+  for (const order of [asc, desc, zig]) {
+    assert.ok(maxLookupCalls(asc, order) <= avlBound(n));
+  }
+});
+
+test("AVL stays balanced after heavy deletion", () => {
+  const n = 4096;
+  const calls: number[] = [];
+  let count = 0;
+  const m = OM.make<number, number>((a, b) => {
+    count++;
+    return a - b;
+  });
+  for (let i = 0; i < n; i++) OM.set(m, i, i);
+  // Delete the lower 3/4 in ascending order, the worst case for an unbalanced tree.
+  for (let i = 0; i < (n * 3) / 4; i++) OM.del(m, i);
+  const remaining = n / 4;
+  for (let i = (n * 3) / 4; i < n; i++) {
+    count = 0;
+    OM.get(m, i);
+    calls.push(count);
+  }
+  assert.equal(OM.size(m), remaining);
+  assert.ok(Math.max(...calls) <= avlBound(remaining));
+});

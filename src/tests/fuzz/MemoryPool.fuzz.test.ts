@@ -167,3 +167,163 @@ test("stateful: MemoryPool matches model under random operations", () => {
     timeoutMs: 300_000,
   });
 });
+
+// ---------------------------------------------------------------------------
+// Stateful: throwing factory/reset, minSize, reset calls, identity disjointness
+// ---------------------------------------------------------------------------
+
+const MAX = 6;
+let runCounter = 0;
+
+interface Env {
+  failFactory: boolean;
+  failReset: boolean;
+  minSize: number;
+  created: Obj[];
+  resetCalls: Obj[];
+}
+
+interface FModel {
+  init: boolean;
+  held: Obj[]; // acquired and not yet released
+  free: Obj[]; // expected free list (LIFO: pop from the end)
+}
+
+interface FReal {
+  pool: Pool.MemoryPool<Obj>;
+  env: Env;
+}
+
+/** Lazily seed the model's free list from the objects pre-allocated by minSize. */
+function sync(m: FModel, r: FReal): void {
+  if (!m.init) {
+    m.init = true;
+    m.free = r.env.created.slice();
+  }
+}
+
+test("stateful: MemoryPool with throwing factory/reset, minSize and identity checks", () => {
+  ST.assertStateful<FModel, FReal>({
+    initialModel: () => ({ init: false, held: [], free: [] }),
+    initialReal: () => {
+      const env: Env = {
+        failFactory: false,
+        failReset: false,
+        minSize: runCounter++ % 4,
+        created: [],
+        resetCalls: [],
+      };
+      const pool = Pool.make<Obj>({
+        factory: () => {
+          if (env.failFactory) throw new Error("factory");
+          const o = { id: env.created.length };
+          env.created.push(o);
+          return o;
+        },
+        reset: (o) => {
+          env.resetCalls.push(o);
+          if (env.failReset) throw new Error("reset");
+        },
+        maxSize: MAX,
+        minSize: env.minSize,
+      });
+      return { pool, env };
+    },
+    commands: [
+      () =>
+        Arb.constant({
+          name: "acquire",
+          run: (m, r) => {
+            sync(m, r);
+            if (m.free.length > 0) {
+              const obj = Pool.acquire(r.pool);
+              assert.equal(obj, m.free.pop(), "LIFO identity");
+              m.held.push(obj);
+            } else if (m.held.length >= MAX) {
+              assert.throws(() => Pool.acquire(r.pool), Pool.MemoryPoolExhaustedError);
+            } else if (r.env.failFactory) {
+              // A failed factory must not consume a slot: later acquires (model
+              // keeps held unchanged) must still succeed up to MAX.
+              assert.throws(() => Pool.acquire(r.pool), /factory/);
+            } else {
+              const obj = Pool.acquire(r.pool);
+              assert.ok(!m.held.includes(obj), "fresh object is disjoint from held");
+              m.held.push(obj);
+            }
+          },
+        }),
+      (model) =>
+        Arb.map(Arb.integer(0, Math.max(0, model.held.length - 1)), (idx) => ({
+          name: `release(${idx})`,
+          check: (m: FModel) => m.held.length > 0,
+          run: (m, r) => {
+            sync(m, r);
+            const obj = m.held.splice(Math.min(idx, m.held.length - 1), 1)[0]!;
+            const before = r.env.resetCalls.length;
+            if (r.env.failReset) {
+              // Dirty instance is dropped, not recycled; its slot is freed.
+              assert.throws(() => Pool.release(r.pool, obj), /reset/);
+            } else {
+              Pool.release(r.pool, obj);
+              m.free.push(obj);
+            }
+            assert.equal(r.env.resetCalls.length, before + 1, "reset called exactly once");
+            assert.equal(r.env.resetCalls[before], obj, "reset received the released instance");
+          },
+        })),
+      () =>
+        Arb.map(Arb.boolean(), (value) => ({
+          name: `failFactory=${value}`,
+          run: (_m, r) => {
+            r.env.failFactory = value;
+          },
+        })),
+      () =>
+        Arb.map(Arb.boolean(), (value) => ({
+          name: `failReset=${value}`,
+          run: (_m, r) => {
+            r.env.failReset = value;
+          },
+        })),
+      () =>
+        Arb.map(Arb.boolean(), (userThrows) => ({
+          name: `withAcquire(userThrows=${userThrows})`,
+          run: (m, r) => {
+            sync(m, r);
+            if (m.free.length === 0 && (m.held.length >= MAX || r.env.failFactory)) return;
+            const expectedObj = m.free.length > 0 ? m.free.pop() : undefined;
+            let seen: Obj | undefined;
+            const body = (o: Obj): number => {
+              seen = o;
+              if (userThrows) throw new Error("user");
+              return 7;
+            };
+            if (userThrows) {
+              // The user's error wins even when reset also throws.
+              assert.throws(() => Pool.withAcquire(r.pool, body), /user/);
+            } else if (r.env.failReset) {
+              assert.throws(() => Pool.withAcquire(r.pool, body), /reset/);
+            } else {
+              assert.equal(Pool.withAcquire(r.pool, body), 7);
+            }
+            if (expectedObj !== undefined) assert.equal(seen, expectedObj);
+            // Recycled unless reset threw.
+            if (!r.env.failReset) m.free.push(seen!);
+          },
+        })),
+      () =>
+        Arb.constant({
+          name: "invariants",
+          run: (m, r) => {
+            sync(m, r);
+            const all = [...m.held, ...m.free];
+            assert.equal(new Set(all).size, all.length, "held and free are disjoint");
+            assert.ok(all.length <= MAX, "never more live objects than maxSize");
+          },
+        }),
+    ],
+    numRuns: 1_000_000,
+    maxCommands: 40,
+    timeoutMs: 300_000,
+  });
+});

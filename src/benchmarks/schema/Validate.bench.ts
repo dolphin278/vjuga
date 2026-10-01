@@ -38,6 +38,45 @@ const intValidator = validate(S.integer());
 const arrValidator = validate(S.array(S.number()));
 const tenNumbers = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
 
+// Nested objects — exercises accessor hoisting (each level is read once)
+const nestedValidator = validate(
+  S.object({
+    a: S.object({
+      b: S.object({
+        c: S.array(S.object({ x: S.number(), y: S.number(), label: S.string() })),
+      }),
+    }),
+  }),
+);
+const nestedValue = {
+  a: {
+    b: {
+      c: [
+        { x: 1, y: 2, label: "p0" },
+        { x: 3, y: 4, label: "p1" },
+        { x: 5, y: 6, label: "p2" },
+        { x: 7, y: 8, label: "p3" },
+      ],
+    },
+  },
+};
+
+// Extra key — rejected by the default `additionalProperties: false`
+const extraKeyUser = { ...validUser, extra: 1 };
+// Open object — `additionalProperties: true` skips the extra-key scan
+const openValidator = validate(
+  S.object(
+    {
+      id: S.number(),
+      name: S.string(),
+      email: S.string(),
+      active: S.boolean(),
+      tags: S.array(S.string()),
+    },
+    { additionalProperties: true },
+  ),
+);
+
 // --- Warm-up ---
 {
   for (let i = 0; i < 100_000; i++) {
@@ -46,6 +85,9 @@ const tenNumbers = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
     strValidator("hello");
     intValidator(42);
     arrValidator(tenNumbers);
+    nestedValidator(nestedValue);
+    compiledValidator(extraKeyUser);
+    openValidator(validUser);
   }
   reportOptimizationStatus(compiledValidator, "compiledValidator");
   reportOptimizationStatus(strValidator, "strValidator");
@@ -58,6 +100,10 @@ bench("Schema.validate — invalid user (first field)", () => compiledValidator(
 bench("Schema.validate — string", () => strValidator("hello"));
 bench("Schema.validate — integer", () => intValidator(42));
 bench("Schema.validate — array(10 numbers)", () => arrValidator(tenNumbers));
+bench("Schema.validate — nested objects (3 levels + array of 4)", () =>
+  nestedValidator(nestedValue));
+bench("Schema.validate — extra key (5 fields + 1)", () => compiledValidator(extraKeyUser));
+bench("Schema.validate — open object (additionalProperties: true)", () => openValidator(validUser));
 
 // Discriminated union
 const shapeSchema = S.union(

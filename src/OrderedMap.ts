@@ -69,15 +69,25 @@ export interface OrderedMap<K, V> {
   [kLen]: number;
 }
 
-/** Default comparator — works correctly for number and string keys. */
+/**
+ * Default comparator — a total order for number and string keys. NaN sorts
+ * after every other number and equals itself; -0 and 0 compare equal (one key).
+ * The common cases (`a < b`, `a > b`) stay on the two-compare fast path.
+ */
 function defaultCmp<K>(a: K, b: K): number {
-  return a < b ? -1 : a > b ? 1 : 0;
+  if (a < b) return -1;
+  if (a > b) return 1;
+  // Neither ordered nor greater: equal, or NaN involved (NaN last, NaN == NaN).
+  if (a !== a) return b !== b ? 0 : 1;
+  if (b !== b) return -1;
+  return 0;
 }
 
 /**
  * Creates an empty `OrderedMap`. Supply an optional `compare` function
- * (returns negative/0/positive for a<b/a=b/a>b). Default comparator works
- * for `string` and `number` keys.
+ * (returns negative/0/positive for a<b/a=b/a>b). The default comparator works
+ * for `string` and `number` keys: it is a total order in which NaN sorts last
+ * (and equals itself) and `-0` equals `0`.
  *
  * **Comparator contract**: `compare` must be a total order — it must return a
  * *finite* number (not NaN) for all pairs of keys in the map. A NaN-returning

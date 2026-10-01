@@ -2,17 +2,15 @@
  * Schema — data-first type schema with TypeScript inference, JSON Schema
  * interop, and code-generation readiness.
  *
- * A Schema is a plain `{ kind, meta }` object that describes a type.
- * Unlike closure-based validators, schemas are introspectable data that can be
- * compiled to multiple targets: validators, JSON serializers/parsers, TOON
- * serializers/parsers, and Arbitrary generators. Define once, compile many.
+ * A Schema is a plain `{ kind, meta }` object describing a type. Unlike
+ * closure-based validators, schemas are introspectable data compiled to many
+ * targets: validators, JSON / TOON serializers and parsers. 14 kinds: string,
+ * number, integer, boolean, null, literal, enum, object, array, tuple, record,
+ * union, optional, nullable. Recursive (cyclic) schemas are not supported.
  *
- * When to use: whenever you need runtime type information that feeds more than
- * one consumer (validation + serialization + type inference). For one-shot
- * validation of external input, use `schema/Validate` directly.
- *
- * 14 schema kinds: string, number, integer, boolean, null, literal, enum,
- * object, array, tuple, record, union, optional, nullable.
+ * When to use: runtime type information that feeds more than one consumer
+ * (validation + serialization + type inference). For one-shot validation of
+ * external input, use `schema/Validate` directly.
  *
  * Internal design:
  *   Every node is `{ kind: K, meta: M }` — two own properties, same V8
@@ -20,60 +18,23 @@
  *   monomorphic. `meta` carries kind-specific payload (constraints, child
  *   schemas). Nodes with no extra data use `meta: undefined`.
  *
- * Design tradeoffs:
- *   Data over closures — plain objects can be walked, serialized, and compiled
- *   to `new Function(...)` bodies. Construction is a one-time init cost.
+ * Design tradeoffs: data over closures — plain objects can be walked,
+ * serialized, and compiled to `new Function(...)` bodies. Schemas are
+ * immutable by convention; build a new one instead of mutating `meta`.
  *
- * @example Basic usage — define schema, infer TypeScript type
+ * @example Define a schema, infer its type, convert to JSON Schema
  * ```ts
  * import * as S from "@dolphin278/vjuga/schema/Schema";
- * const User = S.object({ id: S.integer(), name: S.string() });
- * type User = S.Infer<typeof User>; // { id: number; name: string }
- * ```
- *
- * @example Constraints — string length, number range, regex pattern
- * ```ts
- * const Email = S.string({ format: "email", maxLength: 255 });
- * const Age = S.integer({ minimum: 0, maximum: 150 });
- * const Slug = S.string({ pattern: "^[a-z0-9-]+$" });
- * ```
- *
- * @example Optional and nullable fields
- * ```ts
- * // optional(T) → T | undefined (omitted key in objects)
- * // nullable(T) → T | null (key present, value is null)
- * const Profile = S.object({
- *   name: S.string(),
- *   bio: S.optional(S.string()),    // may be absent
- *   avatar: S.nullable(S.string()), // present but may be null
+ * const User = S.object({
+ *   id: S.integer({ minimum: 0 }),
+ *   email: S.string({ format: "email", maxLength: 255 }),
+ *   bio: S.optional(S.string()),    // key may be absent
+ *   avatar: S.nullable(S.string()), // key present, value may be null
  * });
+ * type User = S.Infer<typeof User>; // infer from a constant, never from `Schema`
+ * const json = S.toJsonSchema(User); // { type: "object", ... }
+ * const back = S.fromJsonSchema(json); // Result<Schema, string>
  * ```
- *
- * @example Discriminated unions — detected automatically by validators/serializers
- * ```ts
- * const Shape = S.union(
- *   S.object({ type: S.literal("circle"), radius: S.number() }),
- *   S.object({ type: S.literal("rect"), w: S.number(), h: S.number() }),
- * );
- * // Validators emit a switch on "type" — O(1) dispatch, not O(n) trial.
- * ```
- *
- * @example JSON Schema 2020-12 interop
- * ```ts
- * const jsonSchema = S.toJsonSchema(User);   // → { type: "object", ... }
- * const schema = S.fromJsonSchema(jsonSchema); // → Result<Schema, string>
- * ```
- *
- * Pitfalls:
- *   - `Infer<Schema>` (the base union type) causes "excessively deep"
- *     errors. Always infer from a specific schema constant, not `Schema`.
- *   - Schemas are immutable plain objects — do not mutate `meta` after
- *     creation. Build a new schema instead.
- *   - `optional(T)` means "key may be absent" in objects. Outside objects
- *     it behaves like `T | undefined`. Use `nullable(T)` for null values.
- *   - `fromJsonSchema` returns `Result` — always check the error case.
- *     Unsupported features ($ref, allOf, oneOf, not, if/then/else) return
- *     `Err`.
  */
 
 import { type Result, ok, err } from "../Result.js";
@@ -187,6 +148,9 @@ export type Schema =
  *
  * Required-by-default: all object properties are required unless wrapped in
  * `optional()`. OptionalSchema keys become `?:` in the inferred object type.
+ *
+ * Pitfall: `Infer<Schema>` (the base union type) causes "excessively deep"
+ * errors. Always infer from a specific schema constant.
  */
 export type Infer<S extends Schema> = S extends StringSchema
   ? string
@@ -250,12 +214,19 @@ type Simplify<T> = { [K in keyof T]: T[K] };
 // Builder DSL
 // ---------------------------------------------------------------------------
 
-/** Validates strings. Pass constraints for minLength/maxLength/pattern/format. */
+/**
+ * Validates strings. Pass constraints for minLength/maxLength/pattern/format.
+ * `pattern` is a regex source string (compiled with `new RegExp`, no flags).
+ */
 export function string(constraints?: StringConstraints): StringSchema {
   return { kind: "string", meta: constraints };
 }
 
-/** Validates numbers (rejects NaN). Pass constraints for min/max/multipleOf. */
+/**
+ * Validates finite numbers — rejects NaN, `Infinity`, and `-Infinity` (none is
+ * representable in JSON). Pass constraints for min/max/multipleOf; a
+ * non-integer `multipleOf` is checked with a small relative tolerance.
+ */
 export function number(constraints?: NumberConstraints): NumberSchema {
   return { kind: "number", meta: constraints };
 }
@@ -288,9 +259,14 @@ export function enum_<const V extends readonly (string | number)[]>(...values: V
 }
 
 /**
- * Validates non-null objects. All properties are required by default — wrap
- * individual properties with `optional()` to make them optional.
- * Extra keys are rejected by default (`additionalProperties: false`).
+ * Validates non-null, non-array objects. All properties are required by
+ * default — wrap individual properties with `optional()` to make them
+ * optional (key may be absent). Only OWN properties count: inherited values
+ * never satisfy a property. Undeclared own enumerable keys are rejected by
+ * default (`additionalProperties: false`); pass `{ additionalProperties: true }`
+ * to allow them (they are then neither validated nor stripped). The check
+ * assumes declared properties are enumerable (always true for parsed JSON):
+ * a non-enumerable declared own property can mask one undeclared key.
  */
 export function object<const P extends Record<string, Schema>>(
   properties: P,
@@ -323,12 +299,19 @@ export function record<V extends Schema>(values: V): RecordSchema<V> {
   return { kind: "record", meta: { values } };
 }
 
-/** Validates that value matches at least one of the given schemas. */
+/**
+ * Validates that value fully matches at least one of the given schemas (an
+ * empty union matches nothing). Object variants sharing a literal-valued key
+ * are dispatched on that key in O(1).
+ */
 export function union<const V extends readonly Schema[]>(...variants: V): UnionSchema<V> {
   return { kind: "union", meta: { variants } };
 }
 
-/** Makes a schema accept `undefined` in addition to its normal type. */
+/**
+ * Makes a schema accept `undefined` in addition to its normal type. Inside an
+ * object it means "key may be absent"; use `nullable(T)` for null values.
+ */
 export function optional<I extends Schema>(inner: I): OptionalSchema<I> {
   return { kind: "optional", meta: { inner } };
 }
@@ -438,7 +421,7 @@ function buildJsonSchemaNode(s: Schema, built: Map<Schema, JsonSchemaObject>): J
         // For optional children, built.get(child) returns the unwrapped inner's
         // JSON Schema (see "optional" case below). Required/optional is tracked
         // via the required array, not the JSON Schema itself.
-        properties[key] = built.get(child)!;
+        setOwn(properties, key, built.get(child)!);
         if (child.kind !== "optional") required.push(key);
       }
       const out: Record<string, unknown> = { type: "object", properties };
@@ -502,8 +485,11 @@ function numberSchemaToJson(
 /**
  * Converts a JSON Schema (2020-12) object to a Schema.
  *
- * Returns `Err` for unsupported features (`$ref`, `allOf`, `if/then/else`,
- * `dependencies`, `patternProperties`, etc.).
+ * Returns `Err` (never throws) for unsupported features (`$ref`, `allOf`,
+ * `oneOf`, `not`, `if/then/else`, boolean schemas, `additionalProperties`
+ * as a schema alongside `properties`) and for malformed nodes (non-object
+ * schema, `multipleOf <= 0`). Unknown `format` values are kept but are
+ * annotation-only — validators ignore them. Input must be acyclic.
  *
  * Uses an explicit work stack + result stack to avoid recursion. "Visit" items
  * classify a JSON Schema node and push child visits + a "build" marker. "Build"
@@ -581,9 +567,12 @@ export function fromJsonSchema(root: JsonSchemaObject): Result<Schema, string> {
           // object
           const { keys, requiredSet, addlProps } = item;
           const objProps: Record<string, Schema> = {};
-          for (let i = keys.length - 1; i >= 0; i--) {
-            const s = results.pop()!;
-            objProps[keys[i]] = requiredSet.has(keys[i]) ? s : optional(s);
+          const children: Schema[] = Array(keys.length);
+          for (let i = keys.length - 1; i >= 0; i--) children[i] = results.pop()!;
+          // Insert in declaration order; setOwn keeps a "__proto__" key as data
+          for (let i = 0; i < keys.length; i++) {
+            const s = children[i];
+            setOwn(objProps, keys[i], requiredSet.has(keys[i]) ? s : optional(s));
           }
           results.push(object(objProps, { additionalProperties: addlProps }));
           break;
@@ -594,6 +583,13 @@ export function fromJsonSchema(root: JsonSchemaObject): Result<Schema, string> {
 
     // Visit step — classify the JSON Schema node
     const js = item.js;
+    if (typeof js !== "object" || js === null || Array.isArray(js)) {
+      return err(
+        typeof js === "boolean"
+          ? "boolean JSON Schemas are not supported"
+          : "schema node must be an object, got " + (js === null ? "null" : typeof js),
+      );
+    }
 
     // const
     if ("const" in js) {
@@ -677,6 +673,10 @@ export function fromJsonSchema(root: JsonSchemaObject): Result<Schema, string> {
     }
 
     if (type === "number" || type === "integer") {
+      const m = js.multipleOf;
+      if (typeof m === "number" && !(m > 0 && Number.isFinite(m))) {
+        return err("multipleOf must be a finite number > 0");
+      }
       const c = extractNumberConstraints(js);
       results.push(type === "integer" ? integer(c) : number(c));
       continue;
@@ -704,8 +704,17 @@ export function fromJsonSchema(root: JsonSchemaObject): Result<Schema, string> {
         continue;
       }
 
+      if ("additionalProperties" in js && typeof js.additionalProperties === "object") {
+        return err("additionalProperties as a schema alongside properties is not supported");
+      }
       // Object with properties
-      const props = (js.properties ?? {}) as Record<string, JsonSchemaObject>;
+      const props = (js.properties === undefined ? {} : js.properties) as Record<
+        string,
+        JsonSchemaObject
+      >;
+      if (typeof props !== "object" || props === null || Array.isArray(props)) {
+        return err("properties must be an object");
+      }
       const requiredSet = new Set(Array.isArray(js.required) ? (js.required as string[]) : []);
       const keys = Object.keys(props);
       const addlProps = js.additionalProperties === true || js.additionalProperties === undefined;
@@ -740,7 +749,7 @@ export function fromJsonSchema(root: JsonSchemaObject): Result<Schema, string> {
       return err("array schema without items is not supported");
     }
 
-    return err("unsupported JSON Schema: " + JSON.stringify(js).slice(0, 100));
+    return err("unsupported JSON Schema: keys " + Object.keys(js).join(",").slice(0, 100));
   }
 
   /* node:coverage ignore next 2 */
@@ -776,8 +785,9 @@ export function isPrimitive(schema: Schema): boolean {
 /**
  * Detect a common discriminant key among union variants.
  *
- * Returns the key name if ALL variants are object schemas sharing a property
- * whose schema is a literal with distinct values. Returns null otherwise.
+ * Returns the key name if ALL variants are object schemas sharing an own
+ * property whose schema is a literal with distinct values (a `NaN` literal
+ * never qualifies — it cannot be matched by `switch`). Returns null otherwise.
  */
 export function findDiscriminant(variants: readonly Schema[]): string | null {
   if (variants.length < 2) return null;
@@ -798,10 +808,12 @@ export function findDiscriminant(variants: readonly Schema[]): string | null {
       const obj = variants[i];
       /* node:coverage ignore next 2 */
       if (obj.kind !== "object") continue outer; // guaranteed by loop above, satisfies TS
-      const prop = obj.meta.properties[key];
-      if (prop === undefined || prop.kind !== "literal") continue outer;
+      const props = obj.meta.properties as Readonly<Record<string, Schema>>;
+      if (!Object.hasOwn(props, key)) continue outer;
+      const prop = props[key];
+      if (prop.kind !== "literal") continue outer;
       const val = prop.meta.value;
-      if (seen.has(val)) continue outer;
+      if (val !== val || seen.has(val)) continue outer;
       seen.add(val);
     }
     return key;
@@ -812,6 +824,24 @@ export function findDiscriminant(variants: readonly Schema[]): string | null {
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Assign `obj[key] = value` as an own data property. Plain assignment of a
+ * `"__proto__"` key would invoke the Object.prototype setter (changing the
+ * prototype) instead of creating a property.
+ */
+function setOwn<T>(obj: Record<string, T>, key: string, value: T): void {
+  if (key === "__proto__") {
+    Object.defineProperty(obj, key, {
+      value,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+  } else {
+    obj[key] = value;
+  }
+}
 
 function extractNumberConstraints(js: JsonSchemaObject): NumberConstraints | undefined {
   const c: Record<string, unknown> = {};

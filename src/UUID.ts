@@ -10,7 +10,9 @@
  * internal opaque IDs where format does not matter, a plain string may suffice.
  *
  * Design tradeoffs: validation checks both structural format and RFC 4122
- * variant-1 bits (the first nibble of group 4 must be 8/9/a/b). v7 generation
+ * variant-1 bits (the first nibble of group 4 must be 8/9/a/b); the Nil
+ * (all-zero) and Max (all-f) UUIDs are accepted as special cases. Input is
+ * lower-cased when branded so equal UUIDs always compare `===`. v7 generation
  * uses random sub-millisecond fill rather than a monotonic counter — two UUIDs
  * generated within the same millisecond are not guaranteed to be ordered, but
  * are unique with overwhelming probability.
@@ -29,6 +31,11 @@ import type { Branded } from "./FunctionUtils.js";
 import { type Result, ok, err } from "./Result.js";
 import { ValidationError, type Validator } from "./schema/ValidationError.js";
 import { randomUUID, getRandomValues } from "node:crypto";
+
+/** The Nil UUID (RFC 9562 section 5.9). */
+export const NIL = "00000000-0000-0000-0000-000000000000" as UUID;
+/** The Max UUID (RFC 9562 section 5.10). */
+export const MAX = "ffffffff-ffff-ffff-ffff-ffffffffffff" as UUID;
 
 /** Branded string guaranteed to be a valid UUID. */
 export type UUID = Branded<string, "UUID">;
@@ -50,12 +57,20 @@ const HEX: readonly string[] = /* @__PURE__ */ (() => {
 
 /**
  * Validates and brands a string as a UUID.
- * Accepts any UUID version with variant-1 bits. Case-insensitive.
+ * Accepts any UUID version with variant-1 bits, plus Nil and Max. Case-insensitive
+ * on input; the returned brand is always lower-case.
  * Throws RangeError if the string is not a valid UUID.
  */
 export function uuid(value: string): UUID {
-  if (!UUID_RE.test(value)) throw new RangeError(`Expected UUID, got "${value}"`);
-  return value as UUID;
+  const id = normalize(value);
+  if (id === undefined) throw new RangeError(`Expected UUID, got "${value}"`);
+  return id;
+}
+
+function normalize(value: string): UUID | undefined {
+  const lower = value.toLowerCase();
+  if (UUID_RE.test(lower) || lower === NIL || lower === MAX) return lower as UUID;
+  return undefined;
 }
 
 /** Generates a random v4 UUID using `crypto.randomUUID()`. */
@@ -63,45 +78,47 @@ export function v4(): UUID {
   return randomUUID() as UUID;
 }
 
+// Pooled random bytes: one getRandomValues syscall-ish call per POOL_SIZE / 10
+// UUIDs instead of one per UUID (the dominant cost of v7).
+const POOL_SIZE = 4096;
+const RANDOM_BYTES = 10; // bytes 6..15 of a v7 UUID
+const pool = new Uint8Array(POOL_SIZE);
+let poolPos = POOL_SIZE;
+
 function _v7Impl(): UUID {
   const ms = Date.now();
-  const bytes = new Uint8Array(16);
-  getRandomValues(bytes);
+  if (poolPos + RANDOM_BYTES > POOL_SIZE) {
+    getRandomValues(pool);
+    poolPos = 0;
+  }
+  const o = poolPos;
+  poolPos += RANDOM_BYTES;
 
-  // 48-bit timestamp (big-endian) in bytes 0–5
-  bytes[0] = (ms / 0x10000000000) & 0xff;
-  bytes[1] = (ms / 0x100000000) & 0xff;
-  bytes[2] = (ms / 0x1000000) & 0xff;
-  bytes[3] = (ms / 0x10000) & 0xff;
-  bytes[4] = (ms / 0x100) & 0xff;
-  bytes[5] = ms & 0xff;
+  // Version 7: high nibble of byte 6 = 0111; variant 1: high 2 bits of byte 8 = 10
+  const b6 = (pool[o] & 0x0f) | 0x70;
+  const b8 = (pool[o + 2] & 0x3f) | 0x80;
 
-  // Version 7: high nibble of byte 6 = 0111
-  bytes[6] = (bytes[6] & 0x0f) | 0x70;
-
-  // Variant 1: high 2 bits of byte 8 = 10
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
-
-  return (HEX[bytes[0]] +
-    HEX[bytes[1]] +
-    HEX[bytes[2]] +
-    HEX[bytes[3]] +
+  // 48-bit timestamp (big-endian) in bytes 0-5, random in 6-15
+  return (HEX[(ms / 0x10000000000) & 0xff] +
+    HEX[(ms / 0x100000000) & 0xff] +
+    HEX[(ms / 0x1000000) & 0xff] +
+    HEX[(ms / 0x10000) & 0xff] +
     "-" +
-    HEX[bytes[4]] +
-    HEX[bytes[5]] +
+    HEX[(ms / 0x100) & 0xff] +
+    HEX[ms & 0xff] +
     "-" +
-    HEX[bytes[6]] +
-    HEX[bytes[7]] +
+    HEX[b6] +
+    HEX[pool[o + 1]] +
     "-" +
-    HEX[bytes[8]] +
-    HEX[bytes[9]] +
+    HEX[b8] +
+    HEX[pool[o + 3]] +
     "-" +
-    HEX[bytes[10]] +
-    HEX[bytes[11]] +
-    HEX[bytes[12]] +
-    HEX[bytes[13]] +
-    HEX[bytes[14]] +
-    HEX[bytes[15]]) as UUID;
+    HEX[pool[o + 4]] +
+    HEX[pool[o + 5]] +
+    HEX[pool[o + 6]] +
+    HEX[pool[o + 7]] +
+    HEX[pool[o + 8]] +
+    HEX[pool[o + 9]]) as UUID;
 }
 
 /**
@@ -111,6 +128,7 @@ function _v7Impl(): UUID {
  *   48-bit ms timestamp | 4-bit version (0111) | 12-bit random |
  *   2-bit variant (10)  | 62-bit random
  *
+ * Random bits come from a 4 KiB pool refilled via `crypto.getRandomValues`.
  * Delegates to `Bun.randomUUIDv7` when running under Bun; falls back to a
  * manual implementation otherwise.
  */
@@ -130,7 +148,8 @@ export function version(id: UUID): number {
 export function validator(): Validator<UUID> {
   return function validateUUID(value: unknown): Result<UUID, ValidationError> {
     if (typeof value !== "string") return err(new ValidationError("UUID", value));
-    if (!UUID_RE.test(value)) return err(new ValidationError("UUID", value));
-    return ok(value as UUID);
+    const id = normalize(value);
+    if (id === undefined) return err(new ValidationError("UUID", value));
+    return ok(id);
   };
 }

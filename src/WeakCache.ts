@@ -14,11 +14,10 @@
  *     later microtask or not at all before process exit.
  *   - `get()` and `has()` eagerly clean up stale entries they encounter,
  *     keeping the map as accurate as possible on the read path.
- *   - `remove()` calls `registry.unregister(value)` when possible to prevent
- *     the finalization callback from firing for explicitly removed entries.
- *     Because `unregister` requires the original object (used as the
- *     unregister token), a stale WeakRef (already collected) cannot be
- *     unregistered — the entry is simply deleted from the map.
+ *   - `remove()` and overwriting `set()` unregister the entry's finalizer using
+ *     the per-entry WeakRef as the token, so the callback does not fire for
+ *     explicitly removed entries and a value cached under several keys keeps
+ *     an independent finalizer per key.
  *
  * All private state uses module-scope unique symbols so every WeakCache
  * instance shares the same hidden class — keeping call sites monomorphic
@@ -40,12 +39,10 @@
 
 const kEntries: unique symbol = Symbol("entries");
 const kRegistry: unique symbol = Symbol("registry");
-const kSize: unique symbol = Symbol("size");
 
 export interface WeakCache<K, V extends object> {
   [kEntries]: Map<K, WeakRef<V>>;
   [kRegistry]: FinalizationRegistry<K>;
-  [kSize]: number;
 }
 
 /**
@@ -76,11 +73,7 @@ export function make<K, V extends object>(): WeakCache<K, V> {
   const cache: WeakCache<K, V> = {
     [kEntries]: entries,
     [kRegistry]: registry,
-    [kSize]: 0,
   };
-  // Write kSize a second time so V8 marks the field as mutable from the first
-  // make() call — avoids a deoptimization cascade on the first mutation.
-  cache[kSize] = 0;
 
   return cache;
 }
@@ -101,7 +94,6 @@ export function get<K, V extends object>(cache: WeakCache<K, V>, key: K): V | un
     // The value was reclaimed by the GC but the FinalizationRegistry callback
     // has not yet fired.  Eagerly clean up the stale entry.
     cache[kEntries].delete(key);
-    cache[kSize]--;
     return void 0;
   }
   return value;
@@ -117,23 +109,18 @@ export function get<K, V extends object>(cache: WeakCache<K, V>, key: K): V | un
 export function set<K, V extends object>(cache: WeakCache<K, V>, key: K, value: V): void {
   const existing = cache[kEntries].get(key);
   if (existing !== undefined) {
-    // Attempt to unregister the old value from the FinalizationRegistry so its
-    // cleanup callback does not fire after we overwrite the entry.  unregister
-    // requires the original object as the token — if the old ref is already
-    // stale (collected), the call is a harmless no-op.
-    const old = existing.deref();
-    if (old !== undefined) {
-      cache[kRegistry].unregister(old);
-    }
-  } else {
-    cache[kSize]++;
+    // Cancel the old registration so its callback does not fire after we
+    // overwrite the entry.  The per-entry WeakRef is the unregister token, so
+    // this works even if the old value was already collected.
+    cache[kRegistry].unregister(existing);
   }
 
   const ref = new WeakRef(value);
   cache[kEntries].set(key, ref);
-  // Register the value with the FinalizationRegistry.  The value itself is
-  // used as the unregister token so `remove()` can cancel the callback.
-  cache[kRegistry].register(value, key, value);
+  // Register with the per-entry WeakRef as the unregister token (never the
+  // value: the same value may be cached under several keys, and unregistering
+  // by value would cancel all of them).
+  cache[kRegistry].register(value, key, ref);
 }
 
 /**
@@ -148,7 +135,6 @@ export function has<K, V extends object>(cache: WeakCache<K, V>, key: K): boolea
   if (ref.deref() === undefined) {
     // Stale ref — eagerly clean up.
     cache[kEntries].delete(key);
-    cache[kSize]--;
     return false;
   }
   return true;
@@ -157,23 +143,17 @@ export function has<K, V extends object>(cache: WeakCache<K, V>, key: K): boolea
 /**
  * Removes the entry for `key` from the cache.
  *
- * Returns `true` if the key was present, `false` otherwise. If the value has
- * not yet been collected, it is unregistered from the FinalizationRegistry to
- * prevent a spurious cleanup callback.
+ * Returns `true` if the key was present, `false` otherwise. The entry's
+ * finalizer is unregistered to prevent a spurious cleanup callback.
  */
 export function remove<K, V extends object>(cache: WeakCache<K, V>, key: K): boolean {
   const ref = cache[kEntries].get(key);
   if (ref === undefined) return false;
 
-  const value = ref.deref();
-  if (value !== undefined) {
-    // Unregister so the FinalizationRegistry callback does not fire for this
-    // explicitly removed entry.
-    cache[kRegistry].unregister(value);
-  }
-
+  // Unregister so the FinalizationRegistry callback does not fire for this
+  // explicitly removed entry (a no-op if the value is already collected).
+  cache[kRegistry].unregister(ref);
   cache[kEntries].delete(key);
-  cache[kSize]--;
   return true;
 }
 
@@ -182,11 +162,11 @@ export function remove<K, V extends object>(cache: WeakCache<K, V>, key: K): boo
  *
  * Note: this count may include entries whose values have been reclaimed by the
  * GC but whose FinalizationRegistry callback has not yet fired.  The count is
- * decremented eagerly by `get()`, `has()`, and `remove()` when they encounter
- * stale refs, but between those calls the count can be stale.
+ * removed eagerly by `get()` and `has()` when they encounter stale refs, but
+ * between those calls the count can include dead entries.
  */
 export function size<K, V extends object>(cache: WeakCache<K, V>): number {
-  return cache[kSize];
+  return cache[kEntries].size;
 }
 
 // --- Internal helpers ---

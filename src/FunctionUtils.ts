@@ -69,7 +69,8 @@ export type Branded<Base, Kind extends PropertyKey> = Base & {
  * Zero-runtime-cost cast that asserts `value` is a `Branded<Base, Kind>`.
  *
  * The caller is responsible for ensuring the invariant holds at the call site.
- * This function compiles away entirely — it emits no instructions.
+ * At runtime it is an identity function; the call is trivially inlined by the
+ * JIT but is not erased from the emitted JavaScript.
  */
 export function brand<Base, Kind extends PropertyKey>(value: Base): Branded<Base, Kind> {
   return value as Branded<Base, Kind>;
@@ -82,7 +83,7 @@ export type PositiveNumber = Branded<number, "PositiveNumber">;
 export type Integer = Branded<number, "Integer">;
 
 /** A number that is both positive and a safe integer (>= 1). */
-export type PositiveInteger = PositiveNumber & Integer;
+export type PositiveInteger = PositiveNumber & Integer & NonNegativeInteger;
 
 /** A number that is a non-negative safe integer (>= 0). */
 export type NonNegativeInteger = Branded<number, "NonNegativeInteger"> & Integer;
@@ -193,7 +194,7 @@ export function pipe<A extends unknown[], B, C, D, E>(fn0: Fn<A, B>, fn1: Fn1<B,
 export function pipe<A extends unknown[], B, C, D, E, F>(fn0: Fn<A, B>, fn1: Fn1<B, C>, fn2: Fn1<C, D>, fn3: Fn1<D, E>, fn4: Fn1<E, F>): Fn<A, F>;
 // prettier-ignore
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function pipe(...fns: ((...args: any) => any)[]): Fn<unknown[], unknown>;
+export function pipe(...fns: [((...args: any) => any), ...((...args: any) => any)[]]): Fn<unknown[], unknown>;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function pipe(...fns: ((...args: any[]) => any)[]): (...args: unknown[]) => unknown {
   switch (fns.length) {

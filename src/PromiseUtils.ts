@@ -148,7 +148,7 @@ export async function pool<T, R>(
   }
   const arr: readonly T[] = Array.isArray(items) ? items : [...items];
   const n = arr.length;
-  const results = new Array<PromiseSettledResult<Awaited<R>>>(n);
+  const results = Array<PromiseSettledResult<Awaited<R>>>(n);
   if (n === 0) return results;
   const signal = options?.signal;
 

@@ -101,9 +101,13 @@ test("pool: rejections and synchronous throws mark only that item; pool continue
 
 test("pool: a long run of synchronous throws with limit 1 loops (no recursion)", async () => {
   const N = 200_000;
-  const results = await pool(new Array<number>(N).fill(0), 1, () => {
-    throw 1;
-  });
+  const results = await pool(
+    Array.from({ length: N }, () => 0),
+    1,
+    () => {
+      throw 1;
+    },
+  );
   assert.equal(results.length, N);
   assert.ok(results.every((r) => r.status === "rejected" && r.reason === 1));
 });

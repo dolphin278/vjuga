@@ -507,7 +507,7 @@ test("PromiseUtils: pool matches reference model — order, settledness, concurr
           active++;
           maxActive = Math.max(maxActive, active);
           return (async () => {
-            for (let h = 0; h <= hops; h++) await null; // >= 1 hop: overlaps
+            for (let h = 0; h <= hops; h++) await Promise.resolve(); // >= 1 hop: overlaps
             active--;
             if (kind === "rej") throw `e${i}`;
             return i * 7;

@@ -1,8 +1,11 @@
 import { test } from "node:test";
+import * as assert from "node:assert/strict";
 import * as S from "../../../schema/Schema.js";
 import * as ST from "../../../schema/TOON.js";
 import * as Arb from "../../../Arbitrary.js";
 import * as Prop from "../../../Property.js";
+import type { Result } from "../../../Result.js";
+import * as G from "./_serial-gen.js";
 
 const NUM_RUNS = 1_000_000;
 
@@ -265,4 +268,118 @@ test("flexible order parses fields in any order", () => {
     },
     { numRuns: NUM_RUNS },
   );
+});
+
+// ---------------------------------------------------------------------------
+// Random-schema round-trip (G9-1/2/3/5/6/7/11/13/15 regression net)
+// ---------------------------------------------------------------------------
+
+interface CompiledToon {
+  readonly schema: S.Schema;
+  readonly fns: {
+    str: (v: unknown) => string;
+    par: (s: string) => Result<unknown, unknown>;
+    flex: (s: string) => Result<unknown, unknown>;
+  } | null;
+}
+
+// Distinct schemas are drawn from a bounded seed space and cached, so 1M runs
+// do not pay 1M `new Function` compilations; values vary on every run.
+const SCHEMA_SEEDS = 20_000;
+// Untyped views of the factories — `Infer<Schema>` on a dynamic schema is too deep for tsc.
+const toonStringify = ST.stringify as unknown as (
+  s: S.Schema,
+  o?: ST.ToonStringifyOptions,
+) => (v: unknown) => string;
+const toonParse = ST.parse as unknown as (
+  s: S.Schema,
+  o?: ST.ToonParseOptions,
+) => (s: string) => Result<unknown, unknown>;
+const toonCache = new Map<number, CompiledToon>();
+
+function compileToon(schemaSeed: number): CompiledToon {
+  const hit = toonCache.get(schemaSeed);
+  if (hit !== undefined) return hit;
+  const r = G.rng(schemaSeed ^ 0x9e3779b9);
+  const gen = G.genSchema(r, { toon: true, protoKeys: true });
+  const opts = {
+    delimiter: ([",", "\t", "|"] as const)[Math.floor(r() * 3)],
+    indent: [2, 1, 4][Math.floor(r() * 3)],
+  };
+  let entry: CompiledToon;
+  if (gen.unsupported) {
+    // Both factories must reject the same shapes, with the documented error.
+    assert.throws(
+      () => toonStringify(gen.schema, opts),
+      /TOON: unsupported/,
+      JSON.stringify(gen.schema),
+    );
+    assert.throws(
+      () => toonParse(gen.schema, opts),
+      /TOON: unsupported/,
+      JSON.stringify(gen.schema),
+    );
+    entry = { schema: gen.schema, fns: null };
+  } else {
+    entry = {
+      schema: gen.schema,
+      fns: {
+        str: toonStringify(gen.schema, opts),
+        par: toonParse(gen.schema, opts),
+        flex: toonParse(gen.schema, { ...opts, flexibleOrder: true }),
+      },
+    };
+  }
+  toonCache.set(schemaSeed, entry);
+  return entry;
+}
+
+/** Reverse the order of top-level blocks (a block = a line at column 0 + its children). */
+function reverseTopLevelBlocks(toon: string): string {
+  const blocks: string[][] = [];
+  for (const line of toon.split("\n")) {
+    if (blocks.length === 0 || (line !== "" && line[0] !== " ")) blocks.push([line]);
+    else blocks[blocks.length - 1].push(line);
+  }
+  return blocks
+    .reverse()
+    .map((b) => b.join("\n"))
+    .join("\n");
+}
+
+test("random schemas round-trip through TOON or are rejected at compile time", () => {
+  let roundTrips = 0;
+  let rejected = 0;
+  Prop.assert(
+    Arb.tuple(Arb.integer(0, 0x7fffffff), Arb.string({ maxLength: 12 })),
+    ([n, s]) => {
+      const seed = G.hashSeed(n + ":" + s);
+      const c = compileToon(seed % SCHEMA_SEEDS);
+      if (c.fns === null) {
+        rejected++;
+        return true;
+      }
+      const value = G.genValue(G.rng(seed), c.schema);
+      const out = c.fns.str(value);
+      const why = G.describeCase(seed, c.schema, value, out);
+      const expected = G.normalize(value);
+      const back = c.fns.par(out);
+      assert.ok(back[0], why + "\nerr=" + JSON.stringify(back[1]));
+      assert.deepStrictEqual(G.normalize(back[1]), expected, why);
+      const flex = c.fns.flex(out);
+      assert.ok(flex[0], why + "\nflex err=" + JSON.stringify(flex[1]));
+      assert.deepStrictEqual(G.normalize(flex[1]), expected, why);
+      // Field order must not matter for flexible parsing of root objects.
+      if (c.schema.kind === "object") {
+        const shuffled = c.fns.flex(reverseTopLevelBlocks(out));
+        assert.ok(shuffled[0], why + "\nshuffled err=" + JSON.stringify(shuffled[1]));
+        assert.deepStrictEqual(G.normalize(shuffled[1]), expected, why);
+      }
+      roundTrips++;
+      return true;
+    },
+    { numRuns: NUM_RUNS },
+  );
+  // Guard against a generator that only produces rejected shapes.
+  assert.ok(roundTrips > rejected, `roundTrips=${roundTrips} rejected=${rejected}`);
 });

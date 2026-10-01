@@ -252,6 +252,40 @@ test("shrinks while wrapped (tail < head), preserving order", () => {
   assert.deepEqual(toArray(queue), [-1, ...model, -2]);
 });
 
+test("random walks across the shrink threshold (wrapped and unwrapped) match a model", () => {
+  for (const seed of [1, 2, 3, 4, 5]) {
+    let s = seed * 2654435761;
+    const rnd = (): number => {
+      s ^= s << 13;
+      s ^= s >>> 17;
+      s ^= s << 5;
+      return s >>> 0;
+    };
+    const queue = make<number>();
+    // Model: array plus a head offset, so shift is O(1).
+    const model: number[] = [];
+    let head = 0;
+    let next = 0;
+    const peak = 10_500 + (rnd() % 20_000);
+    while (model.length - head < peak) {
+      push(queue, next);
+      model.push(next++);
+    }
+    // Rotate so head sits mid-buffer and the live range wraps.
+    for (let i = 0; i < peak; i++) {
+      push(queue, next);
+      model.push(next++);
+      assert.equal(shift(queue), model[head++]);
+    }
+    while (model.length - head > 20) {
+      if ((rnd() & 7) === 0) assert.equal(shift(queue), model[head++]);
+      else assert.equal(pop(queue), model.pop());
+    }
+    assert.deepEqual(toArray(queue), model.slice(head));
+    assert.ok(capacityOf(queue) <= 16384);
+  }
+});
+
 test("shrinks when emptied", () => {
   const queue = make<number>();
   for (let i = 0; i < 40000; i++) push(queue, i);

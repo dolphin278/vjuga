@@ -218,6 +218,13 @@ test("SOA-set ignores extra item keys and bounds-checks", () => {
   assert.deepEqual(soa, { x: [1, 7, 3], y: [4, 8, 6] });
   SOA.set(soa, 0, { x: 100, y: 101 });
   assert.deepEqual(soa, { x: [100, 7, 3], y: [101, 8, 6] });
+  // Partial item: missing columns are left untouched; explicit undefined is written.
+  SOA.set(soa, 0, { x: 5 } as unknown as { x: number; y: number });
+  assert.deepEqual(soa, { x: [5, 7, 3], y: [101, 8, 6] });
+  SOA.set(soa, 0, { x: 5, y: undefined } as unknown as { x: number; y: number });
+  assert.equal(soa.y[0], undefined);
+  assert.equal(soa.x[0], 5);
+  SOA.set(soa, 0, { x: 100, y: 101 });
   for (const bad of [3, 4, -1, 0.5, NaN, Infinity]) {
     assert.throws(() => SOA.set(soa, bad, { x: 0, y: 0 }), RangeError, String(bad));
   }

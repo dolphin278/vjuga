@@ -65,7 +65,7 @@ function nextPow2(n: number): number {
 }
 
 // ---------------------------------------------------------------------------
-// actualFpr — exact false-positive rate for a Bloom filter with m bits,
+// actualFpr — standard false-positive approximation for a Bloom filter with m bits,
 // k hash probes, and n items.  Formula: (1 − e^(−k·n/m))^k.
 // Used in make() to verify that the chosen integer k satisfies the fpr
 // contract after power-of-2 bit-count rounding (which can shift kExact

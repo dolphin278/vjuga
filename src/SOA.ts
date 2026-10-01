@@ -15,7 +15,7 @@
  *     reading the old array; views created afterwards see the new one.
  *   - `get`/`pop` build rows with a per-SOA generated factory (fast-properties
  *     plain objects). The set of column names must not change after first use.
- *   - `set` replaces the whole row from the SOA's own columns (extra item
+ *   - `set` writes only the SOA's own columns present in `item` (extra item
  *     keys are ignored) and throws a RangeError unless 0 <= index < length.
  *
  * When to use: tight iteration over many records where cache-line utilization
@@ -215,9 +215,9 @@ export function get<T>(soa: SOA<T>, index: number): T {
 }
 
 /**
- * Overwrites row `index` with `item` (a full row, like `push`). Only the SOA's own
- * columns are written (extra keys on `item` are ignored), so the co-length
- * invariant cannot be broken. Throws a RangeError unless 0 <= index < length.
+ * Overwrites row `index` with the columns present in `item`. Only the SOA's own
+ * columns are written (extra keys on `item` are ignored; columns missing from
+ * `item` keep their value), so the co-length invariant cannot be broken. Throws a RangeError unless 0 <= index < length.
  */
 export function set<T>(soa: SOA<T>, index: number, item: T): void {
   // Bounds are checked against the first column on the first iteration (all
@@ -230,7 +230,10 @@ export function set<T>(soa: SOA<T>, index: number, item: T): void {
       if (index >>> 0 !== index || index >= arr.length) throw setRangeError(index, arr.length);
       checked = true;
     }
-    arr[index] = (item as Record<string, unknown>)[key];
+    const v = (item as Record<string, unknown>)[key];
+    // Columns absent from `item` are left untouched (partial update); the `in`
+    // check only runs for undefined values, keeping full-row writes fast.
+    if (v !== undefined || key in (item as object)) arr[index] = v;
   }
   if (!checked) throw setRangeError(index, 0);
 }

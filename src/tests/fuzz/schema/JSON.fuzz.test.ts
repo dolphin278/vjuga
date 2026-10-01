@@ -207,11 +207,10 @@ test("random schemas round-trip through schema/JSON and agree with native JSON",
       const schemaSeed = seed % SCHEMA_SEEDS;
       let c = jsonCache.get(schemaSeed);
       if (c === undefined) {
-        // Prototype-colliding object keys are excluded: schema/Validate's
-        // handling of those (G8-4) is owned and tested separately.
+        // Includes prototype-colliding keys (constructor, toString, ...).
         const { schema } = G.genSchema(G.rng(schemaSeed ^ 0x9e3779b9), {
           toon: false,
-          protoKeys: false,
+          protoKeys: true,
         });
         c = { schema, str: jsonStringify(schema), par: jsonParse(schema) };
         jsonCache.set(schemaSeed, c);

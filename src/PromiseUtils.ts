@@ -100,8 +100,8 @@ export interface PoolOptions {
  * in input order. Resolves to one `PromiseSettledResult` per item, in input
  * order, once every started call has settled.
  *
- * - Never rejects because of `fn`: a rejection or a synchronous throw marks
- *   only that item `rejected`, and the pool continues with the next item.
+ * - Never rejects because of `fn`: a rejection or a synchronous throw (from
+ *   `fn` or from adopting its result) marks only that item `rejected`, and the pool continues with the next item.
  *   A synchronous throw does not occupy a slot.
  * - `limit` must be an integer >= 1 or `Infinity`. An invalid `limit`, a
  *   non-function `fn`, a non-iterable `items` or an iterator that throws make
@@ -169,16 +169,18 @@ export async function pool<T, R>(
           break;
         }
         const i = next++;
-        let r: R | PromiseLike<R>;
+        let p: Promise<Awaited<R>>;
         try {
-          r = fn(arr[i], i, signal);
+          // Promise.resolve can throw too (hostile `constructor` getter on a
+          // native promise), so adoption stays inside the try.
+          p = Promise.resolve(fn(arr[i], i, signal));
         } catch (reason) {
           results[i] = { status: "rejected", reason };
           settled++;
           continue;
         }
         active++;
-        Promise.resolve(r).then(
+        p.then(
           (value) => finish(i, { status: "fulfilled", value }),
           (reason: unknown) => finish(i, { status: "rejected", reason }),
         );

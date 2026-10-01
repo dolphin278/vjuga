@@ -229,3 +229,47 @@ test("pool: input array is snapshotted; mutation during the run has no effect", 
   assert.deepEqual(seen, [1, 2, 3]);
   assert.equal(results.length, 3);
 });
+
+/** A native promise whose `constructor` getter throws, so `Promise.resolve` throws. */
+function hostilePromise(): Promise<number> {
+  const p = Promise.resolve(1);
+  Object.defineProperty(p, "constructor", {
+    get() {
+      throw new Error("ctor");
+    },
+  });
+  return p;
+}
+
+/** Fails (instead of hanging the suite) if `p` does not settle within `ms`. */
+async function within<T>(p: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("pool never settled")), ms);
+  });
+  try {
+    return await Promise.race([p, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+test("pool: a throw while adopting fn's result on the initial fill marks only that item", async () => {
+  const results = await within(
+    pool([0, 1], 2, (x) => (x === 0 ? hostilePromise() : x)),
+    1000,
+  );
+  assert.equal(results[0].status, "rejected");
+  assert.equal(((results[0] as PromiseRejectedResult).reason as Error).message, "ctor");
+  assert.deepEqual(results[1], { status: "fulfilled", value: 1 });
+});
+
+test("pool: a throw while adopting fn's result after a settlement does not hang", async () => {
+  const results = await within(
+    pool([0, 1, 2], 1, (x) => (x === 1 ? hostilePromise() : Promise.resolve(x))),
+    1000,
+  );
+  assert.deepEqual(results[0], { status: "fulfilled", value: 0 });
+  assert.equal(results[1].status, "rejected");
+  assert.deepEqual(results[2], { status: "fulfilled", value: 2 });
+});

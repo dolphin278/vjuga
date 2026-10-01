@@ -752,9 +752,11 @@ class FakeSocket extends EventEmitter {
     this.out.push(Buffer.from(d));
     return true;
   }
+  ends = 0;
   end(d?: Buffer): void {
     if (d !== undefined) this.out.push(d);
     this.ended = true;
+    this.ends++;
   }
   destroy(): void {
     this.destroyed = true;
@@ -1164,6 +1166,130 @@ test("backpressure over TCP: a non-reading client does not grow the queue (G6-5)
   assert.ok(maxQueued < 4 * 1024 * 1024, `queued ${maxQueued}`);
   c.destroy();
   await HttpServer.close(server);
+});
+
+// ── In-flight tracking: keepAliveTimeout and close() wait for responses ──
+
+/** Fake-socket server whose handler defers every response to the test. */
+function deferredServer(options?: HttpServer.Options): {
+  server: HttpServer.HttpServer;
+  pending: Array<() => void>;
+  connect: () => FakeSocket;
+} {
+  const pending: Array<() => void> = [];
+  const { server, connect } = fakeServer(options, (_req, socket) => {
+    pending.push(() => HttpServer.respond(socket, 200, "{}"));
+  });
+  return { server, pending, connect };
+}
+
+test("idle timeout is deferred while a response is in flight", () => {
+  const { pending, connect } = deferredServer({ keepAliveTimeout: 50 });
+  const s = connect().feed("GET / HTTP/1.1\r\n\r\n");
+  s.timeout = -1;
+  s.emit("timeout");
+  assert.equal(s.destroyed, false);
+  pending.shift()!();
+  assert.equal(statusOf(s), 200);
+  assert.equal(s.timeout, 50); // re-armed once idle
+  s.emit("timeout");
+  assert.equal(s.destroyed, true);
+});
+
+test("respond helpers tolerate foreign sockets and extra responses", () => {
+  const foreign = new FakeSocket();
+  HttpServer.respondRaw(foreign as unknown as net.Socket, HttpServer.precompute(200, "{}"));
+  assert.equal(statusOf(foreign), 200);
+  const { connect } = fakeServer(undefined, (_req, socket) => {
+    HttpServer.respond(socket, 200, "{}");
+    HttpServer.respondBuffer(socket, 200, Buffer.from("x"), "text/plain");
+  });
+  const s = connect().feed("GET / HTTP/1.1\r\n\r\n");
+  assert.equal(s.text().split("HTTP/1.1 200").length - 1, 2);
+});
+
+test("close() ends a connection right after its in-flight response", async () => {
+  const { server, pending, connect } = deferredServer();
+  await HttpServer.listen(server, 0);
+  const s = connect().feed("GET /a HTTP/1.1\r\n\r\nGET /b HTTP/1.1\r\n\r\nGET /c");
+  const closed = HttpServer.close(server);
+  assert.equal(s.destroyed || s.ended, false);
+  pending.shift()!(); // /a answered, /b still in flight
+  assert.equal(s.ended, false);
+  pending.shift()!(); // /b answered, but /c is partially received
+  assert.equal(s.ended, false);
+  s.feed(" HTTP/1.1\r\n\r\n");
+  assert.equal(s.ended, false); // /c dispatched and in flight
+  pending.shift()!();
+  assert.equal(s.ended, true);
+  assert.equal(s.text().split("HTTP/1.1 200").length - 1, 3);
+  await closed;
+});
+
+test("close() with in-flight responses on paused or rejected connections", async () => {
+  const pending: Array<() => void> = [];
+  const { server, connect } = fakeServer(undefined, (_req, socket) => {
+    pending.push(() => HttpServer.respond(socket, 200, "{}"));
+    (socket as unknown as FakeSocket).writableNeedDrain = true;
+  });
+  await HttpServer.listen(server, 0);
+  const paused = connect().feed("GET / HTTP/1.1\r\n\r\n");
+  const rejected = connect().feed("GET / HTTP/1.1\r\n\r\n");
+  rejected.writableNeedDrain = false;
+  rejected.emit("drain");
+  rejected.feed("BAD\r\n\r\n");
+  assert.equal(statusOf(rejected), 400);
+  const closed = HttpServer.close(server);
+  pending[0]!(); // still paused: end waits for drain
+  assert.equal(paused.ended, false);
+  paused.writableNeedDrain = false;
+  paused.emit("drain");
+  assert.equal(paused.ended, true);
+  pending[1]!(); // already rejected and ended: no second end
+  assert.equal(rejected.ends, 1);
+  await closed;
+});
+
+test("keepAliveTimeout over TCP: a slow async handler is not cut off (G6-7)", async () => {
+  const server = HttpServer.make(
+    (_req, socket) => {
+      setTimeout(() => HttpServer.respond(socket, 200, '{"slow":true}'), 150);
+    },
+    { keepAliveTimeout: 50 },
+  );
+  await HttpServer.listen(server, 0);
+  const port = getPort(server);
+  const c = net.createConnection({ port, host: "127.0.0.1" });
+  let data = "";
+  c.setEncoding("utf8");
+  c.on("data", (d) => (data += d));
+  c.on("error", () => {});
+  const closedByServer = new Promise((r) => c.on("close", r));
+  c.on("connect", () => c.write("GET / HTTP/1.1\r\n\r\n"));
+  await closedByServer; // idle timeout after the response
+  assert.equal(parseBody(data), '{"slow":true}');
+  await HttpServer.close(server);
+});
+
+test("close() over TCP waits for an in-flight async response (G6-7)", async () => {
+  const server = HttpServer.make((_req, socket) => {
+    setTimeout(() => HttpServer.respond(socket, 200, '{"late":true}'), 80);
+  });
+  await HttpServer.listen(server, 0);
+  const port = getPort(server);
+  const c = net.createConnection({ port, host: "127.0.0.1" });
+  let data = "";
+  c.setEncoding("utf8");
+  c.on("data", (d) => (data += d));
+  c.on("error", () => {});
+  const ended = new Promise((r) => c.on("end", r));
+  await new Promise((r) => c.on("connect", r));
+  c.write("GET / HTTP/1.1\r\n\r\n");
+  await new Promise((r) => setTimeout(r, 20));
+  await HttpServer.close(server);
+  await ended;
+  assert.equal(parseBody(data), '{"late":true}');
+  c.destroy();
 });
 
 // ── Utility ─────────────────────────────────────────────────────────

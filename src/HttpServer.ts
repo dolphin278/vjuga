@@ -52,6 +52,7 @@ const kServer: unique symbol = Symbol("server");
 const kHandler: unique symbol = Symbol("handler");
 const kConns: unique symbol = Symbol("conns");
 const kConfig: unique symbol = Symbol("config");
+const kConn: unique symbol = Symbol("conn");
 
 const kHdrBuf: unique symbol = Symbol("hdrBuf");
 const kHdrStart: unique symbol = Symbol("hdrStart");
@@ -84,6 +85,11 @@ export interface Request {
   [kHdrEnd]: number;
 }
 
+/**
+ * Request handler. Each request must be answered with exactly one call to
+ * respond(), respondRaw() or respondBuffer() (now or later): those calls
+ * mark the request complete, which keepAliveTimeout and close() rely on.
+ */
 export type Handler = (req: Request, socket: net.Socket) => void;
 
 /** Server limits and timeouts. All sizes in bytes, all times in ms. */
@@ -99,10 +105,9 @@ export interface Options {
    */
   headersTimeout?: number;
   /**
-   * Socket inactivity timeout (no bytes read or written) after which the
-   * connection is destroyed; 0 disables. Default 5000. NOTE: this also
-   * applies while a handler is preparing an asynchronous response — raise it
-   * if handlers can stay silent longer than this.
+   * Socket inactivity timeout (no bytes read or written) after which an
+   * idle connection is destroyed; 0 disables. Default 5000. Never fires
+   * while a dispatched request still awaits its response.
    */
   keepAliveTimeout?: number;
   /**
@@ -118,9 +123,12 @@ interface Config {
   maxHeaderSize: number;
   maxBodySize: number;
   headersTimeout: number;
+  keepAliveTimeout: number;
   onError: (err: unknown, socket: net.Socket) => void;
   closing: boolean;
 }
+
+type ConnSocket = net.Socket & { [kConn]?: ConnState };
 
 interface ConnState {
   buf: Buffer;
@@ -135,6 +143,11 @@ interface ConnState {
   paused: boolean;
   /** Connection rejected/destroyed — ignore further input. */
   dead: boolean;
+  /** Requests dispatched but not yet answered via a respond helper. */
+  inflight: number;
+  /** An idle timeout fired while requests were in flight; re-arm later. */
+  timeoutDeferred: boolean;
+  cfg: Config;
   req: Request;
 }
 
@@ -224,7 +237,13 @@ jsonPrefix(500);
 /* node:coverage ignore next */
 function noop(): void {}
 
-function destroyOnTimeout(this: net.Socket): void {
+function onTimeout(this: ConnSocket): void {
+  const conn = this[kConn]!;
+  if (conn.inflight > 0) {
+    // A handler is still working: not idle. Re-armed once it responds.
+    conn.timeoutDeferred = true;
+    return;
+  }
   this.destroy();
 }
 
@@ -252,7 +271,7 @@ function makeRequest(): Request {
   return req;
 }
 
-function makeConnState(): ConnState {
+function makeConnState(cfg: Config): ConnState {
   const conn: ConnState = {
     buf: Buffer.allocUnsafe(INITIAL_BUF_SIZE),
     used: 0,
@@ -261,6 +280,9 @@ function makeConnState(): ConnState {
     hdrSince: 0,
     paused: false,
     dead: false,
+    inflight: 0,
+    timeoutDeferred: false,
+    cfg,
     req: makeRequest(),
   };
   // Double-write mutable fields (see makeRequest)
@@ -270,6 +292,8 @@ function makeConnState(): ConnState {
   conn.hdrSince = 0;
   conn.paused = false;
   conn.dead = false;
+  conn.inflight = 0;
+  conn.timeoutDeferred = false;
   return conn;
 }
 
@@ -284,24 +308,25 @@ export function make(handler: Handler, options?: Options): HttpServer {
     maxHeaderSize: options?.maxHeaderSize ?? DEFAULT_MAX_HEADER_SIZE,
     maxBodySize: options?.maxBodySize ?? DEFAULT_MAX_BODY_SIZE,
     headersTimeout: options?.headersTimeout ?? DEFAULT_HEADERS_TIMEOUT,
+    keepAliveTimeout: options?.keepAliveTimeout ?? DEFAULT_KEEP_ALIVE_TIMEOUT,
     onError: options?.onError ?? noop,
     closing: false,
   };
-  const keepAliveTimeout = options?.keepAliveTimeout ?? DEFAULT_KEEP_ALIVE_TIMEOUT;
   const conns = new Map<net.Socket, ConnState>();
 
-  const tcpServer = net.createServer((socket) => {
+  const tcpServer = net.createServer((socket: ConnSocket) => {
     // Disable Nagle's algorithm — small HTTP responses (e.g. {"ok":true})
     // must not be delayed waiting for more data to fill a TCP segment
     socket.setNoDelay(true);
-    // Set once per connection: re-arming per request would allocate a timer
-    if (keepAliveTimeout > 0) {
-      socket.setTimeout(keepAliveTimeout);
-      socket.on("timeout", destroyOnTimeout);
-    }
-
-    const conn = makeConnState();
+    const conn = makeConnState(cfg);
+    socket[kConn] = conn; // lets the respond helpers find the connection
     conns.set(socket, conn);
+
+    // Set once per connection: re-arming per request would allocate a timer
+    if (cfg.keepAliveTimeout > 0) {
+      socket.setTimeout(cfg.keepAliveTimeout);
+      socket.on("timeout", onTimeout);
+    }
 
     // Closure is intentional. We benchmarked both a module-level onData with
     // WeakMap lookup and onData.bind(socket, conn, handler). Both were slower:
@@ -393,12 +418,10 @@ export function listen(server: HttpServer, port: number, host?: string): Promise
 }
 
 /**
- * Close the server. Stops accepting connections, destroys idle ones (no
- * partially received request, nothing left to write) immediately and the
- * rest as soon as they become idle (or hit a timeout). Resolves when all
- * connections are terminated. A connection whose handler is still preparing
- * an asynchronous response looks idle and is destroyed — finish in-flight
- * work before calling close().
+ * Close the server. Stops accepting connections and destroys idle ones
+ * immediately. A connection with a partially received request or a response
+ * still in flight is ended right after its last response is written.
+ * Resolves when all connections are terminated.
  */
 export function close(server: HttpServer): Promise<void> {
   server[kConfig].closing = true;
@@ -410,7 +433,7 @@ export function close(server: HttpServer): Promise<void> {
     });
   });
   for (const [socket, conn] of server[kConns]) {
-    if (conn.used !== 0) continue; // mid-request: closed once it completes
+    if (conn.used !== 0 || conn.inflight !== 0) continue; // closed once idle
     conn.dead = true;
     if (socket.writableLength === 0) socket.destroy();
     else socket.end(); // flush pending responses first
@@ -442,6 +465,7 @@ export function respond(
       `HTTP/1.1 ${status} ${text}\r\nContent-Type: ${contentType}\r\nConnection: keep-alive\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`,
     );
   }
+  responded(socket);
 }
 
 /**
@@ -450,6 +474,7 @@ export function respond(
  */
 export function respondRaw(socket: net.Socket, response: Buffer): void {
   socket.write(response);
+  responded(socket);
 }
 
 /**
@@ -469,6 +494,27 @@ export function respondBuffer(
   );
   socket.write(body);
   socket.uncork();
+  responded(socket);
+}
+
+/** A response was written: retire one in-flight request. */
+function responded(socket: ConnSocket): void {
+  const conn = socket[kConn];
+  // Foreign socket, or more responses than requests: nothing to retire
+  if (conn === undefined || conn.inflight === 0) return;
+  if (--conn.inflight === 0 && (conn.timeoutDeferred || conn.cfg.closing)) becameIdle(conn, socket);
+}
+
+/** Last in-flight response written while a timeout or close() was waiting. */
+function becameIdle(conn: ConnState, socket: net.Socket): void {
+  if (conn.timeoutDeferred) {
+    conn.timeoutDeferred = false;
+    socket.setTimeout(conn.cfg.keepAliveTimeout);
+  }
+  if (conn.cfg.closing && conn.used === 0 && !conn.paused && !conn.dead) {
+    conn.dead = true;
+    socket.end(); // after the response just written
+  }
 }
 
 /**
@@ -558,6 +604,7 @@ function processBuffer(conn: ConnState, socket: net.Socket, handler: Handler, cf
     }
     scan = 0;
     offset = consumed;
+    conn.inflight++;
     handler(conn.req, socket);
     // Backpressure: stop dispatching while the peer is not reading
     if (socket.writableNeedDrain) {
@@ -583,7 +630,7 @@ function processBuffer(conn: ConnState, socket: net.Socket, handler: Handler, cf
   if (remaining === 0) {
     conn.hdrSince = 0;
     if (conn.buf.length > MAX_IDLE_BUF_SIZE) conn.buf = Buffer.allocUnsafe(INITIAL_BUF_SIZE);
-    if (cfg.closing && !conn.paused) {
+    if (cfg.closing && !conn.paused && conn.inflight === 0) {
       conn.dead = true;
       socket.end();
     }

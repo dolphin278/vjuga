@@ -497,3 +497,37 @@ test("insert multiple keys, remove, then re-insert", () => {
   assert.equal(RadixTree.lookup(tree, "testing"), 20);
   assert.equal(RadixTree.size(tree), 2);
 });
+
+test("insert(key, undefined) behaves like remove(key)", () => {
+  const tree = RadixTree.make<number | undefined>();
+  RadixTree.insert(tree, "a", undefined);
+  assert.equal(RadixTree.size(tree), 0);
+  assert.equal(RadixTree.has(tree, "a"), false);
+  RadixTree.insert(tree, "k", 1);
+  RadixTree.insert(tree, "k", undefined);
+  assert.equal(RadixTree.size(tree), 0);
+  assert.equal(RadixTree.lookup(tree, "k"), undefined);
+  RadixTree.insert(tree, "k", 2);
+  assert.equal(RadixTree.size(tree), 1);
+  // Removing an existing sibling leaves the other intact and merges nodes.
+  RadixTree.insert(tree, "ab", 3);
+  RadixTree.insert(tree, "ac", 4);
+  RadixTree.insert(tree, "ab", undefined);
+  assert.equal(RadixTree.size(tree), 2);
+  assert.deepEqual(RadixTree.entries(tree), [
+    ["ac", 4],
+    ["k", 2],
+  ]);
+});
+
+test("entries and prefixMatch return lexicographic key order", () => {
+  const tree = RadixTree.make<string>();
+  for (const k of ["b", "a", "ab", "", "abc", "ba", "aa", "é", "B"]) {
+    RadixTree.insert(tree, k, k);
+  }
+  const keys = RadixTree.entries(tree).map((e) => e[0]);
+  assert.deepEqual(keys, ["", "B", "a", "aa", "ab", "abc", "b", "ba", "é"]);
+  assert.deepEqual(RadixTree.prefixMatch(tree, ""), keys);
+  assert.deepEqual(RadixTree.prefixMatch(tree, "a"), ["a", "aa", "ab", "abc"]);
+  assert.deepEqual(RadixTree.prefixMatch(tree, "ab"), ["ab", "abc"]);
+});

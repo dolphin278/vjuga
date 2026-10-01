@@ -278,3 +278,76 @@ test("BitSet property: complement laws", () => {
     { numRuns: 1_000_000 },
   );
 });
+
+// ---------------------------------------------------------------------------
+// Random capacities (including non-multiples of 32): tail-word masking in
+// not/popcount/toArray and the binary algebra must match a boolean[] oracle.
+// ---------------------------------------------------------------------------
+
+test("BitSet property: algebra and tail masking match a boolean[] oracle at random capacities", () => {
+  const arb = Arb.chain(Arb.integer(1, 200), (cap) =>
+    Arb.tuple(
+      Arb.constant(cap),
+      Arb.array(Arb.integer(0, cap - 1), { minLength: 0, maxLength: 60 }),
+      Arb.array(Arb.integer(0, cap - 1), { minLength: 0, maxLength: 60 }),
+    ),
+  );
+  Prop.assert(
+    arb,
+    ([cap, aIdx, bIdx]) => {
+      const a = BitSet.make(cap);
+      const b = BitSet.make(cap);
+      const ma: boolean[] = Array(cap).fill(false);
+      const mb: boolean[] = Array(cap).fill(false);
+      for (const i of aIdx) {
+        BitSet.set(a, i);
+        ma[i] = true;
+      }
+      for (const i of bIdx) {
+        BitSet.set(b, i);
+        mb[i] = true;
+      }
+      const oracle = (f: (x: boolean, y: boolean) => boolean): number[] => {
+        const out: number[] = [];
+        for (let i = 0; i < cap; i++) if (f(ma[i], mb[i])) out.push(i);
+        return out;
+      };
+      const same = (bs: BitSet.BitSet, expected: number[]): boolean => {
+        const arr = BitSet.toArray(bs);
+        return (
+          BitSet.popcount(bs) === expected.length &&
+          arr.length === expected.length &&
+          arr.every((v, i) => v === expected[i])
+        );
+      };
+      return (
+        same(
+          a,
+          oracle((x) => x),
+        ) &&
+        same(
+          BitSet.and(a, b),
+          oracle((x, y) => x && y),
+        ) &&
+        same(
+          BitSet.or(a, b),
+          oracle((x, y) => x || y),
+        ) &&
+        same(
+          BitSet.xor(a, b),
+          oracle((x, y) => x !== y),
+        ) &&
+        same(
+          BitSet.not(a),
+          oracle((x) => !x),
+        ) &&
+        same(
+          BitSet.not(BitSet.not(a)),
+          oracle((x) => x),
+        ) &&
+        BitSet.capacity(BitSet.not(a)) === cap
+      );
+    },
+    { numRuns: 1_000_000 },
+  );
+});

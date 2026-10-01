@@ -16,7 +16,8 @@
  * `(tail - head + list.length) & capacityMask`.
  *
  * Growth doubles the buffer; shrink reclaims memory when utilization drops
- * below 25% of a buffer larger than 10 000 slots.
+ * below 25% of a buffer larger than 10 000 slots (contiguous or wrapped, and
+ * also when empty), compacting the live range to the start and halving.
  *
  * The double-write of `kCapacityMask` in `make()` forces V8 to mark the field
  * mutable from the first allocation — without it, the first `growList` resize
@@ -99,17 +100,26 @@ export function pop<T>(queue: Queue<T>): T | undefined {
 
 function tryToShrinkList<T>(queue: Queue<T>): void {
   const list = queue[kList];
-  if (
-    list.length > 10000 &&
-    queue[kTail] > queue[kHead] &&
-    queue[kTail] - queue[kHead] < list.length >> 2
-  ) {
-    Array.prototype.copyWithin.call(list, 0, queue[kHead], queue[kTail]);
-    queue[kTail] = queue[kTail] - queue[kHead];
+  const len = list.length;
+  const head = queue[kHead];
+  const tail = queue[kTail];
+  const count = (tail - head + len) & queue[kCapacityMask];
+  if (len > 10000 && count < len >> 2) {
+    if (tail >= head) {
+      Array.prototype.copyWithin.call(list, 0, head, tail);
+    } else {
+      // Wrapped: [head, len) is the front part, [0, tail) the back part.
+      // Save the (small) back part, slide the front part to 0, append it.
+      const back = Array.prototype.slice.call(list, 0, tail);
+      const frontLen = len - head;
+      Array.prototype.copyWithin.call(list, 0, head, len);
+      for (let i = 0; i < tail; i++) list[frontLen + i] = back[i];
+    }
+    queue[kTail] = count;
     queue[kHead] = 0;
     queue[kCapacityMask] = (queue[kCapacityMask] >> 1) | 1;
     list.length >>>= 1;
-    Array.prototype.fill.call(list, void 0, queue[kTail], list.length);
+    Array.prototype.fill.call(list, void 0, count, list.length);
   }
 }
 

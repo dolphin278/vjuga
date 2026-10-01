@@ -127,3 +127,53 @@ test("shrink behavior: push 20k items, pop most, verify correctness", () => {
   }
   assert.deepEqual(remaining, [N - 9, N - 8, N - 7, N - 6, N - 5, N - 4, N - 3, N - 2, N - 1, N]);
 });
+
+test("throwing comparator leaves the heap untouched (push, pop, heapify)", () => {
+  let calls = 0;
+  let failAt = -1;
+  const cmp: PQ.Comparator<number> = (a, b) => {
+    if (++calls === failAt) throw new Error("boom");
+    return a - b;
+  };
+  const drain = (pq: PQ.PriorityQueue<number>): number[] => {
+    const out: number[] = [];
+    while (PQ.size(pq) > 0) out.push(PQ.pop(pq) as number);
+    return out;
+  };
+  const input = [5, 3, 8, 1, 9, 2, 7, 4, 6, 0, 11, 15, 13, 12, 14, 10];
+  const sorted = [...input].sort(cmp);
+  // Fail at every comparison index; ops with fewer comparisons simply succeed.
+  const attempt = (k: number, op: () => void): boolean => {
+    failAt = calls + k;
+    try {
+      op();
+      return false;
+    } catch (e) {
+      assert.match((e as Error).message, /boom/);
+      return true;
+    } finally {
+      failAt = -1;
+    }
+  };
+  let threw = 0;
+  for (let k = 1; k <= 40; k++) {
+    let pq = PQ.make(cmp, input);
+    if (attempt(k, () => PQ.pop(pq))) {
+      threw++;
+      assert.equal(PQ.size(pq), input.length);
+      assert.deepEqual(drain(pq), sorted);
+    }
+    pq = PQ.make(cmp, input);
+    if (attempt(k, () => PQ.push(pq, -1))) {
+      threw++;
+      assert.equal(PQ.size(pq), input.length);
+      assert.deepEqual(drain(pq), sorted);
+    }
+    pq = PQ.make(cmp, [100]);
+    if (attempt(k, () => PQ.heapify(pq, input))) {
+      threw++;
+      assert.deepEqual(drain(pq), [100]);
+    }
+  }
+  assert.ok(threw > 20);
+});

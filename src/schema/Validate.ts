@@ -18,8 +18,10 @@
  *
  * Semantics: objects are checked against OWN properties only, and reject
  * undeclared own enumerable keys unless built with `additionalProperties:
- * true`. Unions accept a value iff some variant fully validates it; tagged
- * unions dispatch via `switch`. Recursive (cyclic) schemas are unsupported.
+ * true`. Unions accept a value iff some variant fully validates it; `oneOf`
+ * iff exactly one does; tagged unions dispatch via `switch`. `allOf` checks
+ * every variant, `not` / `conditional` use boolean sub-validators; `unknown`
+ * and `not` reject `undefined`. Recursive (cyclic) schemas are unsupported.
  *
  * @example Compile once, validate many
  * ```ts
@@ -155,8 +157,8 @@ export function validate<S extends Schema>(
 /**
  * Emit a validation check for any schema kind into the code buffer.
  *
- * Handles all 14 schema kinds with recursive descent into objects, arrays,
- * tuples, records, and unions. Used by both `validate()` and `JSON.parse()`.
+ * Handles all 18 schema kinds with recursive descent into objects, arrays,
+ * tuples, records, unions and the combinator kinds. Used by both `validate()` and `JSON.parse()`.
  * The buffer must have `emitStandardRefs` registered.
  *
  * `accessor` should be a variable name (it is referenced several times).

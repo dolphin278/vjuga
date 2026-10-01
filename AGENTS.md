@@ -89,8 +89,8 @@ Add that paragraph to your app's `AGENTS.md`. In a monorepo, resolve `node_modul
 
 | Goal | Module | Notes |
 |---|---|---|
-| Define a schema once, use many ways | `schema/Schema` | 14 kinds (`S.null_()`, `S.enum_()`). `S.Infer<typeof schema>` for TypeScript type; `toJsonSchema`, `fromJsonSchema`. `S.object()` rejects undeclared own keys unless `{ additionalProperties: true }`; `S.number()` rejects NaN/±Infinity. Source of truth for Validate, JSON, TOON. |
-| Validate unknown input at runtime | `schema/Validate` | `validate(schema)` compiles once at init; returns `Result<T, SchemaError>`. Unions accept a value only if some variant fully validates it. |
+| Define a schema once, use many ways | `schema/Schema` | 18 kinds (`S.null_()`, `S.enum_()`, `S.unknown()`, `S.allOf()`, `S.not()`, `S.conditional()`; `S.oneOf()` = exclusive union). `S.Infer<typeof schema>` for TypeScript type; `toJsonSchema`, `fromJsonSchema(js, { refs })` (JSON Schema 2020-12 incl. `$ref`/`oneOf`/`allOf`/`not`/`if`; `Err` for anything it cannot express, recursive `$ref` included). `S.object()` rejects undeclared own keys unless `{ additionalProperties: true }`; `S.number()` rejects NaN/±Infinity. Source of truth for Validate, JSON, TOON. |
+| Validate unknown input at runtime | `schema/Validate` | `validate(schema)` compiles once at init; returns `Result<T, SchemaError>`. Unions accept a value only if some variant fully validates it; `oneOf` only if exactly one does. |
 | Fast JSON serialization / deserialization | `schema/JSON` | Typed one-pass parse+validate (`parse(schema)`); `stringify(schema)` emits exactly the schema's keys, non-finite → `null`, and is not faster than native `JSON.stringify` once output is consumed. Compile at module scope. |
 | Token-efficient serialization (LLM / config) | `schema/TOON` | ~50% smaller than JSON for tabular arrays (~20% flat objects, little for nested). Nested list items and discriminated unions supported; unsupported shapes throw at compile time. |
 | Custom validator with structured errors | `schema/ValidationError` | `ValidationError`, `Validator<T>` type. |

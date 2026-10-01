@@ -4,9 +4,11 @@
  *
  * A Schema is a plain `{ kind, meta }` object describing a type. Unlike
  * closure-based validators, schemas are introspectable data compiled to many
- * targets: validators, JSON / TOON serializers and parsers. 14 kinds: string,
+ * targets: validators, JSON / TOON serializers and parsers. 18 kinds: string,
  * number, integer, boolean, null, literal, enum, object, array, tuple, record,
- * union, optional, nullable. Recursive (cyclic) schemas are not supported.
+ * union (`oneOf()` = exclusive union), optional, nullable, unknown, allOf,
+ * not, conditional. Recursive (cyclic) schemas — and recursive `$ref` in
+ * `fromJsonSchema` — are not supported.
  *
  * When to use: runtime type information that feeds more than one consumer
  * (validation + serialization + type inference). For one-shot validation of
@@ -33,7 +35,7 @@
  * });
  * type User = S.Infer<typeof User>; // infer from a constant, never from `Schema`
  * const json = S.toJsonSchema(User); // { type: "object", ... }
- * const back = S.fromJsonSchema(json); // Result<Schema, string>
+ * const back = S.fromJsonSchema(json); // Result<Schema, string>; $ref, oneOf, allOf, ...
  * ```
  */
 

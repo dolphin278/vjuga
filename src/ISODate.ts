@@ -15,8 +15,9 @@
  * Design tradeoffs: validation is a single allocation-free char-code scan (no
  * regex, no `Date.parse`, which rolls `02-30` over). `addDays` is pure integer
  * calendar arithmetic (Hinnant's days-from-civil / civil-from-days), so it
- * never drifts across DST or leap years. `isISODate` and `daysInMonth` are the
- * shared grammar used by `ISOTimestamp` and by JSON Schema `format: "date"`.
+ * never drifts across DST or leap years. `daysInMonth` is the one calendar
+ * check (`ISOTimestamp` reuses it); `isISODate` matches JSON Schema
+ * `format: "date"` (JSON-Schema-Test-Suite `date.json`).
  *
  * Prior art: RFC 3339 section 5.6; Howard Hinnant's date algorithms.
  *
@@ -68,7 +69,7 @@ function num2(s: string, i: number): number {
  * Allocation-free predicate for RFC 3339 `full-date` (`YYYY-MM-DD`, ASCII
  * digits only, month 01–12, day within the month incl. leap years). Exact
  * match: no surrounding whitespace, sign or extra digits. This is the
- * grammar behind `isoDate` and JSON Schema `format: "date"`.
+ * grammar behind `isoDate`, and it matches JSON Schema `format: "date"`.
  *
  * @example
  * ```ts

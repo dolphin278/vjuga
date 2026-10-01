@@ -103,7 +103,7 @@ Add that paragraph to your app's `AGENTS.md`. In a monorepo, resolve `node_modul
 |---|---|---|
 | Escape user content for HTML | `HTML` | `escape(str)` — encodes `& < > " '`. Not enough for JSON in `<script>`: `JSON.stringify` alone is unsafe there. |
 | Minimal HTTP/1.1 JSON API server | `HttpServer` | Only when `node:http` overhead is a profiled bottleneck. `make(handler, options?)`, `listen`, `close`, `respond`, `respondRaw`, `respondBuffer`, `precompute`, `getHeader`, `GET`/`POST`/`PUT`/`DELETE`/`PATCH` (other methods → 0). Options: `maxHeaderSize` (431), `maxBodySize` (413), `headersTimeout`, `keepAliveTimeout`, `onError`. Strict framing: 400 + close on bad Content-Length/bare LF/folded headers, 501 on Transfer-Encoding. Handlers must answer via a `respond*` call. No HTTP/2. |
-| Typed JSON parse; prototype-pollution guard in `safeParse` only | `JSON` | `safeParse(str, opts?)` → `Result<JSONValue, string>`; strips `__proto__`/`constructor` (also `\u`-escaped), or `Err` with `{ onDangerousKey: "reject" }`; syntax `Err` is `"invalid JSON: <engine message>"`. `parse` / `parseExn` do NOT filter keys. Use `safeParse` for all untrusted input. |
+| Typed JSON parse; prototype-pollution guard in `safeParse` only | `JSON` | `safeParse(str, opts?)` → `Result<JSONValue, string>`; strips `__proto__`/`constructor` (also `\u`-escaped), or `Err` with `{ onDangerousKey: "reject" }`; syntax `Err` is `"invalid JSON: <engine message>"`. Unknown policies fail closed (reject); types `SafeParseOptions`, `DangerousKeyPolicy`. `findDangerousKey(value)` checks an already-parsed value. `parse` / `parseExn` do NOT filter keys. Use `safeParse` for all untrusted input. |
 
 ### Testing
 

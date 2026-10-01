@@ -337,12 +337,28 @@ test("parse strips __proto__ keys", () => {
   assert.equal(Object.hasOwn(r, "__proto__"), false);
 });
 
-test("parse strips constructor keys", () => {
+test("parse keeps constructor keys — they are ordinary data (G9-9)", () => {
   const fn = SJ.parse(S.record(S.string()));
   const r = assertOk(fn('{"a":"1","constructor":"evil"}'));
-  assert.equal((r as Record<string, unknown>).a, "1");
-  // "constructor" own property should have been deleted
-  assert.equal(Object.hasOwn(r, "constructor"), false);
+  assert.equal(Object.hasOwn(r, "constructor"), true);
+  assert.equal(r.constructor, "evil");
+  const obj = SJ.parse(S.object({ constructor: S.string(), a: S.integer() }));
+  assert.deepEqual(assertOk(obj('{"constructor":"x","a":1}')), { constructor: "x", a: 1 });
+});
+
+test("parse strips escaped __proto__ spellings (G9-9)", () => {
+  const fn = SJ.parse(S.record(S.integer()));
+  for (const key of ["\\u005f_proto__", "__pro\\u0074o__", "\\u005F\\u005Fproto__"]) {
+    const r = assertOk(fn(`{"${key}":1,"a":2}`));
+    assert.equal(Object.hasOwn(r, "__proto__"), false, key);
+    assert.deepEqual(Object.keys(r), ["a"]);
+  }
+  const nested = SJ.parse(S.object({ xs: S.array(S.record(S.integer())) }));
+  const r = assertOk(nested('{"xs":[{"\\u005f_proto__":1,"b":2}]}'));
+  assert.equal(Object.hasOwn(r.xs[0], "__proto__"), false);
+  assert.deepEqual(r.xs[0], { b: 2 });
+  // Other escapes still parse normally
+  assert.deepEqual(assertOk(fn('{"\\u0061":1}')), { a: 1 });
 });
 
 // ---------------------------------------------------------------------------
@@ -439,8 +455,7 @@ test("parse nested nullable", () => {
 // Coverage: union with non-quick-checkable variants (getTypeCheck → null)
 // ---------------------------------------------------------------------------
 
-test("stringify union with literal variants (getTypeCheck returns null)", () => {
-  // literal kind has no getTypeCheck — falls through to JSON.stringify fallback
+test("stringify union with literal variants (validator dispatch)", () => {
   const fn = SJ.stringify(S.union(S.literal("a"), S.literal("b")));
   assert.equal(fn("a" as "a" | "b"), '"a"');
   assert.equal(fn("b" as "a" | "b"), '"b"');
@@ -464,4 +479,114 @@ test("stringify throws on unknown schema kind", () => {
 test("parse throws on unknown schema kind", () => {
   const bad = { kind: "INVALID", meta: undefined } as unknown as S.Schema;
   assert.throws(() => SJ.parse(bad), /unreachable/i);
+});
+
+// ---------------------------------------------------------------------------
+// G9-4: non-finite numbers
+// ---------------------------------------------------------------------------
+
+test("stringify emits null for non-finite numbers, like native JSON (G9-4)", () => {
+  const fn = SJ.stringify(S.object({ x: S.number(), i: S.integer(), e: S.enum_(1, "a") }));
+  for (const x of [Infinity, -Infinity, NaN]) {
+    const out = fn({ x, i: x, e: x as 1 });
+    assert.equal(out, JSON.stringify({ x, i: x, e: x }));
+    assert.equal(out, '{"x":null,"i":null,"e":null}');
+  }
+  assert.equal(fn({ x: -0, i: 1e21, e: 1 }), JSON.stringify({ x: -0, i: 1e21, e: 1 }));
+});
+
+// ---------------------------------------------------------------------------
+// G9-5: union dispatch beyond typeof
+// ---------------------------------------------------------------------------
+
+test("stringify non-discriminated object union picks the matching variant (G9-5)", () => {
+  const schema = S.union(S.object({ a: S.string() }), S.object({ b: S.integer() }));
+  const str = SJ.stringify(schema);
+  const par = SJ.parse(schema);
+  assert.equal(str({ a: "x" }), '{"a":"x"}');
+  assert.equal(str({ b: 5 }), '{"b":5}');
+  assert.deepEqual(assertOk(par(str({ b: 5 }))), { b: 5 });
+});
+
+test("stringify tuple | array union does not truncate (G9-5)", () => {
+  const schema = S.union(S.tuple(S.string()), S.array(S.integer()));
+  const str = SJ.stringify(schema);
+  assert.equal(str(["a"]), '["a"]');
+  assert.equal(str([1, 2, 3]), "[1,2,3]");
+});
+
+test("stringify union: wrapped and literal variants overlap correctly (G9-5)", () => {
+  const schema = S.union(
+    S.nullable(S.object({ a: S.integer() })),
+    S.object({ b: S.string() }),
+    S.literal("lit"),
+    S.string(),
+    S.optional(S.boolean()),
+  );
+  const str = SJ.stringify(schema);
+  assert.equal(str(null), "null");
+  assert.equal(str({ a: 1 }), '{"a":1}');
+  assert.equal(str({ b: "x" }), '{"b":"x"}');
+  assert.equal(str("lit"), '"lit"');
+  assert.equal(str("other"), '"other"');
+  assert.equal(str(true), "true");
+  assert.equal(str(undefined), "null");
+});
+
+test("stringify union with nested union variant and disjoint array check", () => {
+  const schema = S.union(S.union(S.integer(), S.boolean()), S.array(S.string()));
+  const str = SJ.stringify(schema);
+  assert.equal(str(3), "3");
+  assert.equal(str(false), "false");
+  assert.equal(str(["q"]), '["q"]');
+});
+
+test("stringify union throws on a value matching no variant", () => {
+  const plain = SJ.stringify(S.union(S.string(), S.integer()));
+  assert.throws(() => plain(true as unknown as string), /does not match any union variant/);
+  const disc = SJ.stringify(
+    S.union(
+      S.object({ t: S.literal("a"), x: S.integer() }),
+      S.object({ t: S.literal("b"), y: S.string() }),
+    ),
+  );
+  assert.equal(disc({ t: "b", y: "q" }), '{"t":"b","y":"q"}');
+  assert.throws(() => disc({ t: "zzz" } as never), /does not match any union variant/);
+});
+
+test("stringify union with a null literal variant and an invalid variant kind", () => {
+  const fn = SJ.stringify(S.union(S.literal(null), S.string()));
+  assert.equal(fn(null), "null");
+  assert.equal(fn("x"), '"x"');
+  const bad = { kind: "INVALID", meta: undefined } as unknown as S.Schema;
+  assert.throws(() => SJ.stringify(S.union(S.string(), bad)), /unreachable/i);
+});
+
+test("optional properties named like Object.prototype members are own-checked", () => {
+  const schema = S.object({
+    toString: S.optional(S.integer()),
+    constructor: S.optional(S.string()),
+    a: S.integer(),
+  });
+  // Property names that shadow Object.prototype members confuse TS inference.
+  const str = SJ.stringify(schema) as unknown as (v: object) => string;
+  assert.equal(str({ a: 1 }), '{"a":1}');
+  assert.equal(str({ toString: 2, a: 1 }), '{"toString":2,"a":1}');
+  assert.equal(str({ constructor: "c", a: 1 }), '{"constructor":"c","a":1}');
+});
+
+test("discriminated union literal values are not interpolated into source", () => {
+  const g = globalThis as { PWN?: number };
+  g.PWN = 0;
+  const evil = '"+(globalThis.PWN=1)+"';
+  const fn = SJ.stringify(
+    S.union(
+      S.object({ t: S.literal(evil), x: S.integer() }),
+      S.object({ t: S.literal(2), y: S.integer() }),
+    ),
+  );
+  assert.equal(fn({ t: evil, x: 1 }), JSON.stringify({ t: evil, x: 1 }));
+  assert.equal(fn({ t: 2, y: 1 }), '{"t":2,"y":1}');
+  assert.equal(g.PWN, 0);
+  delete g.PWN;
 });

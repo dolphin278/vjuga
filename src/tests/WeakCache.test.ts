@@ -187,50 +187,87 @@ test("cleanupStaleEntry does nothing when ref is still alive", () => {
   void alive;
 });
 
-// requires --expose-gc; cannot be exercised in standard test runner
-/* node:coverage disable */
-test("FinalizationRegistry callback cleans up stale entries after GC", async () => {
-  const gc = (globalThis as unknown as Record<string, (() => void) | undefined>).gc;
-  if (gc === undefined) return;
-
+test("size() does not drift when entries are removed or overwritten", () => {
   const cache = WeakCache.make<string, object>();
+  const a = { a: 1 };
+  WeakCache.set(cache, "a", a);
+  WeakCache.set(cache, "a", { a: 2 });
+  WeakCache.set(cache, "b", a);
+  assert.equal(WeakCache.size(cache), 2);
+  WeakCache.remove(cache, "a");
+  WeakCache.remove(cache, "a");
+  assert.equal(WeakCache.size(cache), 1);
+  // Stale entries observed by get()/has() are dropped from size().
   const entries = getInternalEntries(cache);
-
-  {
-    let obj: object | undefined = { ephemeral: true };
-    WeakCache.set(cache, "ephemeral", obj);
-    obj = undefined;
-  }
-
-  gc();
-  await new Promise<void>((resolve) => setTimeout(resolve, 100));
-  gc();
-  await new Promise<void>((resolve) => setTimeout(resolve, 100));
-
-  assert.equal(entries.has("ephemeral"), false);
+  entries.set("b", { deref: () => undefined } as unknown as WeakRef<object>);
+  assert.equal(WeakCache.get(cache, "b"), void 0);
+  assert.equal(WeakCache.size(cache), 0);
 });
 
-test("FinalizationRegistry callback ignores re-set keys", async () => {
-  const gc = (globalThis as unknown as Record<string, (() => void) | undefined>).gc;
-  if (gc === undefined) return;
+// --- Real GC paths.  The test scripts run node with --expose-gc; Bun has its
+// own gc.  Missing gc is a hard failure so these paths cannot silently stop
+// being exercised in CI.
 
+function forceGc(): void {
+  const g = (globalThis as unknown as { gc?: () => void }).gc;
+  const bun = (globalThis as unknown as { Bun?: { gc(sync: boolean): void } }).Bun;
+  if (g !== undefined) g();
+  else if (bun !== undefined) bun.gc(true);
+  else assert.fail("gc unavailable: run tests with node --expose-gc");
+}
+
+/** GC until `done()` holds (finalizers run in later macrotasks). */
+async function gcUntil(done: () => boolean): Promise<void> {
+  for (let i = 0; i < 50 && !done(); i++) {
+    forceGc();
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+// Separate functions so the temporaries are not live in the test's frame.
+function fill(cache: WeakCache.WeakCache<string, object>, n: number): void {
+  for (let i = 0; i < n; i++) WeakCache.set(cache, `k${i}`, { i });
+}
+
+test("GC: finalizer cleans up collected entries and size() reaches 0", async () => {
   const cache = WeakCache.make<string, object>();
   const entries = getInternalEntries(cache);
-
-  {
-    let oldValue: object | undefined = { old: true };
-    WeakCache.set(cache, "key", oldValue);
-    const newValue = { new: true };
-    WeakCache.set(cache, "key", newValue);
-    oldValue = undefined;
-    assert.equal(WeakCache.get(cache, "key"), newValue);
-  }
-
-  gc();
-  await new Promise<void>((resolve) => setTimeout(resolve, 100));
-  gc();
-  await new Promise<void>((resolve) => setTimeout(resolve, 100));
-
-  assert.equal(entries.has("key"), true);
+  fill(cache, 100);
+  assert.equal(WeakCache.size(cache), 100);
+  await gcUntil(() => entries.size === 0);
+  assert.equal(entries.size, 0);
+  assert.equal(WeakCache.size(cache), 0);
 });
-/* node:coverage enable */
+
+function setShared(cache: WeakCache.WeakCache<string, object>): void {
+  const shared = { shared: true };
+  WeakCache.set(cache, "a", shared);
+  WeakCache.set(cache, "b", shared);
+  WeakCache.remove(cache, "a");
+}
+
+test("GC: remove(a) does not cancel the finalizer of b sharing the same value", async () => {
+  const cache = WeakCache.make<string, object>();
+  const entries = getInternalEntries(cache);
+  setShared(cache);
+  assert.equal(WeakCache.size(cache), 1);
+  await gcUntil(() => entries.size === 0);
+  assert.equal(WeakCache.size(cache), 0);
+});
+
+function setThenOverwrite(cache: WeakCache.WeakCache<string, object>, keep: object): void {
+  WeakCache.set(cache, "key", { old: true });
+  WeakCache.set(cache, "key", keep);
+}
+
+test("GC: finalizer of an overwritten value does not delete the new entry", async () => {
+  const cache = WeakCache.make<string, object>();
+  const keep = { keep: true };
+  setThenOverwrite(cache, keep);
+  for (let i = 0; i < 5; i++) {
+    forceGc();
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(WeakCache.get(cache, "key"), keep);
+  assert.equal(WeakCache.size(cache), 1);
+});

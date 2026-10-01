@@ -2,6 +2,7 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as S from "../../schema/Schema.js";
 import * as ST from "../../schema/TOON.js";
+import type { SchemaError } from "../../schema/Validate.js";
 import { assertOk, assertErr } from "./_helpers.js";
 
 // ---------------------------------------------------------------------------
@@ -620,8 +621,10 @@ test("tabular field names are never interpolated into generated code (G9-8)", ()
   const out = str({ xs: [{ [evil]: 1 }] });
   assert.equal(g.PWN, 0);
   const e = assertErr(par(out.replace("\n  1", "\n  notanumber")));
-  assert.equal(e.path, "xs." + evil);
+  assert.equal(e.path, "xs.0." + evil);
   assert.equal(g.PWN, 0);
+  // The quoted header round-trips
+  assert.deepEqual(assertOk(par(out)), { xs: [{ [evil]: 1 }] });
   delete g.PWN;
 });
 
@@ -723,12 +726,10 @@ test("stringify union (string | number)", () => {
   assert.ok(fn({ val: 42 }).includes("val: 42"));
 });
 
-test("parse union (first variant)", () => {
+test("non-discriminated object union is rejected at compile time (G9-3)", () => {
   const schema = S.union(S.object({ x: S.integer() }), S.object({ y: S.string() }));
-  const str = ST.stringify(schema);
-  const par = ST.parse(schema);
-  // First variant round-trips
-  assert.deepEqual(assertOk(par(str({ x: 42 }))), { x: 42 });
+  assert.throws(() => ST.stringify(schema), /TOON: unsupported.*discriminated/);
+  assert.throws(() => ST.parse(schema), /TOON: unsupported.*discriminated/);
 });
 
 // ---------------------------------------------------------------------------
@@ -860,35 +861,49 @@ test("stringify/parse union with null variant", () => {
   assert.ok(str({ val: 42 }).includes("val: 42"));
 });
 
-test("stringify/parse union with object variant", () => {
-  const schema = S.object({
-    val: S.union(S.object({ type: S.literal("a"), x: S.integer() }), S.string()),
-  });
-  const str = ST.stringify(schema);
-  const r1 = str({ val: { type: "a" as const, x: 1 } });
-  assert.ok(r1.includes("type: a"));
-  const r2 = str({ val: "simple" });
-  assert.ok(r2.includes("val: simple"));
+test("unions mixing compound and primitive variants are rejected (G9-3)", () => {
+  for (const val of [
+    S.union(S.object({ type: S.literal("a"), x: S.integer() }), S.string()),
+    S.union(S.array(S.integer()), S.string()),
+  ]) {
+    assert.throws(() => ST.stringify(S.object({ val })), /TOON: unsupported/);
+    assert.throws(() => ST.parse(S.object({ val })), /TOON: unsupported/);
+  }
 });
 
-test("stringify/parse union with array variant", () => {
-  const schema = S.object({
-    val: S.union(S.array(S.integer()), S.string()),
-  });
+test("union(T, null) behaves like nullable(T)", () => {
+  const schema = S.object({ o: S.union(S.object({ a: S.integer() }), S.null_()) });
   const str = ST.stringify(schema);
-  const r = str({ val: [1, 2, 3] });
-  assert.ok(r.includes("val[3]:"));
+  const par = ST.parse(schema);
+  assert.equal(str({ o: null }), "o: null");
+  assert.deepEqual(assertOk(par(str({ o: null }))), { o: null });
+  assert.deepEqual(assertOk(par(str({ o: { a: 1 } }))), { o: { a: 1 } });
 });
 
 // ---------------------------------------------------------------------------
 // Coverage: nullable/optional in parse body (compile-time paths)
 // ---------------------------------------------------------------------------
 
-test("parse optional wrapper at compile time", () => {
-  const schema = S.optional(S.object({ x: S.integer() }));
-  const str = ST.stringify(schema);
-  const par = ST.parse(schema);
-  assert.deepEqual(assertOk(par(str({ x: 1 }))), { x: 1 });
+test("optional compound outside an object field is rejected at compile time", () => {
+  for (const schema of [
+    S.optional(S.object({ x: S.integer() })),
+    S.array(S.optional(S.array(S.integer()))),
+    S.record(S.optional(S.object({}))),
+    S.tuple(S.optional(S.object({}))),
+  ]) {
+    assert.throws(
+      () => ST.stringify(schema),
+      /TOON: unsupported.*only supported as an object field/,
+    );
+    assert.throws(() => ST.parse(schema), /TOON: unsupported/);
+  }
+});
+
+test("root optional primitive: empty document is undefined", () => {
+  const schema = S.optional(S.integer());
+  assert.equal(ST.stringify(schema)(undefined), "");
+  assert.equal(assertOk(ST.parse(schema)("")), undefined);
+  assert.equal(assertOk(ST.parse(schema)("5")), 5);
 });
 
 test("parse nullable wrapper at compile time", () => {
@@ -998,86 +1013,52 @@ test("parse throws on unknown schema kind", () => {
   assert.throws(() => ST.parse(bad), /unreachable/i);
 });
 
-test("parse object with unknown-kind field (emitPrimValueParse default)", () => {
-  // Force the default branch in emitPrimValueParse by using a schema kind
-  // that isn't handled by the specific cases — the fallback unquotes the value
+test("factories reject a field with an unknown schema kind", () => {
   const custom = { kind: "CUSTOM", meta: undefined } as unknown as S.Schema;
-  const schema = {
-    kind: "object",
-    meta: {
-      properties: { x: custom },
-      additionalProperties: false,
-    },
-  } as unknown as S.StringSchema;
-  const par = ST.parse(schema);
-  assert.equal(par("x: hello")[0], true);
+  const schema = S.object({ x: custom });
+  assert.throws(() => ST.parse(schema), /unreachable/i);
+  assert.throws(() => ST.stringify(schema), /unreachable/i);
 });
 
 // ---------------------------------------------------------------------------
-// Coverage: TOON record proto pollution guard
+// Record proto pollution guard (G9-9 counterpart)
 // ---------------------------------------------------------------------------
 
-test("parse record strips __proto__ and constructor keys", () => {
+test("parse record drops __proto__ but keeps constructor", () => {
   const schema = S.record(S.string());
   const par = ST.parse(schema);
   const toon = "__proto__: evil\nconstructor: bad\nname: Alice";
   const r = assertOk(par(toon));
-  assert.equal((r as Record<string, unknown>).name, "Alice");
+  assert.equal(r.name, "Alice");
   assert.equal(Object.hasOwn(r, "__proto__"), false);
-  assert.equal(Object.hasOwn(r, "constructor"), false);
+  assert.equal(r.constructor, "bad");
+  // Compound record values named __proto__ are parsed (validated) then dropped
+  const nested = ST.parse(S.record(S.object({ a: S.integer() })));
+  const n = assertOk(nested("__proto__:\n  a: 1\nk:\n  a: 2"));
+  assert.deepEqual(Object.keys(n), ["k"]);
+  assert.equal(Object.getPrototypeOf(n), Object.prototype);
 });
 
 // ---------------------------------------------------------------------------
-// Coverage: expanded array format round-trip
+// List items (G9-2)
 // ---------------------------------------------------------------------------
 
-test("stringify/parse expanded array (non-tabular items)", () => {
-  // array(record(string)) is non-primitive and non-tabular → expanded "- " format.
-  // But expanded format currently only supports primitive inline expressions in
-  // the "- value" items. For compound items, tabular format is used.
-  // Test that the expanded parse path works for the union(string,number) case:
-  const schema = S.object({
-    items: S.array(S.union(S.string(), S.integer())),
-  });
+test("primitive unions inside arrays use the inline form", () => {
+  const schema = S.object({ items: S.array(S.union(S.string(), S.integer())) });
   const str = ST.stringify(schema);
   const par = ST.parse(schema);
-  const obj = { items: ["hello", 42, "world"] as (string | number)[] };
-  const toon = str(obj);
-  assert.ok(toon.includes("- hello") || toon.includes("items[3]:"));
-  // Round-trip: if inline format is used, parse should recover
-  const result = par(toon);
-  assert.equal(result[0], true);
+  const obj = { items: ["hello", 42, "7"] as (string | number)[] };
+  assert.equal(str(obj), 'items[3]: hello,42,"7"');
+  assert.deepEqual(assertOk(par(str(obj))), obj);
 });
 
-test("parse expanded array — malformed indentation (trim().slice(2) fallback)", () => {
-  const schema = S.object({
-    items: S.array(S.union(S.string(), S.integer())),
-  });
-  const par = ST.parse(schema);
-
-  // Lines without the expected "  - " prefix trigger the fallback:
-  //   lines[li].trim().slice(2)
-  // which strips whitespace then removes the leading "- ".
-
-  // No leading spaces — "- value" instead of "  - value"
-  const noIndent = "items[3]:\n- hello\n- 42\n- world";
-  assert.deepEqual(assertOk(par(noIndent)), { items: ["hello", "42", "world"] });
-
-  // Mixed indentation: some correct, some wrong
-  const mixed = "items[3]:\n  - hello\n- 42\n   - world";
-  assert.deepEqual(assertOk(par(mixed)), { items: ["hello", "42", "world"] });
-
-  // Very short line: bare "-" with no space or value → trim().slice(2) yields ""
-  const bare = "items[1]:\n-";
-  assert.deepEqual(assertOk(par(bare)), { items: [""] });
-
-  // "- " (dash + space, no value) — trim() gives "-", slice(2) gives ""
-  const dashSpace = "items[1]:\n- ";
-  assert.deepEqual(assertOk(par(dashSpace)), { items: [""] });
-
-  // Tab indentation triggers fallback (doesn't match space-based prefix)
-  const tabbed = "items[2]:\n\t- hello\n\t- 42";
-  assert.deepEqual(assertOk(par(tabbed)), { items: ["hello", "42"] });
+test("list items are strict about the hyphen and indentation", () => {
+  const par = ST.parse(S.object({ items: S.array(S.array(S.integer())) }));
+  assert.deepEqual(assertOk(par("items[1]:\n  - [2]: 1,2")), { items: [[1, 2]] });
+  assertErr(par("items[1]:\n- [2]: 1,2")); // wrong indentation
+  assertErr(par("items[1]:\n  -[2]: 1,2")); // no space after hyphen
+  assertErr(par("items[2]:\n  - [2]: 1,2")); // fewer items than declared
+  assertErr(par("items[1]:\n  -")); // bare hyphen is not an array
 });
 
 // ---------------------------------------------------------------------------
@@ -1117,4 +1098,491 @@ test("toonQuote/unquote control chars — round-trip", () => {
   assert.ok(toon.includes("\\u0007"));
   const result = assertOk(par(toon));
   assert.deepEqual(result, obj);
+});
+
+// ---------------------------------------------------------------------------
+// Helpers for the round-trip tests below
+// ---------------------------------------------------------------------------
+
+// Untyped views — `Infer` over the generic `Schema` is too deep for tsc.
+const anyStringify = ST.stringify as unknown as (
+  s: S.Schema,
+  o?: ST.ToonStringifyOptions,
+) => (v: unknown) => string;
+const anyParse = ST.parse as unknown as (
+  s: S.Schema,
+  o?: ST.ToonParseOptions,
+) => (s: string) => [true, unknown] | [false, SchemaError];
+
+/** stringify → (exact output) → parse in schema order and flexible order. */
+function rt(
+  schema: S.Schema,
+  value: unknown,
+  expected?: string,
+  opts?: ST.ToonStringifyOptions & ST.ToonParseOptions,
+): string {
+  const out = anyStringify(schema, opts)(value);
+  if (expected !== undefined) assert.equal(out, expected);
+  assert.deepEqual(assertOk(anyParse(schema, opts)(out)), value);
+  assert.deepEqual(assertOk(anyParse(schema, { ...opts, flexibleOrder: true })(out)), value);
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Nested list items (G9-2)
+// ---------------------------------------------------------------------------
+
+test("array of objects with compound fields uses list items", () => {
+  const schema = S.object({
+    xs: S.array(
+      S.object({ id: S.integer(), tags: S.array(S.string()), o: S.object({ a: S.integer() }) }),
+    ),
+  });
+  rt(
+    schema,
+    {
+      xs: [
+        { id: 1, tags: ["a", "b"], o: { a: 2 } },
+        { id: 2, tags: [], o: { a: 3 } },
+      ],
+    },
+    "xs[2]:\n  - id: 1\n    tags[2]: a,b\n    o:\n      a: 2\n  - id: 2\n    tags[0]: \n    o:\n      a: 3",
+  );
+});
+
+test("list-item object whose first field is compound or absent", () => {
+  const schema = S.array(
+    S.object({
+      first: S.optional(S.array(S.object({ a: S.integer() }))),
+      n: S.optional(S.integer()),
+    }),
+  );
+  rt(schema, [{ first: [{ a: 1 }], n: 5 }], "[1]:\n  - first[1]{a}:\n      1\n    n: 5");
+  rt(schema, [{ n: 5 }, {}], "[2]:\n  - n: 5\n  -");
+  // Bare "- " (trailing space) is also an empty object
+  assert.deepEqual(assertOk(ST.parse(schema)("[1]:\n  - ")), [{}]);
+});
+
+test("array of empty objects and of nullable objects", () => {
+  rt(S.object({ xs: S.array(S.object({})) }), { xs: [{}, {}] }, "xs[2]:\n  -\n  -");
+  rt(
+    S.array(S.nullable(S.object({ a: S.integer() }))),
+    [null, { a: 1 }],
+    "[2]:\n  - null\n  - a: 1",
+  );
+});
+
+test("arrays of arrays, nullable arrays and tuples in list items", () => {
+  rt(S.array(S.array(S.integer())), [[1, 2], [], [3]], "[3]:\n  - [2]: 1,2\n  - [0]: \n  - [1]: 3");
+  rt(S.array(S.nullable(S.array(S.integer()))), [null, [1]], "[2]:\n  - null\n  - [1]: 1");
+  rt(S.array(S.array(S.object({ a: S.object({}) }))), [[{ a: {} }]], "[1]:\n  - [1]:\n    - a:");
+  rt(S.array(S.tuple(S.string(), S.integer())), [["x", 1]], "[1]:\n  - [2]: x,1");
+});
+
+test("tuples with compound items use list form", () => {
+  const schema = S.object({
+    t: S.tuple(S.string(), S.object({ a: S.integer() }), S.nullable(S.array(S.boolean()))),
+  });
+  rt(schema, { t: ["s", { a: 1 }, [true]] }, "t[3]:\n  - s\n  - a: 1\n  - [1]: true");
+  rt(schema, { t: ["s", { a: 1 }, null] }, "t[3]:\n  - s\n  - a: 1\n  - null");
+  const par = ST.parse(schema);
+  assertErr(par("t[2]:\n  - s\n  - a: 1")); // wrong count
+  assertErr(par("t[3]: s,x,y")); // inline data where a list is expected
+  assertErr(par("t[3]:\n  - s\n  - a: 1")); // missing item
+  rt(S.tuple(), [], "[0]: ");
+});
+
+test("tuple of optional primitives and root tuple", () => {
+  rt(S.tuple(S.string(), S.optional(S.integer())), ["a", undefined], "[2]: a,");
+  rt(S.tuple(S.optional(S.string())), [undefined], "[1]: ");
+});
+
+test("records with compound and nullable values", () => {
+  rt(
+    S.record(S.object({ a: S.integer() })),
+    { k: { a: 1 }, "x y": { a: 2 } },
+    "k:\n  a: 1\nx y:\n  a: 2",
+  );
+  rt(S.record(S.array(S.integer())), { k: [1, 2], e: [] }, "k[2]: 1,2\ne[0]: ");
+  rt(
+    S.record(S.nullable(S.object({ a: S.integer() }))),
+    { k: null, j: { a: 1 } },
+    "k: null\nj:\n  a: 1",
+  );
+  rt(S.record(S.optional(S.integer())), { k: undefined, j: 1 }, "k: \nj: 1");
+  rt(S.object({ r: S.record(S.integer()), z: S.integer() }), { r: { "[k]": 1 }, z: 2 });
+  // list item record: first entry on the hyphen line, empty record is a bare "-"
+  rt(S.array(S.record(S.integer())), [{ a: 1, b: 2 }, {}], "[2]:\n  - a: 1\n    b: 2\n  -");
+});
+
+test("record parse errors", () => {
+  const par = ST.parse(S.record(S.integer()));
+  assertErr(par("k[1]: 1")); // array tail for a primitive value
+  assertErr(par("k: x"));
+  assertErr(par('"unclosed: 1')); // not a key line → leftover input
+  assertErr(par(": 1")); // empty unquoted key
+  const nested = ST.parse(S.record(S.object({ a: S.integer() })));
+  assertErr(nested("k: 1")); // primitive where a block is expected
+  assertErr(nested("k:\n  b: 1"));
+});
+
+// ---------------------------------------------------------------------------
+// Discriminated unions (G9-3)
+// ---------------------------------------------------------------------------
+
+const Shape = S.union(
+  S.object({ kind: S.literal("circle"), r: S.number() }),
+  S.object({ size: S.integer(), kind: S.literal(2) }),
+  S.object({ kind: S.literal(null), tags: S.array(S.string()) }),
+);
+
+test("discriminated unions round-trip at root, in fields, list items and records", () => {
+  rt(Shape, { kind: "circle", r: 1.5 }, "kind: circle\nr: 1.5");
+  rt(Shape, { size: 3, kind: 2 }, "size: 3\nkind: 2");
+  rt(Shape, { kind: null, tags: ["a"] }, "kind: null\ntags[1]: a");
+  rt(
+    S.object({ s: Shape, n: S.integer() }),
+    { s: { size: 1, kind: 2 }, n: 0 },
+    "s:\n  size: 1\n  kind: 2\nn: 0",
+  );
+  rt(
+    S.array(Shape),
+    [
+      { kind: "circle", r: 2 },
+      { size: 4, kind: 2 },
+    ],
+    "[2]:\n  - kind: circle\n    r: 2\n  - size: 4\n    kind: 2",
+  );
+  rt(S.record(Shape), { a: { kind: null, tags: [] } });
+  rt(S.object({ s: S.nullable(Shape) }), { s: null }, "s: null");
+});
+
+test("discriminated union errors", () => {
+  const par = ST.parse(Shape);
+  assert.deepEqual(assertErr(par("r: 1")).path, "kind");
+  assert.deepEqual(assertErr(par("kind: square\nr: 1")).expected, "discriminant");
+  assertErr(par("kind: circle\nr: x"));
+  const str = ST.stringify(Shape);
+  assert.throws(() => str({ kind: "square" } as never), /does not match any union variant/);
+  // Literal values are referenced, never interpolated into generated source
+  const g = globalThis as { PWN?: number };
+  g.PWN = 0;
+  const evil = '"+(globalThis.PWN=1)+"';
+  rt(S.union(S.object({ t: S.literal(evil) }), S.object({ t: S.literal("b") })), { t: evil });
+  assert.equal(g.PWN, 0);
+  delete g.PWN;
+});
+
+test("flexible order: nested objects, discriminated unions, quoted keys", () => {
+  const schema = S.object({
+    a: S.integer(),
+    o: S.object({ x: S.string(), y: S.optional(S.boolean()) }),
+    s: Shape,
+  });
+  const par = ST.parse(schema, { flexibleOrder: true });
+  const value = { a: 1, o: { x: "q", y: true }, s: { kind: "circle" as const, r: 3 } };
+  assert.deepEqual(assertOk(par("s:\n  r: 3\n  kind: circle\no:\n  y: true\n  x: q\na: 1")), value);
+  // Unneeded key quotes and unknown keys are tolerated
+  assert.deepEqual(
+    assertOk(
+      par(
+        '"a": 1\nextra: 9\no:\n  "x": q\n  y: true\n  junk:\n    deep: 1\ns:\n  kind: circle\n  r: 3',
+      ),
+    ),
+    value,
+  );
+  assertErr(par("o:\n  x: q\ns:\n  kind: circle\n  r: 3")); // missing a
+  assertErr(par("a: 1\no:\n  y: true\ns:\n  kind: circle\n  r: 3")); // missing o.x
+  // A non-key line ends the block
+  assertErr(par("a: 1\n- junk\no:\n  x: q\ns:\n  kind: circle\n  r: 3"));
+});
+
+test("flexible order still requires schema-ordered tabular headers", () => {
+  const schema = S.object({ xs: S.array(S.object({ a: S.integer(), b: S.integer() })) });
+  const par = ST.parse(schema, { flexibleOrder: true });
+  assert.deepEqual(assertOk(par("xs[1]{a,b}:\n  1,2")), { xs: [{ a: 1, b: 2 }] });
+  assert.match(assertErr(par("xs[1]{b,a}:\n  2,1")).expected, /tabular header/);
+});
+
+// ---------------------------------------------------------------------------
+// Optional / nullable cells (G9-6, G9-7)
+// ---------------------------------------------------------------------------
+
+test("empty cells mean absent; required cells reject them (G9-6)", () => {
+  const schema = S.object({
+    xs: S.array(
+      S.object({
+        a: S.optional(S.integer()),
+        s: S.optional(S.string()),
+        n: S.nullable(S.string()),
+      }),
+    ),
+  });
+  rt(
+    schema,
+    { xs: [{ n: null }, { a: 0, s: "", n: "null" }] },
+    'xs[2]{a,s,n}:\n  ,,null\n  0,"","\\"null\\""'.replace('"\\"null\\""', '"null"'),
+  );
+  const par = ST.parse(S.object({ a: S.integer(), s: S.string() }));
+  assertErr(par("a: \ns: x"));
+  assertErr(par("a: 1\ns: "));
+  assertErr(ST.parse(S.object({ xs: S.array(S.string()) }))("xs[2]: a,"));
+});
+
+test("nullable and optional compound fields round-trip (G9-7)", () => {
+  const schema = S.object({
+    o: S.nullable(S.object({ a: S.integer() })),
+    xs: S.optional(S.nullable(S.array(S.integer()))),
+    r: S.optional(S.record(S.integer())),
+    z: S.integer(),
+  });
+  rt(schema, { o: null, xs: null, z: 1 }, "o: null\nxs: null\nz: 1");
+  rt(schema, { o: { a: 1 }, z: 1 }, "o:\n  a: 1\nz: 1");
+  rt(schema, { o: null, xs: [1], r: { k: 2 }, z: 1 });
+  rt(S.nullable(S.object({ a: S.integer() })), null, "null");
+  rt(S.nullable(S.array(S.integer())), [1], "[1]: 1");
+  rt(S.nullable(S.string()), null, "null");
+  rt(S.nullable(S.string()), "null", '"null"');
+});
+
+// ---------------------------------------------------------------------------
+// Keys (G9-15), strings (G9-11), numbers & literals (G9-14)
+// ---------------------------------------------------------------------------
+
+test("keys are quoted only when needed (G9-15)", () => {
+  rt(
+    S.object({ "a-b": S.integer(), "x y": S.integer(), "1": S.integer() }),
+    { "1": 3, "a-b": 1, "x y": 2 },
+    "1: 3\na-b: 1\nx y: 2",
+  );
+  rt(
+    S.object({
+      "a\nb": S.string(),
+      "": S.integer(),
+      " k": S.integer(),
+      "k\u00a0": S.integer(),
+      'q"': S.integer(),
+    }),
+    { "a\nb": "v", "": 1, " k": 2, "k\u00a0": 3, 'q"': 4 },
+    '"a\\nb": v\n"": 1\n" k": 2\n"k\u00a0": 3\n"q\\"": 4',
+  );
+  rt(
+    S.object({ "a[0]": S.array(S.integer()), "{x}": S.object({}) }),
+    { "a[0]": [1], "{x}": {} },
+    '"a[0]"[1]: 1\n"{x}":',
+  );
+  // Keys containing the delimiter are quoted in tabular headers only
+  rt(
+    S.object({ "a,b": S.array(S.object({ "c,d": S.integer(), "e|f": S.integer() })) }),
+    { "a,b": [{ "c,d": 1, "e|f": 2 }] },
+    'a,b[1]{"c,d",e|f}:\n  1,2',
+  );
+  rt(
+    S.object({ xs: S.array(S.object({ "c,d": S.integer(), "e|f": S.integer() })) }),
+    { xs: [{ "c,d": 1, "e|f": 2 }] },
+    'xs[1]{c,d|"e|f"}:\n  1|2',
+    { delimiter: "|" },
+  );
+});
+
+test("properties named like Object.prototype members", () => {
+  const schema = S.object({
+    toString: S.optional(S.integer()),
+    xs: S.array(S.object({ valueOf: S.optional(S.integer()), a: S.integer() })),
+    constructor: S.optional(S.string()),
+  });
+  rt(schema, { xs: [{ a: 1 }] }, "xs[1]{valueOf,a}:\n  ,1");
+  rt(schema, { toString: 1, xs: [{ valueOf: 2, a: 1 }], constructor: "c" });
+});
+
+test("strings with Unicode whitespace or line separators round-trip (G9-11)", () => {
+  for (const s of [
+    "a\u2028b",
+    "\u00a0lead",
+    "trail\ufeff",
+    "\u2029",
+    "ok\u00e9",
+    "-a",
+    "-5",
+    "- x",
+    "é",
+  ]) {
+    rt(S.string(), s);
+    rt(S.object({ xs: S.array(S.string()), t: S.tuple(S.string()), v: S.string() }), {
+      xs: [s, s],
+      t: [s],
+      v: s,
+    });
+  }
+  assert.equal(ST.stringify(S.string())("-a"), "-a");
+  assert.equal(ST.stringify(S.string())("-5"), '"-5"');
+  assert.equal(ST.stringify(S.string())("é"), "é");
+});
+
+test("quoted cells with escaped quotes and delimiters split correctly", () => {
+  rt(S.object({ xs: S.array(S.string()) }), { xs: ['a"b,c', "x\\", ",", '"'] });
+  const par = ST.parse(S.object({ xs: S.array(S.string()) }));
+  assertErr(par("xs[2]: a,b,c")); // too many
+  assertErr(par("xs[3]: a,b")); // too few
+  assertErr(par("xs[0]: a"));
+  assert.deepEqual(assertOk(par("xs[0]:")), { xs: [] });
+});
+
+test("unquote handles every escape; unknown escapes are kept verbatim", () => {
+  const par = ST.parse(S.string());
+  assert.equal(assertOk(par('"a\\nb\\rc\\td\\\\e\\"f"')), 'a\nb\rc\td\\e"f');
+  assert.equal(assertOk(par('"\\u0041\\u00e9"')), "Aé");
+  assert.equal(assertOk(par('"\\uZZZZ"')), "\\uZZZZ");
+  assert.equal(assertOk(par('"\\q"')), "\\q");
+  assert.equal(assertOk(par('"\\u004"')), "\\u004");
+  assert.equal(assertOk(par('"ab\\"')), "ab\\");
+  assert.equal(assertOk(par('"')), '"');
+  assert.equal(assertOk(par('"x"')), "x");
+});
+
+test("number grammar is strict (G9-14)", () => {
+  const num = ST.parse(S.number());
+  for (const ok of ["0", "-0", "1.5", "1e5", "1E+5", "-2.5e-3", "1e+21", "05"]) {
+    assert.equal(assertOk(num(ok)), Number(ok), ok);
+  }
+  for (const bad of [
+    "",
+    "-",
+    "1.",
+    ".5",
+    "+1",
+    "0x10",
+    "0b1",
+    "Infinity",
+    "-Infinity",
+    "NaN",
+    "1e999",
+    "1,5",
+    "1 5",
+    "1_0",
+    "e5",
+    "1e",
+  ]) {
+    assertErr(num(bad));
+  }
+  const int = ST.parse(S.integer());
+  assert.equal(assertOk(int("1e3")), 1000);
+  assertErr(int("1.5"));
+  assertErr(int("9007199254740993"));
+});
+
+test("literals and enums decode by token type (G9-14)", () => {
+  const f = ST.parse(S.object({ f: S.literal(false) }));
+  assertErr(f("f: banana"));
+  assertErr(f("f: "));
+  assert.deepEqual(assertOk(f("f: false")), { f: false });
+  rt(S.literal("123"), "123", '"123"');
+  rt(S.literal(1.5), 1.5, "1.5");
+  assertErr(ST.parse(S.literal(1.5))("1.50x"));
+  const e = S.enum_("1", 1, "a b");
+  rt(e, "1", '"1"');
+  rt(e, 1, "1");
+  rt(e, "a b", "a b");
+  assert.equal(assertOk(ST.parse(e)('"a b"')), "a b");
+  assertErr(ST.parse(e)("2"));
+  assertErr(ST.parse(e)(""));
+});
+
+test("unions of primitives decode the token type first", () => {
+  const u = S.union(S.string(), S.integer(), S.boolean(), S.null_());
+  for (const v of ["5", 5, "true", true, false, "null", null, "", "x"]) rt(u, v);
+  assert.equal(ST.stringify(u)("5"), '"5"');
+  assert.equal(assertOk(ST.parse(u)("plain")), "plain");
+  const nums = ST.parse(S.union(S.integer(), S.literal("x")));
+  assertErr(nums("1.5"));
+  const opt = S.object({ xs: S.array(S.union(S.optional(S.integer()), S.boolean())) });
+  rt(opt, { xs: [1, undefined, true] }, "xs[3]: 1,,true");
+  assertErr(ST.parse(S.union())("x"));
+  assert.equal(ST.stringify(S.union(S.literal(1)))(1), "1");
+});
+
+// ---------------------------------------------------------------------------
+// Headers, counts, structure errors
+// ---------------------------------------------------------------------------
+
+test("array headers: delimiter markers accepted, malformed rejected", () => {
+  const schema = S.object({ xs: S.array(S.integer()) });
+  const pipe = ST.parse(schema, { delimiter: "|" });
+  assert.deepEqual(assertOk(pipe("xs[2|]: 1|2")), { xs: [1, 2] });
+  assert.deepEqual(assertOk(pipe("xs[2]: 1|2")), { xs: [1, 2] });
+  const par = ST.parse(schema);
+  for (const bad of [
+    "xs[]: 1",
+    "xs[2: 1,2",
+    "xs[2|]: 1,2",
+    "xs[x]: 1",
+    "xs:",
+    "xs[1]:1",
+    "xs[1]x 1",
+  ]) {
+    assertErr(par(bad));
+  }
+});
+
+test("tabular rows: count, indentation and width are checked", () => {
+  const schema = S.object({
+    xs: S.array(S.object({ a: S.integer(), b: S.string() })),
+    z: S.optional(S.integer()),
+  });
+  const par = ST.parse(schema);
+  assert.deepEqual(assertOk(par("xs[1]{a,b}:\n  1,x\nz: 2")), { xs: [{ a: 1, b: "x" }], z: 2 });
+  assertErr(par("xs[2]{a,b}:\n  1,x")); // missing row
+  assertErr(par("xs[1]{a,b}:\n1,x")); // not indented
+  assertErr(par("xs[1]{a,b}:\n  1")); // short row
+  assertErr(par("xs[1]{a,b}:\n  1,x,y")); // long row
+  assertErr(par("xs[1]{a}:\n  1")); // header mismatch
+  assertErr(par("xs[1]{a,b}:\n  1,x\n  2,y")); // extra row → leftover input
+  assert.deepEqual(assertOk(par("xs[0]{a,b}:")), { xs: [] });
+});
+
+test("structural errors are reported, never silently ignored", () => {
+  const par = ST.parse(S.object({ o: S.object({ a: S.integer() }), b: S.boolean(), n: S.null_() }));
+  assertErr(par("o: 5\nb: true\nn: null")); // block expected
+  assertErr(par("o:\n  a: 1\nb: yes\nn: null"));
+  assertErr(par("o:\n  a: 1\nb: true\nn: nil"));
+  assertErr(par("o:\n  a: 1\nb: true\nn: null\nextra: 1")); // leftover
+  assert.deepEqual(assertOk(par("o:\n  a: 1\nb: true\nn: null\n\n")), {
+    o: { a: 1 },
+    b: true,
+    n: null,
+  });
+  // A longer key with the same prefix is not mistaken for an optional field
+  const opt = ST.parse(S.object({ a: S.optional(S.object({})), ab: S.integer() }));
+  assert.deepEqual(assertOk(opt("ab: 1")), { ab: 1 });
+  const list = ST.parse(S.object({ xs: S.array(S.object({ a: S.object({}) })) }));
+  assertErr(list("xs[1]: x")); // inline data where a list is expected
+  assertErr(list("xs[1]:\n  - [1]: 2")); // array where an object is expected
+});
+
+test("root arrays and records stringify and parse (G9-15)", () => {
+  rt(S.array(S.integer()), [1, 2], "[2]: 1,2");
+  rt(S.array(S.object({ a: S.integer() })), [{ a: 1 }], "[1]{a}:\n  1");
+  rt(S.record(S.string()), {}, "");
+  rt(S.object({}), {}, "");
+  assertErr(ST.parse(S.array(S.integer()))(""));
+  assertErr(ST.parse(S.integer())("1\n2"));
+});
+
+test("indent option applies to nested blocks, rows and list items", () => {
+  const schema = S.object({
+    o: S.object({
+      xs: S.array(S.object({ a: S.integer() })),
+      ys: S.array(S.object({ b: S.array(S.integer()) })),
+    }),
+  });
+  rt(
+    schema,
+    { o: { xs: [{ a: 1 }], ys: [{ b: [2] }] } },
+    "o:\n    xs[1]{a}:\n        1\n    ys[1]:\n        - b[1]: 2",
+    { indent: 4 },
+  );
+  rt(schema, { o: { xs: [{ a: 1 }], ys: [{ b: [2] }] } }, undefined, {
+    indent: 1,
+    delimiter: "\t",
+  });
 });

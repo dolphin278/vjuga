@@ -889,6 +889,15 @@ test("malformed framing → 400 + close", () => {
   }
 });
 
+test("getHeader trims SP/HTAB around the value and finds the last header", () => {
+  const values: Array<string | null> = [];
+  const { connect } = fakeServer(undefined, (req) => {
+    values.push(HttpServer.getHeader(req, "x-a"), HttpServer.getHeader(req, "X-B"));
+  });
+  connect().feed("GET / HTTP/1.1\r\nX-A:\t one two \t\r\nx-b:   \r\n\r\n");
+  assert.deepEqual(values, ["one two", ""]);
+});
+
 test("Transfer-Encoding → 501 + close", () => {
   for (const te of [
     "Transfer-Encoding: chunked",

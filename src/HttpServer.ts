@@ -519,10 +519,13 @@ export function getHeader(req: Request, name: string): string | null {
         }
       }
       if (match && buf[pos + nameLen] === 58 /* ':' */) {
-        // Skip colon and optional whitespace (OWS per RFC 7230 §3.2.3)
+        // Skip colon and trim OWS (SP / HTAB, RFC 9110 §5.5) on both sides
         let valStart = pos + nameLen + 1;
-        while (valStart < cr && buf[valStart] === 32) valStart++;
-        return buf.toString("utf8", valStart, cr);
+        while (valStart < cr && (buf[valStart] === 0x20 || buf[valStart] === 0x09)) valStart++;
+        let valEnd = cr;
+        while (valEnd > valStart && (buf[valEnd - 1] === 0x20 || buf[valEnd - 1] === 0x09))
+          valEnd--;
+        return buf.toString("utf8", valStart, valEnd);
       }
     }
 

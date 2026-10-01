@@ -871,8 +871,8 @@ function registerResources(ctx: LowerCtx, rootNode: unknown, rootBase: string): 
 
 /** Resolve a `$ref` to its target node and the base URI in effect there. */
 function resolveRef(ctx: LowerCtx, ref: string, base: string): Resource {
-  const abs = tryResolve(ref, base);
-  if (abs === null) fail(ctx, "invalid $ref " + JSON.stringify(ref));
+  // A ref that is not URI-resolvable can still match an options.refs raw key
+  const abs = tryResolve(ref, base) ?? ref;
   const hashAt = abs.indexOf("#");
   const doc = hashAt === -1 ? abs : abs.slice(0, hashAt);
   const fragment = hashAt === -1 ? "" : abs.slice(hashAt + 1);
@@ -1178,11 +1178,10 @@ function rejectsNull(s: Schema): boolean {
     case "nullable":
     case "unknown":
     case "not":
+    case "optional": // never produced by lowering outside object properties
       return false;
     case "literal":
       return s.meta.value !== null;
-    case "optional":
-      return rejectsNull(s.meta.inner);
     case "union":
       return (s.meta.variants as readonly Schema[]).every(rejectsNull);
     case "allOf":

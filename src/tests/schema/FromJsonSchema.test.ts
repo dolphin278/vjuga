@@ -188,6 +188,13 @@ test("oneOf — exactly one; nullable shortcut only when T rejects null", () => 
   assert.equal(t.kind, "union");
   verdicts({ oneOf: [{ type: ["string", "null"] }, { type: "null" }] }, ["x"], [null]);
   verdicts({ oneOf: [{ type: "null" }, {}] }, [1], [null]);
+  verdicts({ oneOf: [{ type: "null" }, { type: "null" }] }, [], [null, 1]);
+  // an empty-fragment $id ("x#") names the same resource as "x"
+  verdicts(
+    { $defs: { a: { $id: "http://e.com/a.json#", type: "string" } }, $ref: "http://e.com/a.json" },
+    ["s"],
+    [1],
+  );
   // rejectsNull through wrappers
   for (const [inner, kind] of [
     [{ const: "a" }, "nullable"],

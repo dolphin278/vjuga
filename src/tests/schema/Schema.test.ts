@@ -846,3 +846,110 @@ test("findDiscriminant — returns null when a candidate key is absent in one va
   ];
   assert.equal(S.findDiscriminant(variants), null);
 });
+
+// ---------------------------------------------------------------------------
+// fromJsonSchema — malformed input returns Err, never throws
+// ---------------------------------------------------------------------------
+
+function fromErr(js: unknown): string {
+  const r = S.fromJsonSchema(js as S.JsonSchemaObject);
+  assert.equal(r[0], false, "expected Err for " + String(js));
+  return r[1] as string;
+}
+
+test("fromJsonSchema — boolean and null schema nodes are Err", () => {
+  assert.match(fromErr({ type: "object", properties: { a: true } }), /boolean JSON Schemas/);
+  assert.match(fromErr({ anyOf: [true, { type: "string" }] }), /boolean JSON Schemas/);
+  assert.match(fromErr(false), /boolean JSON Schemas/);
+  assert.match(fromErr({ type: "array", prefixItems: [null] }), /got null/);
+  assert.match(
+    fromErr({ type: "array", items: { type: "array", prefixItems: [1] } }),
+    /got number/,
+  );
+  assert.match(fromErr([{ type: "string" }]), /got object/);
+});
+
+test("fromJsonSchema — properties must be an object", () => {
+  assert.match(fromErr({ type: "object", properties: "abc" }), /properties must be an object/);
+  assert.match(fromErr({ type: "object", properties: null }), /properties must be an object/);
+  assert.match(fromErr({ type: "object", properties: [] }), /properties must be an object/);
+});
+
+test("fromJsonSchema — additionalProperties schema alongside properties is Err", () => {
+  const msg = fromErr({
+    type: "object",
+    properties: { a: { type: "string" } },
+    additionalProperties: { type: "string" },
+  });
+  assert.match(msg, /additionalProperties as a schema/);
+  // additionalProperties: false/true alongside properties is fine
+  const r = S.fromJsonSchema({
+    type: "object",
+    properties: { a: { type: "string" } },
+    additionalProperties: false,
+  });
+  assert.equal(r[0], true);
+});
+
+test("fromJsonSchema — multipleOf must be finite and > 0", () => {
+  assert.match(fromErr({ type: "number", multipleOf: 0 }), /multipleOf/);
+  assert.match(fromErr({ type: "integer", multipleOf: -2 }), /multipleOf/);
+  assert.match(fromErr({ type: "number", multipleOf: Infinity }), /multipleOf/);
+  assert.match(fromErr({ type: "number", multipleOf: NaN }), /multipleOf/);
+  assert.equal(S.fromJsonSchema({ type: "number", multipleOf: 0.5 })[0], true);
+});
+
+test("fromJsonSchema — unsupported node with a cyclic value does not throw", () => {
+  const cyclic: Record<string, unknown> = { type: "weird" };
+  cyclic.self = cyclic;
+  assert.match(fromErr(cyclic), /unsupported JSON Schema: keys type,self/);
+});
+
+test("fromJsonSchema — __proto__ property is kept as an own key, order preserved", () => {
+  const js = JSON.parse(
+    '{"type":"object","properties":{"z":{"type":"number"},"__proto__":{"type":"string"},"a":{"type":"boolean"}},"required":["__proto__"]}',
+  ) as S.JsonSchemaObject;
+  const r = S.fromJsonSchema(js);
+  assert.equal(r[0], true);
+  const s = r[1] as S.ObjectSchema<Record<string, S.Schema>>;
+  assert.deepEqual(Object.keys(s.meta.properties), ["z", "__proto__", "a"]);
+  assert.equal(Object.getPrototypeOf(s.meta.properties), Object.prototype);
+  assert.equal(s.meta.properties["__proto__"].kind, "string");
+  assert.equal(s.meta.properties.z.kind, "optional");
+  // Round trip keeps the key too
+  const back = S.toJsonSchema(s) as { properties: Record<string, unknown>; required: string[] };
+  assert.deepEqual(Object.keys(back.properties), ["z", "__proto__", "a"]);
+  assert.deepEqual(back.required, ["__proto__"]);
+  assert.deepEqual(back.properties["__proto__"], { type: "string" });
+});
+
+test("fromJsonSchema — unknown formats are kept (annotation-only)", () => {
+  for (const format of ["date-time", "constructor", "__proto__"]) {
+    const r = S.fromJsonSchema({ type: "string", format });
+    assert.equal(r[0], true);
+    assert.equal((r[1] as S.StringSchema).meta?.format, format);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// findDiscriminant — own literal keys only, NaN never qualifies
+// ---------------------------------------------------------------------------
+
+test("findDiscriminant — ignores keys inherited from Object.prototype", () => {
+  const a = S.object({ constructor: S.literal("a") });
+  const b = S.object({ x: S.literal("b") });
+  assert.equal(S.findDiscriminant([a, b]), null);
+  const c = S.object({ constructor: S.literal("c") });
+  assert.equal(S.findDiscriminant([a, c]), "constructor");
+});
+
+test("findDiscriminant — NaN tags are not discriminants", () => {
+  const a = S.object({ k: S.literal(NaN), t: S.literal("a") });
+  const b = S.object({ k: S.literal(1), t: S.literal("b") });
+  assert.equal(S.findDiscriminant([a, b]), "t");
+  const c = S.object({ k: S.literal(NaN) });
+  const d = S.object({ k: S.literal(1) });
+  assert.equal(S.findDiscriminant([c, d]), null);
+  const e = S.object({ k: S.literal(Infinity) });
+  assert.equal(S.findDiscriminant([e, d]), "k");
+});

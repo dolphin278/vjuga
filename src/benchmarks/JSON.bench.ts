@@ -113,6 +113,16 @@ bench("JSON.safeParse: benign \\u escapes (slow path)", () => {
   return safeParse(unicodeTextJson);
 });
 
+const REJECT = { onDangerousKey: "reject" } as const;
+
+bench("JSON.safeParse reject: clean object", () => {
+  return safeParse(simpleJson, REJECT);
+});
+
+bench("JSON.safeParse reject: object with __proto__ keys (Err)", () => {
+  return safeParse(protoJson, REJECT);
+});
+
 await run();
 
 // --- Memory benchmark ---

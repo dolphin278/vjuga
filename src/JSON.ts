@@ -1,14 +1,18 @@
 /**
- * JSON — typed JSON parsing with prototype-pollution protection.
+ * JSON — typed JSON parsing; `safeParse` adds prototype-pollution protection.
  *
  * Wraps native `JSON.parse` / `JSON.stringify` with a `JSONValue` return type
  * that is narrower than `any` (forces runtime type checking) yet broader than
  * `unknown` (reflects the actual JSON value space).
  *
- * When to use: `safeParse` for untrusted external input — it strips `__proto__`
- * and `constructor` keys via an explicit stack walk to prevent prototype
- * poisoning. `parseExn` / `parse` for trusted sources where prototype pollution
- * is not a concern.
+ * Security split — pick by trust level, not by return type:
+ * - `safeParse` (untrusted input) handles `__proto__` / `constructor` keys,
+ *   including `\u`-escaped spellings: strips them by default, or reports them
+ *   as `Err` with `{ onDangerousKey: "reject" }`. Syntax errors become `Err`
+ *   with the engine's diagnostic.
+ * - `parse` / `parseExn` are plain `JSON.parse` with NO key filtering: the
+ *   document comes back exactly as written. Use them for trusted sources, or
+ *   when your own validator must see every key.
  *
  * Prior art: Matteo Collina's `secure-json-parse` (Fastify) — prototype
  * pollution via `__proto__` in parsed JSON is a well-known attack vector.
@@ -16,9 +20,11 @@
  * @example
  * ```ts
  * import * as JSON from "@dolphin278/vjuga/JSON";
- * const result = JSON.safeParse('{"a":1}');     // Ok<JSONValue>
- * const value  = JSON.parse('{"a":1}');         // JSONValue | undefined
- * const str    = JSON.stringify({ a: 1 });      // string
+ * JSON.safeParse('{"a":1,"__proto__":{}}');   // Ok({ a: 1 }) — stripped
+ * JSON.safeParse('{"__proto__":{}}', { onDangerousKey: "reject" }); // Err
+ * JSON.safeParse("{");                        // Err("invalid JSON: …")
+ * JSON.parse('{"__proto__":{}}');             // kept as an own key
+ * const str = JSON.stringify({ a: 1 });       // string
  * ```
  */
 
@@ -35,6 +41,9 @@ export type JSONObject = { [key: string]: JSONValue };
 export const stringify = JSON.stringify;
 
 /**
+ * Plain `JSON.parse` (throws `SyntaxError` on invalid input). Does NOT strip or
+ * report `__proto__` / `constructor` keys — use `safeParse` for untrusted input.
+ *
  * While being just an alias for JSON.parse, this function
  * returns `JSONValue` instead of `any`, that forces consumer to actually
  * check the type of the result during runtime.
@@ -45,7 +54,10 @@ export const stringify = JSON.stringify;
 export const parseExn = (str: string): JSONValue => JSON.parse(str) as JSONValue;
 
 /**
- * Safe version of JSON.parse that returns `undefined` in case parsing fails.
+ * `JSON.parse` that returns `undefined` instead of throwing on invalid input.
+ * "Safe" refers to the absence of exceptions only: like `parseExn` it does NOT
+ * strip or report `__proto__` / `constructor` keys, so the document is
+ * returned exactly as written. Use `safeParse` for untrusted input.
  */
 export const parse = (json: string): JSONValue | undefined => {
   try {
@@ -97,44 +109,102 @@ export function stripDangerousKeys(value: JSONValue): boolean {
 }
 
 /**
- * Parses JSON with prototype-pollution protection.
+ * Walks a parsed JSON value (without mutating it) and returns the first
+ * prototype-poisoning key (`__proto__` or `constructor`) it finds, or
+ * `undefined` when there is none. Same key set and traversal as
+ * `stripDangerousKeys`.
+ */
+export function findDangerousKey(value: JSONValue): string | undefined {
+  const stack: JSONValue[] = [value];
+  let current: JSONValue | undefined;
+  while ((current = stack.pop()) !== undefined) {
+    if (current === null || typeof current !== "object") continue;
+    if (Array.isArray(current)) {
+      for (let i = 0; i < current.length; i++) stack.push(current[i]);
+    } else {
+      const keys = Object.keys(current);
+      for (let i = 0; i < keys.length; i++) {
+        const key = keys[i];
+        if (key === "__proto__" || key === "constructor") return key;
+        stack.push(current[key]);
+      }
+    }
+  }
+  return undefined;
+}
+
+/** What `safeParse` does with a `__proto__` / `constructor` key. */
+export type DangerousKeyPolicy = "strip" | "reject" | "keep";
+
+/** Options for `safeParse`. */
+export interface SafeParseOptions {
+  /**
+   * - `"strip"` (default): delete every dangerous key in place, return `Ok`.
+   * - `"reject"`: return `Err` naming the first dangerous key found; the
+   *   document is not modified. Use when a downstream validator must see
+   *   poisoned input.
+   * - `"keep"`: leave the keys in place (same document as `parse`, but with
+   *   `Result` errors). Unknown values behave like `"strip"`.
+   */
+  readonly onDangerousKey?: DangerousKeyPolicy;
+}
+
+/**
+ * Parses untrusted JSON with prototype-pollution protection, returning
+ * `Result<JSONValue, string>`:
+ * - `Ok` with the value (dangerous keys handled per `options.onDangerousKey`,
+ *   default `"strip"`).
+ * - `Err("invalid JSON: <engine message>")` on a syntax error. The detail
+ *   text comes from the engine and differs between V8 and JavaScriptCore;
+ *   match on the `"invalid JSON"` prefix only.
+ * - `Err('dangerous JSON key "__proto__" …')` with `onDangerousKey: "reject"`.
  *
- * Strips `__proto__` and `constructor` keys from the parsed value tree to
- * prevent prototype poisoning attacks. Returns `Result<JSONValue, string>`:
- * - `Ok` with the sanitized value on success
- * - `Err` with an error message on invalid JSON
+ * The key set is exactly `__proto__` and `constructor` (not `prototype`,
+ * which cannot poison `Object.prototype` on its own); `\u`-escaped spellings
+ * are caught because the check runs on the parsed value.
  *
  * Fast path: scans the raw JSON string for `__proto__`, `constructor` and any
- * `\u` escape (which can spell either token) before parsing. If none is present (the common case for
- * real-world payloads), the expensive post-parse tree walk is skipped
- * entirely. V8's `String.indexOf` is SIMD-accelerated, making the scan
- * cost ~2-5 ns for typical API payloads.
+ * `\u` escape (which can spell either token) before walking. If none is
+ * present (the common case for real-world payloads), the tree walk is skipped
+ * entirely and `options` is never read. False positives (the token appears as
+ * a value) trigger the walk but produce correct results.
  *
- * False positives (e.g., `{"type":"constructor"}` — the token appears as a
- * value, not a key) trigger the tree walk but produce correct results.
- *
- * Inspired by `secure-json-parse` (Matteo Collina / Fastify).
+ * @example
+ * ```ts
+ * import { safeParse } from "@dolphin278/vjuga/JSON";
+ * safeParse('{"constructor":1,"a":2}');                             // [true, { a: 2 }]
+ * safeParse('{"constructor":1}', { onDangerousKey: "reject" });     // [false, 'dangerous JSON key "constructor" …']
+ * ```
  */
-export const safeParse = (json: string): Result<JSONValue, string> => {
+export function safeParse(json: string, options?: SafeParseOptions): Result<JSONValue, string> {
+  let value: JSONValue;
   try {
-    const value = JSON.parse(json) as JSONValue;
-    // Fast path: skip tree walk when no dangerous tokens exist in the source.
-    // indexOf is O(n) but with SIMD acceleration it's far cheaper than
-    // Object.keys + iteration on every parsed object node.
-    // A \u escape can spell either token ("\u005f_proto__"), which the raw-text scan
-    // cannot see, so any \u in the source forces the walk too.
-    if (
-      json.indexOf(PROTO_TOKEN) !== -1 ||
-      json.indexOf(CONSTRUCTOR_TOKEN) !== -1 ||
-      json.indexOf(ESCAPE_TOKEN) !== -1
-    ) {
+    value = JSON.parse(json) as JSONValue;
+  } catch (e) {
+    return err("invalid JSON: " + (e instanceof Error ? e.message : String(e)));
+  }
+  // Fast path: skip tree walk when no dangerous tokens exist in the source.
+  // indexOf is O(n) but with SIMD acceleration it's far cheaper than
+  // Object.keys + iteration on every parsed object node.
+  // A \u escape can spell either token ("\u005f_proto__"), which the raw-text scan
+  // cannot see, so any \u in the source forces the walk too.
+  if (
+    json.indexOf(PROTO_TOKEN) !== -1 ||
+    json.indexOf(CONSTRUCTOR_TOKEN) !== -1 ||
+    json.indexOf(ESCAPE_TOKEN) !== -1
+  ) {
+    const policy = options?.onDangerousKey;
+    if (policy === "reject") {
+      const key = findDangerousKey(value);
+      if (key !== undefined) {
+        return err(`dangerous JSON key "${key}" (prototype-pollution risk)`);
+      }
+    } else if (policy !== "keep") {
       stripDangerousKeys(value);
     }
-    return ok(value);
-  } catch {
-    return err("invalid JSON");
   }
-};
+  return ok(value);
+}
 
 const PROTO_TOKEN = "__proto__";
 const CONSTRUCTOR_TOKEN = "constructor";

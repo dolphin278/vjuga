@@ -1,6 +1,13 @@
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
-import { parseExn, stringify, parse, safeParse, escapeJsonString } from "../JSON.js";
+import {
+  parseExn,
+  stringify,
+  parse,
+  safeParse,
+  escapeJsonString,
+  findDangerousKey,
+} from "../JSON.js";
 
 describe("JSON", () => {
   describe("stringify", () => {
@@ -135,7 +142,33 @@ describe("JSON", () => {
     it("should return Err on invalid JSON", () => {
       const r = safeParse("not json");
       assert.equal(r[0], false);
-      assert.equal(r[1], "invalid JSON");
+      assert.ok(r[1].startsWith("invalid JSON: "), r[1]);
+    });
+
+    it("should include the engine's diagnostic in the Err (5a)", () => {
+      for (const input of ["{broken", "", "[1,", '{"a":1}x']) {
+        const r = safeParse(input);
+        assert.equal(r[0], false);
+        const msg = r[1] as string;
+        assert.ok(msg.startsWith("invalid JSON: "), msg);
+        assert.ok(msg.length > "invalid JSON: ".length, msg);
+        let engine = "";
+        try {
+          JSON.parse(input);
+        } catch (e) {
+          engine = (e as Error).message;
+        }
+        assert.equal(msg, "invalid JSON: " + engine);
+      }
+    });
+
+    it("should stringify a non-Error thrown while coercing the input", () => {
+      const evil = {
+        toString(): string {
+          throw "boom";
+        },
+      };
+      assert.deepEqual(safeParse(evil as unknown as string), [false, "invalid JSON: boom"]);
     });
 
     it("should strip __proto__ keys from objects", () => {
@@ -218,5 +251,73 @@ describe("safeParse \\u-escaped dangerous keys (G6-6)", () => {
   it("keeps benign \\u escapes intact", () => {
     const r = safeParse('{"caf\\u00e9":"na\\u00efve"}');
     assert.deepEqual(r[1], { café: "naïve" });
+  });
+});
+
+describe("safeParse onDangerousKey (5b)", () => {
+  const poisoned = '{"a":{"__proto__":{"x":1}},"constructor":{"y":1},"b":1}';
+
+  it("defaults to strip, and an explicit strip matches it", () => {
+    assert.deepEqual(safeParse(poisoned), [true, { a: {}, b: 1 }]);
+    assert.deepEqual(safeParse(poisoned, {}), [true, { a: {}, b: 1 }]);
+    assert.deepEqual(safeParse(poisoned, { onDangerousKey: "strip" }), [true, { a: {}, b: 1 }]);
+  });
+
+  it("reject returns Err naming the dangerous key", () => {
+    const r = safeParse('{"a":1,"__proto__":{"x":1}}', { onDangerousKey: "reject" });
+    assert.equal(r[0], false);
+    assert.ok((r[1] as string).includes('"__proto__"'), r[1] as string);
+    assert.ok((r[1] as string).includes("dangerous"), r[1] as string);
+    assert.ok(!(r[1] as string).startsWith("invalid JSON"));
+    const c = safeParse('[{"constructor":1}]', { onDangerousKey: "reject" });
+    assert.equal(c[0], false);
+    assert.ok((c[1] as string).includes('"constructor"'));
+  });
+
+  it("reject catches \\u-escaped keys", () => {
+    const r = safeParse('{"\\u005f_proto__":{"x":1}}', { onDangerousKey: "reject" });
+    assert.equal(r[0], false);
+    assert.ok((r[1] as string).includes('"__proto__"'));
+  });
+
+  it("reject returns Ok for false positives (token as a value)", () => {
+    assert.deepEqual(
+      safeParse('{"type":"constructor","n":"__proto__"}', { onDangerousKey: "reject" }),
+      [true, { type: "constructor", n: "__proto__" }],
+    );
+    assert.deepEqual(safeParse('{"a":1}', { onDangerousKey: "reject" }), [true, { a: 1 }]);
+  });
+
+  it("reject still reports syntax errors as invalid JSON", () => {
+    const r = safeParse('{"__proto__":', { onDangerousKey: "reject" });
+    assert.equal(r[0], false);
+    assert.ok((r[1] as string).startsWith("invalid JSON: "));
+  });
+
+  it("keep leaves dangerous keys as own properties without polluting", () => {
+    const r = safeParse(poisoned, { onDangerousKey: "keep" });
+    assert.equal(r[0], true);
+    const v = r[1] as Record<string, Record<string, unknown>>;
+    assert.ok(Object.hasOwn(v.a!, "__proto__"));
+    assert.ok(Object.hasOwn(v, "constructor"));
+    assert.equal(({} as Record<string, unknown>).x, undefined);
+    assert.deepEqual(r[1], parse(poisoned));
+  });
+
+  it("parse keeps dangerous keys (non-stripping, by design)", () => {
+    const v = parse('{"__proto__":{"x":1},"a":1}') as Record<string, unknown>;
+    assert.ok(Object.hasOwn(v, "__proto__"));
+  });
+});
+
+describe("findDangerousKey", () => {
+  it("returns the first dangerous key or undefined, without mutating", () => {
+    const v = JSON.parse('{"a":[1,{"b":{"constructor":2}}],"c":null}');
+    const before = JSON.stringify(v);
+    assert.equal(findDangerousKey(v), "constructor");
+    assert.equal(JSON.stringify(v), before);
+    assert.equal(findDangerousKey(JSON.parse('{"__proto__":1}')), "__proto__");
+    assert.equal(findDangerousKey({ a: [1, "x", null, { b: true }] }), undefined);
+    assert.equal(findDangerousKey(42), undefined);
   });
 });

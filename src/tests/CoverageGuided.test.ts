@@ -126,3 +126,86 @@ test("fuzzAsync() uses coverage guidance when inspector is available", async () 
   );
   assert.equal(result.ok, true);
 });
+
+// ---------------------------------------------------------------------------
+// Corpus, size cycling, shrink budget (G7-8)
+// ---------------------------------------------------------------------------
+
+test("fuzz() runs config.corpus values before generated inputs", () => {
+  const result = CG.fuzz(
+    Arb.integer(0, 10),
+    (n) => {
+      if (n === 12345) throw new Error("corpus crash");
+    },
+    { seed: fixedSeed, maxDuration: 1000, corpus: [1, 12345] },
+  );
+  assert.equal(result.ok, false);
+  assert.equal(result.numRuns, 2);
+  assert.equal(result.counterexample, 12345);
+  assert.equal((result.error as Error).message, "corpus crash");
+});
+
+test("fuzzAsync() runs config.corpus values before generated inputs", async () => {
+  const result = await CG.fuzzAsync(
+    Arb.integer(0, 10),
+    async (n) => {
+      if (n === 12345) throw new Error("corpus crash");
+    },
+    { seed: fixedSeed, maxDuration: 1000, corpus: [1, 12345] },
+  );
+  assert.equal(result.ok, false);
+  assert.equal(result.numRuns, 2);
+  assert.equal(result.counterexample, 12345);
+});
+
+test("fuzz() cycles sizes through 0..maxSize instead of pinning maxSize", () => {
+  const sizes: number[] = [];
+  const arb: Arb.Arbitrary<number> = (_prng, size) => {
+    sizes.push(size);
+    return { value: size, shrinks: [] };
+  };
+  CG.fuzz(arb, () => {}, { seed: fixedSeed, maxDuration: 50, maxSize: 3 });
+  assert.ok(sizes.length > 8);
+  assert.deepEqual(sizes.slice(0, 8), [0, 1, 2, 3, 0, 1, 2, 3]);
+});
+
+test("fuzz() maxShrinkEvaluations bounds shrinking", () => {
+  let calls = 0;
+  const arb: Arb.Arbitrary<number> = () => ({
+    value: -1,
+    shrinks: {
+      *[Symbol.iterator]() {
+        for (let i = 0; ; i++) yield { value: i, shrinks: [] };
+      },
+    },
+  });
+  const result = CG.fuzz(
+    arb,
+    (n) => {
+      calls++;
+      if (n < 0) throw new Error("neg");
+    },
+    { seed: fixedSeed, maxDuration: 1000, maxShrinkEvaluations: 10 },
+  );
+  assert.equal(result.ok, false);
+  assert.equal(result.shrinks, 0);
+  assert.equal(calls, 11);
+});
+
+test("fuzzAsync() mutates corpus entries by walking their shrink trees", async () => {
+  const seen = new Set<string>();
+  const arb: Arb.Arbitrary<string> = () => ({
+    value: "root",
+    shrinks: [{ value: "child", shrinks: [] }],
+  });
+  const result = await CG.fuzzAsync(
+    arb,
+    async (v) => {
+      seen.add(v);
+    },
+    { seed: fixedSeed, maxDuration: 300 },
+  );
+  assert.equal(result.ok, true);
+  // "child" is never generated directly — only reachable as a mutation.
+  assert.ok(seen.has("child"), "no corpus mutation happened");
+});

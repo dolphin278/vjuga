@@ -1,23 +1,26 @@
 /**
- * CoverageGuided — coverage-guided fuzz testing using V8/WebKit inspector.
+ * CoverageGuided — time-boxed fuzzing, with V8 coverage feedback in the async
+ * variant.
  *
- * Combines property-based testing generators (`Arbitrary<T>`) with runtime
- * code coverage feedback to steer generation toward unexplored branches.
- * Inputs that trigger new coverage are added to a corpus and mutated to
- * explore nearby code paths.
+ * `fuzz` (sync) is random fuzzing: it replays `config.corpus` values, then
+ * draws fresh inputs from an `Arbitrary<T>` until `maxDuration` elapses, and
+ * shrinks the first crash. `fuzzAsync` additionally measures V8 block coverage
+ * after each input; inputs that reach a new per-function block pattern join a
+ * capped corpus, and half of later inputs are mutations of corpus entries.
  *
- * When to use: finding inputs that trigger rare branches, crashes, or edge
- * cases in parser/validator/serializer code. Pure property-based testing
- * (Property module) is better for verifying logical invariants; coverage-guided
- * fuzzing excels at finding crashes and boundary violations that random
- * generation alone is unlikely to hit.
+ * When to use: finding inputs that crash parser/validator/serializer code
+ * under a time budget. Prefer the Property module for logical invariants and
+ * a fixed run count.
+ *
+ * Internal design: a mutation walks 1–4 random steps down the entry's shrink
+ * tree, so it only explores *simpler* neighbours; there is no byte-level
+ * mutator. Corpus seed values (plain values, no shrink tree) are run first and
+ * kept as-is. Coverage keys are `function × which nested blocks ran`, so a
+ * newly taken branch inside an already-covered function counts as new.
  *
  * Design tradeoffs: uses `node:inspector` (Session API) for V8 precise
- * coverage on Node.js. On Bun, uses `bun:jsc` for coverage collection.
- * Falls back to pure random (non-guided) on runtimes lacking inspector
- * support. The overhead of coverage collection (~5-10x slower per execution)
- * is acceptable because fuzzing is a batch process, not a latency-sensitive
- * operation.
+ * coverage; on runtimes without it (Bun) `fuzzAsync` degrades to random
+ * fuzzing. Coverage collection costs ~5–10× per execution.
  *
  * Prior art: jazzer.js, go-fuzz, AFL.
  *
@@ -26,14 +29,15 @@
  * import * as Arb from "@dolphin278/vjuga/Arbitrary";
  * import * as CG from "@dolphin278/vjuga/CoverageGuided";
  *
+ * // Finds a string containing a lone "%", which decodeURIComponent rejects.
  * const result = CG.fuzz(Arb.string(), (input) => {
- *   myParser(input); // crashes on certain inputs
- * }, { maxDuration: 5000 });
+ *   decodeURIComponent(input);
+ * }, { maxDuration: 1000 });
  * ```
  */
 
 import type { Fn1 } from "./FunctionUtils.js";
-import { type Seed, split, make, randomSeed } from "./PRNG.js";
+import { type PRNG, type Seed, split, make, randomSeed, nextInt } from "./PRNG.js";
 import type { Tree, Arbitrary } from "./Arbitrary.js";
 import type { CheckResult } from "./Property.js";
 
@@ -41,22 +45,50 @@ import type { CheckResult } from "./Property.js";
 // Types
 // ---------------------------------------------------------------------------
 
-/** Configuration for coverage-guided fuzzing. */
+/** Configuration for fuzzing. */
 export interface FuzzConfig {
   /** Maximum fuzzing duration in milliseconds. Default 10_000. */
   readonly maxDuration?: number;
-  /** Initial seed inputs to bootstrap the corpus. */
+  /** Seed input values, executed before any generated input. In `fuzzAsync`,
+   *  those reaching new coverage also join the corpus. */
   readonly corpus?: unknown[];
   /** PRNG seed for reproducibility. */
   readonly seed?: Seed;
-  /** Maximum size parameter. Default 100. */
+  /** Maximum size parameter; generated sizes cycle 0..maxSize. Default 100. */
   readonly maxSize?: number;
-  /** Maximum shrink iterations on failure. Default 1000. */
+  /** Maximum successful shrink steps on failure. Default 1000. */
   readonly maxShrinks?: number;
+  /** Maximum target executions while shrinking. Default `max(10_000, 10 * maxShrinks)`. */
+  readonly maxShrinkEvaluations?: number;
+  /** Maximum corpus entries kept by `fuzzAsync`. Default 256. */
+  readonly maxCorpus?: number;
 }
 
-/** Coverage data — set of (scriptId:offset) strings representing covered ranges. */
+/** Coverage data — set of coverage keys seen so far. */
 type CoverageSet = Set<string>;
+
+interface ResolvedFuzzConfig {
+  readonly maxDuration: number;
+  readonly maxSize: number;
+  readonly maxShrinks: number;
+  readonly maxShrinkEvaluations: number;
+  readonly maxCorpus: number;
+  readonly seed: Seed;
+  readonly corpus: readonly unknown[];
+}
+
+function resolveConfig(config?: FuzzConfig): ResolvedFuzzConfig {
+  const maxShrinks = config?.maxShrinks ?? 1000;
+  return {
+    maxDuration: config?.maxDuration ?? 10_000,
+    maxSize: config?.maxSize ?? 100,
+    maxShrinks,
+    maxShrinkEvaluations: config?.maxShrinkEvaluations ?? Math.max(10_000, 10 * maxShrinks),
+    maxCorpus: config?.maxCorpus ?? 256,
+    seed: config?.seed ?? randomSeed(),
+    corpus: config?.corpus ?? [],
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Internal: V8 Inspector coverage
@@ -66,6 +98,35 @@ interface InspectorSession {
   post(method: string, params?: Record<string, unknown>): Promise<unknown>;
   connect(): void;
   disconnect(): void;
+}
+
+interface CoverageRange {
+  startOffset: number;
+  endOffset: number;
+  count: number;
+}
+
+/**
+ * Coverage keys for one execution. V8 block coverage reports a function's own
+ * range first, then nested blocks whose count differs from their parent — so a
+ * function's key includes the on/off pattern of its nested blocks.
+ */
+function coverageKeys(
+  scripts: { scriptId: string; functions: { ranges: CoverageRange[] }[] }[],
+): CoverageSet {
+  const keys: CoverageSet = new Set();
+  for (const script of scripts) {
+    for (const fn of script.functions) {
+      const ranges = fn.ranges;
+      if (ranges.length === 0 || ranges[0]!.count === 0) continue;
+      let key = `${script.scriptId}:${ranges[0]!.startOffset}`;
+      for (let i = 1; i < ranges.length; i++) {
+        key += `|${ranges[i]!.startOffset}${ranges[i]!.count > 0 ? "+" : "-"}`;
+      }
+      keys.add(key);
+    }
+  }
+  return keys;
 }
 
 /** Attempts to create a V8 inspector session for precise coverage. */
@@ -91,23 +152,11 @@ async function tryCreateInspector(): Promise<{
         });
       },
       take: async () => {
+        // takePreciseCoverage also resets counters, so each call sees one execution.
         const result = (await session.post("Profiler.takePreciseCoverage")) as {
-          result: {
-            scriptId: string;
-            functions: { ranges: { startOffset: number; endOffset: number; count: number }[] }[];
-          }[];
+          result: { scriptId: string; functions: { ranges: CoverageRange[] }[] }[];
         };
-        const covered = new Set<string>();
-        for (const script of result.result) {
-          for (const fn of script.functions) {
-            for (const range of fn.ranges) {
-              if (range.count > 0) {
-                covered.add(`${script.scriptId}:${range.startOffset}-${range.endOffset}`);
-              }
-            }
-          }
-        }
-        return covered;
+        return coverageKeys(result.result);
       },
       stop: async () => {
         if (!connected) return;
@@ -128,26 +177,34 @@ async function tryCreateInspector(): Promise<{
 }
 
 // ---------------------------------------------------------------------------
-// Internal: shrink loop (reused from Property concept)
+// Internal: shrink loop (crash = target throws)
 // ---------------------------------------------------------------------------
+
+interface ShrinkResult<T> {
+  counterexample: T;
+  shrinks: number;
+  error: unknown;
+}
 
 function shrinkSync<T>(
   tree: Tree<T>,
   target: Fn1<T, void>,
-  maxShrinks: number,
-): { counterexample: T; shrinks: number; error: unknown } {
+  initialError: unknown,
+  cfg: ResolvedFuzzConfig,
+): ShrinkResult<T> {
   let best = tree.value;
-  let bestError: unknown;
+  let bestError = initialError;
   let shrinkCount = 0;
+  let evaluations = 0;
 
   let current = tree;
-  while (shrinkCount < maxShrinks) {
+  outer: while (shrinkCount < cfg.maxShrinks) {
     let found = false;
     for (const child of current.shrinks) {
-      if (shrinkCount >= maxShrinks) break;
+      if (evaluations >= cfg.maxShrinkEvaluations) break outer;
+      evaluations++;
       try {
         target(child.value);
-        shrinkCount++;
       } catch (e) {
         best = child.value;
         bestError = e;
@@ -166,20 +223,22 @@ function shrinkSync<T>(
 async function shrinkAsync<T>(
   tree: Tree<T>,
   target: (value: T) => Promise<void>,
-  maxShrinks: number,
-): Promise<{ counterexample: T; shrinks: number; error: unknown }> {
+  initialError: unknown,
+  cfg: ResolvedFuzzConfig,
+): Promise<ShrinkResult<T>> {
   let best = tree.value;
-  let bestError: unknown;
+  let bestError = initialError;
   let shrinkCount = 0;
+  let evaluations = 0;
 
   let current = tree;
-  while (shrinkCount < maxShrinks) {
+  outer: while (shrinkCount < cfg.maxShrinks) {
     let found = false;
     for (const child of current.shrinks) {
-      if (shrinkCount >= maxShrinks) break;
+      if (evaluations >= cfg.maxShrinkEvaluations) break outer;
+      evaluations++;
       try {
         await target(child.value);
-        shrinkCount++;
       } catch (e) {
         best = child.value;
         bestError = e;
@@ -195,24 +254,51 @@ async function shrinkAsync<T>(
   return { counterexample: best, shrinks: shrinkCount, error: bestError };
 }
 
-// ---------------------------------------------------------------------------
-// Internal: coverage diff
-// ---------------------------------------------------------------------------
-
-function coverageDiff(baseline: CoverageSet, current: CoverageSet): number {
-  let newCoverage = 0;
-  for (const entry of current) {
-    if (!baseline.has(entry)) {
-      newCoverage++;
-    }
-  }
-  return newCoverage;
+function failure<T>(
+  cfg: ResolvedFuzzConfig,
+  numRuns: number,
+  result: ShrinkResult<T>,
+): CheckResult<T> {
+  return {
+    ok: false,
+    numRuns,
+    seed: cfg.seed,
+    counterexample: result.counterexample,
+    shrinks: result.shrinks,
+    error: result.error,
+  };
 }
 
-function mergeCoverage(baseline: CoverageSet, current: CoverageSet): void {
-  for (const entry of current) {
-    baseline.add(entry);
+// ---------------------------------------------------------------------------
+// Internal: corpus
+// ---------------------------------------------------------------------------
+
+function seedTree<T>(value: T): Tree<T> {
+  return { value, shrinks: [] };
+}
+
+/** Random walk of 1–4 steps down the shrink tree (first 8 children per level). */
+function mutate<T>(tree: Tree<T>, prng: PRNG): Tree<T> {
+  let current = tree;
+  const steps = nextInt(prng, 1, 4);
+  for (let s = 0; s < steps; s++) {
+    const pick = nextInt(prng, 0, 7);
+    let chosen: Tree<T> | undefined;
+    let idx = 0;
+    for (const child of current.shrinks) {
+      chosen = child;
+      if (idx++ === pick) break;
+    }
+    if (chosen === undefined) break;
+    current = chosen;
   }
+  return current;
+}
+
+/** Adds `entry`, evicting a random entry once `cap` is reached. */
+function addToCorpus<T>(corpus: Tree<T>[], entry: Tree<T>, cap: number, prng: PRNG): void {
+  if (corpus.length < cap) corpus.push(entry);
+  else if (cap > 0) corpus[nextInt(prng, 0, cap - 1)] = entry;
 }
 
 // ---------------------------------------------------------------------------
@@ -220,133 +306,113 @@ function mergeCoverage(baseline: CoverageSet, current: CoverageSet): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Coverage-guided fuzz testing. Generates inputs from `arb`, executes `target`,
- * and uses V8 coverage feedback to steer generation toward unexplored branches.
- * Falls back to pure random fuzzing if the inspector is unavailable.
+ * Random time-boxed fuzzing (no coverage feedback). Runs `config.corpus`
+ * values first, then fresh inputs from `arb` with sizes cycling 0..maxSize,
+ * until `maxDuration` elapses or `target` throws; the crash is then shrunk.
  */
 export function fuzz<T>(
   arb: Arbitrary<T>,
   target: Fn1<T, void>,
   config?: FuzzConfig,
 ): CheckResult<T> {
-  const maxDuration = config?.maxDuration ?? 10_000;
-  const maxSize = config?.maxSize ?? 100;
-  const maxShrinks = config?.maxShrinks ?? 1000;
-  const usedSeed = config?.seed ?? randomSeed();
-  const prng = make(usedSeed);
+  const cfg = resolveConfig(config);
+  const prng = make(cfg.seed);
   const start = Date.now();
   let numRuns = 0;
 
-  // Pure random fallback (no coverage guidance)
-  while (Date.now() - start < maxDuration) {
-    const size = Math.min(maxSize, numRuns);
-    const tree = arb(split(prng), size);
+  for (const value of cfg.corpus as T[]) {
     numRuns++;
-
     try {
-      target(tree.value);
+      target(value);
     } catch (e) {
-      const result = shrinkSync(tree, target, maxShrinks);
-      return {
-        ok: false,
-        numRuns,
-        seed: usedSeed,
-        counterexample: result.counterexample,
-        shrinks: result.shrinks,
-        error: result.error ?? e,
-      };
+      return failure(cfg, numRuns, { counterexample: value, shrinks: 0, error: e });
     }
   }
 
-  return { ok: true, numRuns, seed: usedSeed };
+  while (Date.now() - start < cfg.maxDuration) {
+    const tree = arb(split(prng), numRuns % (cfg.maxSize + 1));
+    numRuns++;
+    try {
+      target(tree.value);
+    } catch (e) {
+      return failure(cfg, numRuns, shrinkSync(tree, target, e, cfg));
+    }
+  }
+
+  return { ok: true, numRuns, seed: cfg.seed };
 }
 
 /**
- * Async coverage-guided fuzz testing with V8 inspector integration.
- * Uses precise coverage collection to steer generation toward new branches.
+ * Async fuzzing with V8 coverage feedback. Runs `config.corpus` values first,
+ * then alternates fresh inputs with mutations (shrink-tree walks) of corpus
+ * entries that reached new coverage. Without an inspector it behaves like
+ * `fuzz` (random fuzzing).
  */
 export async function fuzzAsync<T>(
   arb: Arbitrary<T>,
   target: (value: T) => Promise<void>,
   config?: FuzzConfig,
 ): Promise<CheckResult<T>> {
-  const maxDuration = config?.maxDuration ?? 10_000;
-  const maxSize = config?.maxSize ?? 100;
-  const maxShrinks = config?.maxShrinks ?? 1000;
-  const usedSeed = config?.seed ?? randomSeed();
-  const prng = make(usedSeed);
+  const cfg = resolveConfig(config);
+  const prng = make(cfg.seed);
   const start = Date.now();
   let numRuns = 0;
 
   const inspector = await tryCreateInspector();
-
+  const seen: CoverageSet = new Set();
+  const corpus: Tree<T>[] = [];
   if (inspector) {
-    // Coverage-guided mode
     await inspector.start();
-    const baseline: CoverageSet = new Set();
+    // Baseline: everything reachable before the first input.
+    for (const key of await inspector.take()) seen.add(key);
+  }
 
-    // Collect initial baseline
-    const initialCov = await inspector.take();
-    mergeCoverage(baseline, initialCov);
-
-    // Corpus: inputs that discovered new coverage
-    const corpus: { tree: Tree<T>; size: number }[] = [];
-
-    try {
-      while (Date.now() - start < maxDuration) {
-        const size = Math.min(maxSize, numRuns);
-        // Alternate between fresh generation and corpus mutation
-        const tree = arb(split(prng), size);
-        numRuns++;
-
-        try {
-          await target(tree.value);
-        } catch (e) {
-          await inspector.stop();
-          const result = await shrinkAsync(tree, target, maxShrinks);
-          return {
-            ok: false,
-            numRuns,
-            seed: usedSeed,
-            counterexample: result.counterexample,
-            shrinks: result.shrinks,
-            error: result.error ?? e,
-          };
-        }
-
-        // Check for new coverage
-        const cov = await inspector.take();
-        const newBranches = coverageDiff(baseline, cov);
-        if (newBranches > 0) {
-          mergeCoverage(baseline, cov);
-          corpus.push({ tree, size });
-        }
+  /** Records coverage of the last execution; true if it reached something new. */
+  const observe = async (): Promise<boolean> => {
+    if (!inspector) return false;
+    let fresh = false;
+    for (const key of await inspector.take()) {
+      if (!seen.has(key)) {
+        seen.add(key);
+        fresh = true;
       }
-    } finally {
-      await inspector.stop();
     }
-  } else {
-    // Fallback: pure random
-    while (Date.now() - start < maxDuration) {
-      const size = Math.min(maxSize, numRuns);
-      const tree = arb(split(prng), size);
-      numRuns++;
+    return fresh;
+  };
 
+  try {
+    for (const value of cfg.corpus as T[]) {
+      numRuns++;
+      const tree = seedTree(value);
+      try {
+        await target(value);
+      } catch (e) {
+        return failure(cfg, numRuns, { counterexample: value, shrinks: 0, error: e });
+      }
+      if (await observe()) addToCorpus(corpus, tree, cfg.maxCorpus, prng);
+    }
+
+    while (Date.now() - start < cfg.maxDuration) {
+      let tree: Tree<T> | undefined;
+      if (corpus.length > 0 && numRuns % 2 === 1) {
+        const entry = corpus[nextInt(prng, 0, corpus.length - 1)]!;
+        const mutated = mutate(entry, prng);
+        // Seed values (and fully shrunk entries) have no neighbours to explore.
+        if (mutated !== entry) tree = mutated;
+      }
+      tree ??= arb(split(prng), numRuns % (cfg.maxSize + 1));
+      numRuns++;
       try {
         await target(tree.value);
       } catch (e) {
-        const result = await shrinkAsync(tree, target, maxShrinks);
-        return {
-          ok: false,
-          numRuns,
-          seed: usedSeed,
-          counterexample: result.counterexample,
-          shrinks: result.shrinks,
-          error: result.error ?? e,
-        };
+        if (inspector) await inspector.stop();
+        return failure(cfg, numRuns, await shrinkAsync(tree, target, e, cfg));
       }
+      if (await observe()) addToCorpus(corpus, tree, cfg.maxCorpus, prng);
     }
+  } finally {
+    if (inspector) await inspector.stop();
   }
 
-  return { ok: true, numRuns, seed: usedSeed };
+  return { ok: true, numRuns, seed: cfg.seed };
 }

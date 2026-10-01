@@ -4,17 +4,21 @@
  * Generates random sequences of commands, executes them against both a
  * simplified model and the real system under test, and verifies they stay in
  * sync. When a discrepancy is found, the command sequence is shrunk to a
- * minimal failing prefix.
+ * minimal failing sequence.
  *
  * When to use: testing stateful APIs (caches, queues, databases, state
  * machines) where bugs arise from specific orderings of operations. Simpler
  * unit tests suffice for pure functions; reach for stateful testing when
  * state-dependent interactions are the concern.
  *
+ * Internal design: generation is interleaved with execution (fast-check
+ * style) — command i is generated from the model after commands 0..i-1 ran,
+ * so state-dependent generators see real state. Shrink candidates replay on
+ * fresh `initialModel()`/`initialReal()` instances, re-checking `check`.
+ *
  * Design tradeoffs: commands are plain objects with `check`/`run` methods
- * rather than classes to keep the interface lightweight and composable.
- * The model is cloned via structured clone before each shrink attempt to
- * ensure isolation — this bounds shrink overhead to O(commands * cloneCost).
+ * rather than classes. Generators receive the live model: read it, don't
+ * capture it in `run` (use the `model` argument there).
  *
  * Prior art: fast-check `fc.commands()`, Hypothesis `RuleBasedStateMachine`.
  *
@@ -34,10 +38,9 @@
  * ```
  */
 
-import { type PRNG, type Seed, split, randomSeed, make } from "./PRNG.js";
+import { type PRNG, type Seed, split, randomSeed, make, nextInt } from "./PRNG.js";
 import { type Tree, type Arbitrary } from "./Arbitrary.js";
 import { type CheckResult } from "./Property.js";
-import { nextInt } from "./PRNG.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -60,7 +63,10 @@ export interface AsyncCommand<Model, Real> {
   run(model: Model, real: Real): Promise<void>;
 }
 
-/** A command generator — produces commands conditional on model state. */
+/**
+ * A command generator — produces commands conditional on model state. Called
+ * with the current (live) model each time a command is generated.
+ */
 export type CommandArbitrary<Model, Real> = (model: Model) => Arbitrary<Command<Model, Real>>;
 
 /** Async command generator. */
@@ -78,16 +84,18 @@ export interface StatefulConfig<Model, Real> {
   readonly commands: [CommandArbitrary<Model, Real>, ...CommandArbitrary<Model, Real>[]];
   /** Maximum number of commands per sequence. Default 50. */
   readonly maxCommands?: number;
-  /** Teardown callback for the real system. */
+  /** Teardown callback for the real system; runs even when a command throws. */
   readonly teardown?: (real: Real) => void;
   /** Number of test sequences to run. Default 100. */
   readonly numRuns?: number;
   /** PRNG seed for reproducibility. */
   readonly seed?: Seed;
-  /** Maximum shrink iterations. Default 1000. */
+  /** Maximum successful shrink steps. Default 1000. */
   readonly maxShrinks?: number;
+  /** Maximum sequence replays while shrinking. Default `max(10_000, 10 * maxShrinks)`. */
+  readonly maxShrinkEvaluations?: number;
   /** Wall-clock deadline in milliseconds. When set, the run loop exits early if
-   *  the deadline passes before numRuns completes. */
+   *  the deadline passes before numRuns completes, and shrinking stops at it. */
   readonly timeoutMs?: number;
 }
 
@@ -101,201 +109,271 @@ export interface AsyncStatefulConfig<Model, Real> {
   readonly numRuns?: number;
   readonly seed?: Seed;
   readonly maxShrinks?: number;
+  readonly maxShrinkEvaluations?: number;
   /** Wall-clock deadline in milliseconds. When set, the run loop exits early if
-   *  the deadline passes before numRuns completes. */
+   *  the deadline passes before numRuns completes, and shrinking stops at it. */
   readonly timeoutMs?: number;
 }
 
 // ---------------------------------------------------------------------------
-// Internal: command sequence execution
+// Internal: outcomes and budgets
 // ---------------------------------------------------------------------------
 
-function executeCommandsSync<Model, Real>(
-  commands: Command<Model, Real>[],
-  model: Model,
-  real: Real,
-): { ok: boolean; error?: unknown; executedCount: number } {
-  for (let i = 0; i < commands.length; i++) {
-    const cmd = commands[i]!;
-    /* node:coverage ignore next */
-    if (cmd.check !== undefined && !cmd.check(model)) continue;
-    try {
-      cmd.run(model, real);
-    } catch (e) {
-      return { ok: false, error: e, executedCount: i + 1 };
+/** Sentinel outcome: the sequence ran without a command throwing. */
+const PASSED: unique symbol = Symbol("passed");
+
+interface ShrinkLimits {
+  readonly maxShrinks: number;
+  readonly maxShrinkEvaluations: number;
+  readonly deadline: number | undefined;
+}
+
+function resolveLimits(config: {
+  readonly maxShrinks?: number;
+  readonly maxShrinkEvaluations?: number;
+  readonly timeoutMs?: number;
+}): ShrinkLimits {
+  /* node:coverage ignore next 2 */
+  const maxShrinks = config.maxShrinks ?? 1000;
+  const maxShrinkEvaluations = config.maxShrinkEvaluations ?? Math.max(10_000, 10 * maxShrinks);
+  const deadline = config.timeoutMs !== undefined ? Date.now() + config.timeoutMs : undefined;
+  return { maxShrinks, maxShrinkEvaluations, deadline };
+}
+
+function pastDeadline(limits: ShrinkLimits): boolean {
+  return limits.deadline !== undefined && Date.now() > limits.deadline;
+}
+
+function outOfBudget(evaluations: number, limits: ShrinkLimits): boolean {
+  return evaluations >= limits.maxShrinkEvaluations || pastDeadline(limits);
+}
+
+function sequenceLength(prng: PRNG, size: number, maxCommands: number): number {
+  return nextInt(prng, 1, Math.min(maxCommands, Math.max(1, size)));
+}
+
+// ---------------------------------------------------------------------------
+// Internal: generation interleaved with execution
+// ---------------------------------------------------------------------------
+
+/**
+ * Generates and runs one sequence. Command `i` is generated from the model as
+ * left by commands `0..i-1`; commands whose `check` rejects the current model
+ * are dropped (at most `10 * len` generation attempts). Returns the executed
+ * command trees and PASSED or the error thrown by the last one.
+ */
+function runGeneratedSync<Model, Real>(
+  config: StatefulConfig<Model, Real>,
+  prng: PRNG,
+  size: number,
+  maxCommands: number,
+): { trees: Tree<Command<Model, Real>>[]; outcome: unknown } {
+  const gens = config.commands;
+  const trees: Tree<Command<Model, Real>>[] = [];
+  let outcome: unknown = PASSED;
+  const model = config.initialModel();
+  const real = config.initialReal();
+  try {
+    const len = sequenceLength(prng, size, maxCommands);
+    for (let attempts = 0; trees.length < len && attempts < len * 10; attempts++) {
+      const gen = gens[nextInt(prng, 0, gens.length - 1)]!;
+      const tree = gen(model)(split(prng), size);
+      const cmd = tree.value;
+      if (cmd.check !== undefined && !cmd.check(model)) continue;
+      trees.push(tree);
+      try {
+        cmd.run(model, real);
+      } catch (e) {
+        outcome = e;
+        break;
+      }
     }
+  } finally {
+    if (config.teardown) config.teardown(real);
   }
-  return { ok: true, executedCount: commands.length };
+  return { trees, outcome };
 }
 
 /* node:coverage disable */
-async function executeCommandsAsync<Model, Real>(
-  commands: AsyncCommand<Model, Real>[],
-  model: Model,
-  real: Real,
-): Promise<{ ok: boolean; error?: unknown; executedCount: number }> {
-  for (let i = 0; i < commands.length; i++) {
-    const cmd = commands[i]!;
-    if (cmd.check !== undefined && !cmd.check(model)) continue;
-    try {
-      await cmd.run(model, real);
-    } catch (e) {
-      return { ok: false, error: e, executedCount: i + 1 };
+async function runGeneratedAsync<Model, Real>(
+  config: AsyncStatefulConfig<Model, Real>,
+  prng: PRNG,
+  size: number,
+  maxCommands: number,
+): Promise<{ trees: Tree<AsyncCommand<Model, Real>>[]; outcome: unknown }> {
+  const gens = config.commands;
+  const trees: Tree<AsyncCommand<Model, Real>>[] = [];
+  let outcome: unknown = PASSED;
+  const model = config.initialModel();
+  const real = await config.initialReal();
+  try {
+    const len = sequenceLength(prng, size, maxCommands);
+    for (let attempts = 0; trees.length < len && attempts < len * 10; attempts++) {
+      const gen = gens[nextInt(prng, 0, gens.length - 1)]!;
+      const tree = gen(model)(split(prng), size);
+      const cmd = tree.value;
+      if (cmd.check !== undefined && !cmd.check(model)) continue;
+      trees.push(tree);
+      try {
+        await cmd.run(model, real);
+      } catch (e) {
+        outcome = e;
+        break;
+      }
     }
+  } finally {
+    if (config.teardown) await config.teardown(real);
   }
-  return { ok: true, executedCount: commands.length };
+  return { trees, outcome };
 }
 /* node:coverage enable */
 
 // ---------------------------------------------------------------------------
-// Internal: command sequence generation
+// Internal: replaying a fixed sequence (shrinking)
 // ---------------------------------------------------------------------------
 
-function generateCommandSequence<Model, Real>(
-  commandGens: CommandArbitrary<Model, Real>[],
-  prng: PRNG,
-  size: number,
-  maxCommands: number,
-  initialModel: () => Model,
-): Tree<Command<Model, Real>[]> {
-  const model = initialModel();
-  const len = nextInt(prng, 1, Math.min(maxCommands, Math.max(1, size)));
-  const cmdTrees: Tree<Command<Model, Real>>[] = [];
-
-  for (let i = 0; i < len; i++) {
-    const genIdx = nextInt(prng, 0, commandGens.length - 1);
-    const gen = commandGens[genIdx]!;
-    const tree = gen(model)(split(prng), size);
-    // Don't execute commands during generation — state advancement would
-    // require a real system. Commands are only executed during the test phase.
-    cmdTrees.push(tree);
+/** Runs a fixed sequence on fresh state, re-checking each precondition. */
+function replaySync<Model, Real>(
+  commands: Command<Model, Real>[],
+  config: StatefulConfig<Model, Real>,
+): unknown {
+  const model = config.initialModel();
+  const real = config.initialReal();
+  try {
+    for (const cmd of commands) {
+      if (cmd.check !== undefined && !cmd.check(model)) continue;
+      try {
+        cmd.run(model, real);
+      } catch (e) {
+        return e;
+      }
+    }
+    return PASSED;
+  } finally {
+    if (config.teardown) config.teardown(real);
   }
-
-  return {
-    value: cmdTrees.map((t) => t.value),
-    shrinks: shrinkCommandSequence(cmdTrees),
-  };
 }
 
-function* shrinkCommandSequence<Model, Real>(
-  cmdTrees: Tree<Command<Model, Real>>[],
-): Iterable<Tree<Command<Model, Real>[]>> {
-  const len = cmdTrees.length;
-  /* node:coverage ignore next 2 */
-  if (len === 0) return;
-
-  // Phase 1: try removing commands (from end, then from middle)
-  // Try removing last half
-  if (len > 1) {
-    const half = Math.ceil(len / 2);
-    const prefix = cmdTrees.slice(0, half);
-    yield {
-      value: prefix.map((t) => t.value),
-      shrinks: shrinkCommandSequence(prefix),
-    };
-  }
-
-  // Try removing one command at a time
-  for (let i = len - 1; i >= 0; i--) {
-    const without = [...cmdTrees.slice(0, i), ...cmdTrees.slice(i + 1)];
-    if (without.length > 0) {
-      yield {
-        value: without.map((t) => t.value),
-        shrinks: shrinkCommandSequence(without),
-      };
+/* node:coverage disable */
+async function replayAsync<Model, Real>(
+  commands: AsyncCommand<Model, Real>[],
+  config: AsyncStatefulConfig<Model, Real>,
+): Promise<unknown> {
+  const model = config.initialModel();
+  const real = await config.initialReal();
+  try {
+    for (const cmd of commands) {
+      if (cmd.check !== undefined && !cmd.check(model)) continue;
+      try {
+        await cmd.run(model, real);
+      } catch (e) {
+        return e;
+      }
     }
+    return PASSED;
+  } finally {
+    if (config.teardown) await config.teardown(real);
   }
+}
+/* node:coverage enable */
 
-  // Phase 2: shrink individual commands
-  for (let i = 0; i < cmdTrees.length; i++) {
-    for (const childTree of cmdTrees[i]!.shrinks) {
-      const copy = cmdTrees.slice();
-      copy[i] = childTree;
-      yield {
-        value: copy.map((t) => t.value),
-        shrinks: shrinkCommandSequence(copy),
-      };
-    }
-  }
+// ---------------------------------------------------------------------------
+// Internal: command sequence shrink tree
+// ---------------------------------------------------------------------------
+
+function sequenceTree<C>(cmdTrees: Tree<C>[]): Tree<C[]> {
+  return { value: cmdTrees.map((t) => t.value), shrinks: shrinkCommandSequence(cmdTrees) };
+}
+
+/** Re-iterable shrink candidates for a command sequence. */
+function shrinkCommandSequence<C>(cmdTrees: Tree<C>[]): Iterable<Tree<C[]>> {
+  return {
+    *[Symbol.iterator]() {
+      const len = cmdTrees.length;
+      // Phase 1: try removing commands — first the last half, then one at a time
+      if (len > 1) yield sequenceTree(cmdTrees.slice(0, Math.ceil(len / 2)));
+      for (let i = len - 1; i >= 0 && len > 1; i--) {
+        yield sequenceTree([...cmdTrees.slice(0, i), ...cmdTrees.slice(i + 1)]);
+      }
+      // Phase 2: shrink individual commands
+      for (let i = 0; i < len; i++) {
+        for (const childTree of cmdTrees[i]!.shrinks) {
+          const copy = cmdTrees.slice();
+          copy[i] = childTree;
+          yield sequenceTree(copy);
+        }
+      }
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
 // Internal: shrink loop for command sequences
 // ---------------------------------------------------------------------------
 
-/* node:coverage disable */
-function shrinkStatefulSync<Model, Real>(
-  tree: Tree<Command<Model, Real>[]>,
-  config: StatefulConfig<Model, Real>,
-  maxShrinks: number,
-): { commands: Command<Model, Real>[]; shrinks: number; error?: unknown } {
-  let best = tree.value;
-  let bestError: unknown;
-  let shrinkCount = 0;
+interface StatefulShrinkResult<C> {
+  commands: C[];
+  shrinks: number;
+  error: unknown;
+}
 
-  let current = tree;
-  while (shrinkCount < maxShrinks) {
+function shrinkStatefulSync<Model, Real>(
+  trees: Tree<Command<Model, Real>>[],
+  initialError: unknown,
+  config: StatefulConfig<Model, Real>,
+  limits: ShrinkLimits,
+): StatefulShrinkResult<Command<Model, Real>> {
+  let current = sequenceTree(trees);
+  let bestError = initialError;
+  let shrinkCount = 0;
+  let evaluations = 0;
+  outer: while (shrinkCount < limits.maxShrinks) {
     let found = false;
     for (const child of current.shrinks) {
-      if (shrinkCount >= maxShrinks) break;
-
-      const model = config.initialModel();
-      const real = config.initialReal();
-      const result = executeCommandsSync(child.value, model, real);
-      if (config.teardown) config.teardown(real);
-
-      if (!result.ok) {
-        best = child.value;
-        bestError = result.error;
+      if (outOfBudget(evaluations, limits)) break outer;
+      evaluations++;
+      const outcome = replaySync(child.value, config);
+      if (outcome !== PASSED) {
+        bestError = outcome;
         shrinkCount++;
         current = child;
         found = true;
         break;
       }
-      shrinkCount++;
     }
     if (!found) break;
   }
-
-  return { commands: best, shrinks: shrinkCount, error: bestError };
+  return { commands: current.value, shrinks: shrinkCount, error: bestError };
 }
-/* node:coverage enable */
 
 /* node:coverage disable */
 async function shrinkStatefulAsync<Model, Real>(
-  tree: Tree<AsyncCommand<Model, Real>[]>,
+  trees: Tree<AsyncCommand<Model, Real>>[],
+  initialError: unknown,
   config: AsyncStatefulConfig<Model, Real>,
-  maxShrinks: number,
-): Promise<{ commands: AsyncCommand<Model, Real>[]; shrinks: number; error?: unknown }> {
-  let best = tree.value;
-  let bestError: unknown;
+  limits: ShrinkLimits,
+): Promise<StatefulShrinkResult<AsyncCommand<Model, Real>>> {
+  let current = sequenceTree(trees);
+  let bestError = initialError;
   let shrinkCount = 0;
-
-  let current = tree;
-  while (shrinkCount < maxShrinks) {
+  let evaluations = 0;
+  outer: while (shrinkCount < limits.maxShrinks) {
     let found = false;
     for (const child of current.shrinks) {
-      if (shrinkCount >= maxShrinks) break;
-
-      const model = config.initialModel();
-      const real = await config.initialReal();
-      const result = await executeCommandsAsync(child.value, model, real);
-      if (config.teardown) await config.teardown(real);
-
-      if (!result.ok) {
-        best = child.value;
-        bestError = result.error;
+      if (outOfBudget(evaluations, limits)) break outer;
+      evaluations++;
+      const outcome = await replayAsync(child.value, config);
+      if (outcome !== PASSED) {
+        bestError = outcome;
         shrinkCount++;
         current = child;
         found = true;
         break;
       }
-      shrinkCount++;
     }
     if (!found) break;
   }
-
-  return { commands: best, shrinks: shrinkCount, error: bestError };
+  return { commands: current.value, shrinks: shrinkCount, error: bestError };
 }
 /* node:coverage enable */
 
@@ -304,51 +382,34 @@ async function shrinkStatefulAsync<Model, Real>(
 // ---------------------------------------------------------------------------
 
 /**
- * Runs a stateful property check. Generates command sequences, executes them
- * against model + real system, and shrinks failures to minimal sequences.
+ * Runs a stateful property check. Generates command sequences while executing
+ * them against model + real system, and shrinks failures to minimal sequences.
+ * `timeoutMs` bounds both the run loop and shrinking.
  */
 export function checkStateful<Model, Real>(
   config: StatefulConfig<Model, Real>,
 ): CheckResult<Command<Model, Real>[]> {
-  /* node:coverage ignore next 4 */
+  /* node:coverage ignore next 3 */
   const numRuns = config.numRuns ?? 100;
   const maxCommands = config.maxCommands ?? 50;
-  const maxShrinks = config.maxShrinks ?? 1000;
   const usedSeed = config.seed ?? randomSeed();
-  const timeoutMs = config.timeoutMs;
+  const limits = resolveLimits(config);
   const prng = make(usedSeed);
-  /* node:coverage ignore next */
-  const deadline = timeoutMs !== undefined ? Date.now() + timeoutMs : undefined;
   let i = 0;
   for (; i < numRuns; i++) {
-    if (deadline !== undefined && Date.now() > deadline) break;
+    if (pastDeadline(limits)) break;
     /* node:coverage ignore next */
     const size = numRuns <= 1 ? 100 : Math.floor((i * 100) / (numRuns - 1));
-    const testPrng = split(prng);
-
-    const tree = generateCommandSequence(
-      config.commands as unknown as CommandArbitrary<Model, Real>[],
-      testPrng,
-      size,
-      maxCommands,
-      config.initialModel,
-    );
-
-    const model = config.initialModel();
-    const real = config.initialReal();
-    const result = executeCommandsSync(tree.value, model, real);
-    if (config.teardown) config.teardown(real);
-
-    if (!result.ok) {
-      const shrinkResult = shrinkStatefulSync(tree, config, maxShrinks);
+    const { trees, outcome } = runGeneratedSync(config, split(prng), size, maxCommands);
+    if (outcome !== PASSED) {
+      const shrinkResult = shrinkStatefulSync(trees, outcome, config, limits);
       return {
         ok: false,
         numRuns: i + 1,
         seed: usedSeed,
         counterexample: shrinkResult.commands,
         shrinks: shrinkResult.shrinks,
-        /* node:coverage ignore next */
-        error: shrinkResult.error ?? result.error,
+        error: shrinkResult.error,
       };
     }
   }
@@ -389,42 +450,23 @@ export async function checkStatefulAsync<Model, Real>(
 ): Promise<CheckResult<AsyncCommand<Model, Real>[]>> {
   const numRuns = config.numRuns ?? 100;
   const maxCommands = config.maxCommands ?? 50;
-  const maxShrinks = config.maxShrinks ?? 1000;
   const usedSeed = config.seed ?? randomSeed();
-  const timeoutMs = config.timeoutMs;
+  const limits = resolveLimits(config);
   const prng = make(usedSeed);
-
-  const deadline = timeoutMs !== undefined ? Date.now() + timeoutMs : undefined;
   let i = 0;
   for (; i < numRuns; i++) {
-    if (deadline !== undefined && Date.now() > deadline) break;
+    if (pastDeadline(limits)) break;
     const size = numRuns <= 1 ? 100 : Math.floor((i * 100) / (numRuns - 1));
-    const testPrng = split(prng);
-
-    // For async, we still generate commands synchronously (generation is pure)
-    // but execute them asynchronously
-    const tree = generateCommandSequence(
-      config.commands as unknown as CommandArbitrary<Model, Real>[],
-      testPrng,
-      size,
-      maxCommands,
-      config.initialModel,
-    ) as unknown as Tree<AsyncCommand<Model, Real>[]>;
-
-    const model = config.initialModel();
-    const real = await config.initialReal();
-    const result = await executeCommandsAsync(tree.value, model, real);
-    if (config.teardown) await config.teardown(real);
-
-    if (!result.ok) {
-      const shrinkResult = await shrinkStatefulAsync(tree, config, maxShrinks);
+    const { trees, outcome } = await runGeneratedAsync(config, split(prng), size, maxCommands);
+    if (outcome !== PASSED) {
+      const shrinkResult = await shrinkStatefulAsync(trees, outcome, config, limits);
       return {
         ok: false,
         numRuns: i + 1,
         seed: usedSeed,
         counterexample: shrinkResult.commands,
         shrinks: shrinkResult.shrinks,
-        error: shrinkResult.error ?? result.error,
+        error: shrinkResult.error,
       };
     }
   }

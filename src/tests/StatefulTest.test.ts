@@ -476,3 +476,282 @@ test("checkStatefulAsync() with teardown", async () => {
   });
   assert.ok(tornDown);
 });
+
+// ---------------------------------------------------------------------------
+// Generation tracks the evolving model (G7-7)
+// ---------------------------------------------------------------------------
+
+interface StackModel {
+  items: number[];
+}
+
+const pushCmd: ST.CommandArbitrary<StackModel, number[]> = () =>
+  Arb.map(Arb.integer(0, 9), (v) => ({
+    name: `push(${v})`,
+    run: (m: StackModel, r: number[]) => {
+      m.items.push(v);
+      r.push(v);
+    },
+  }));
+
+test("checkStateful() generators see the model as commands execute", () => {
+  let pops = 0;
+  const sizesSeen = new Set<number>();
+  const result = ST.checkStateful<StackModel, number[]>({
+    initialModel: () => ({ items: [] }),
+    initialReal: () => [],
+    commands: [
+      pushCmd,
+      (model) => {
+        sizesSeen.add(model.items.length);
+        return model.items.length > 0
+          ? Arb.constant<ST.Command<StackModel, number[]>>({
+              name: "pop",
+              check: (m) => m.items.length > 0,
+              run: (m, r) => {
+                pops++;
+                assert.equal(m.items.pop(), r.pop());
+              },
+            })
+          : Arb.constant<ST.Command<StackModel, number[]>>({ name: "noop", run: () => {} });
+      },
+    ],
+    numRuns: 50,
+    seed: PRNG.seed(1n),
+  });
+  assert.equal(result.ok, true);
+  assert.ok(pops > 0, "pop was never generated");
+  assert.ok(sizesSeen.size > 3, `model sizes seen: ${[...sizesSeen].join(",")}`);
+});
+
+test("checkStateful() finds a bug that needs state-dependent commands", () => {
+  // Buggy real stack: pop returns the wrong item once it holds 3+ items.
+  const result = ST.checkStateful<StackModel, number[]>({
+    initialModel: () => ({ items: [] }),
+    initialReal: () => [],
+    commands: [
+      pushCmd,
+      () =>
+        Arb.constant<ST.Command<StackModel, number[]>>({
+          name: "pop",
+          check: (m) => m.items.length > 0,
+          run: (m, r) => {
+            const expected = m.items.pop();
+            const actual = r.length >= 3 ? r.shift() : r.pop();
+            if (expected !== actual) {
+              throw new Error(`pop: expected ${expected}, got ${actual}`);
+            }
+          },
+        }),
+    ],
+    numRuns: 100,
+    seed: PRNG.seed(2n),
+  });
+  assert.equal(result.ok, false);
+  // Minimal: three pushes (shrunk to distinct values), then pop.
+  const names = result.counterexample!.map((c) => c.name);
+  assert.equal(names.at(-1), "pop");
+  assert.equal(names.filter((n) => n.startsWith("push")).length, 3);
+  assert.ok(names.length === 4, names.join(" -> "));
+});
+
+test("checkStateful() drops generated commands whose precondition fails", () => {
+  const ran: string[] = [];
+  const result = ST.checkStateful<{ n: number }, null>({
+    initialModel: () => ({ n: 0 }),
+    initialReal: () => null,
+    commands: [
+      () =>
+        Arb.constant<ST.Command<{ n: number }, null>>({
+          name: "never",
+          check: () => false,
+          run: () => {
+            ran.push("never");
+          },
+        }),
+    ],
+    numRuns: 5,
+    seed: fixedSeed,
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(ran, []);
+});
+
+// ---------------------------------------------------------------------------
+// Shrinking quality and accounting (G7-1, G7-14)
+// ---------------------------------------------------------------------------
+
+const valueCmd: ST.CommandArbitrary<object, object> = () =>
+  Arb.map(Arb.integer(0, 100), (v) => ({
+    name: `c${v}`,
+    run: () => {
+      if (v >= 20) throw new Error(`boom ${v}`);
+    },
+  }));
+
+test("checkStateful() shrinks to the minimal command (element shrinks not drained)", () => {
+  for (let s = 1n; s <= 10n; s++) {
+    const r = ST.checkStateful({
+      initialModel: () => ({}),
+      initialReal: () => ({}),
+      commands: [valueCmd],
+      numRuns: 20,
+      seed: PRNG.seed(s),
+    });
+    assert.equal(r.ok, false);
+    assert.deepEqual(
+      r.counterexample!.map((c) => c.name),
+      ["c20"],
+      `seed ${s}`,
+    );
+    assert.equal((r.error as Error).message, "boom 20");
+  }
+});
+
+test("checkStateful() counts only successful shrink steps", () => {
+  const r = ST.checkStateful({
+    initialModel: () => ({}),
+    initialReal: () => ({}),
+    commands: [
+      () =>
+        Arb.constant({
+          name: "boom",
+          run: () => {
+            throw new Error("boom");
+          },
+        }),
+    ],
+    numRuns: 1,
+    seed: fixedSeed,
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.counterexample!.length, 1);
+  assert.equal(r.shrinks, 0);
+});
+
+test("checkStateful() maxShrinkEvaluations bounds replays", () => {
+  let replays = 0;
+  const r = ST.checkStateful({
+    initialModel: () => ({}),
+    initialReal: () => {
+      replays++;
+      return {};
+    },
+    commands: [valueCmd],
+    numRuns: 50,
+    seed: fixedSeed,
+    maxShrinkEvaluations: 3,
+  });
+  assert.equal(r.ok, false);
+  // replays = runs until failure + at most 3 shrink replays
+  assert.ok(replays <= r.numRuns + 3, `${replays} replays for ${r.numRuns} runs`);
+});
+
+test("checkStateful() timeoutMs also bounds shrinking", () => {
+  let replays = 0;
+  const r = ST.checkStateful({
+    initialModel: () => ({}),
+    initialReal: () => {
+      replays++;
+      const until = Date.now() + 2;
+      while (Date.now() < until) {
+        // busy-wait
+      }
+      return {};
+    },
+    commands: [valueCmd],
+    numRuns: 1,
+    maxCommands: 50,
+    seed: fixedSeed,
+    timeoutMs: 10,
+  });
+  assert.equal(r.ok, false);
+  assert.ok(replays < 30, `${replays} replays`);
+});
+
+// ---------------------------------------------------------------------------
+// Teardown always runs (G7-14)
+// ---------------------------------------------------------------------------
+
+test("checkStateful() runs teardown when a precondition throws", () => {
+  let teardowns = 0;
+  assert.throws(
+    () =>
+      ST.checkStateful({
+        initialModel: () => ({}),
+        initialReal: () => ({}),
+        commands: [
+          () =>
+            Arb.constant({
+              name: "bad-check",
+              check: () => {
+                throw new Error("check exploded");
+              },
+              run: () => {},
+            }),
+        ],
+        teardown: () => {
+          teardowns++;
+        },
+        numRuns: 1,
+        seed: fixedSeed,
+      }),
+    /check exploded/,
+  );
+  assert.equal(teardowns, 1);
+});
+
+test("checkStateful() runs teardown for every shrink replay", () => {
+  let reals = 0;
+  let teardowns = 0;
+  const r = ST.checkStateful({
+    initialModel: () => ({}),
+    initialReal: () => {
+      reals++;
+      return {};
+    },
+    commands: [valueCmd],
+    teardown: () => {
+      teardowns++;
+    },
+    numRuns: 20,
+    seed: fixedSeed,
+  });
+  assert.equal(r.ok, false);
+  assert.equal(teardowns, reals);
+});
+
+test("checkStateful() re-checks preconditions when replaying shrunk sequences", () => {
+  interface FlagModel {
+    armed: boolean;
+  }
+  const r = ST.checkStateful<FlagModel, null>({
+    initialModel: () => ({ armed: false }),
+    initialReal: () => null,
+    commands: [
+      () =>
+        Arb.constant<ST.Command<FlagModel, null>>({
+          name: "arm",
+          run: (m) => {
+            m.armed = true;
+          },
+        }),
+      () =>
+        Arb.constant<ST.Command<FlagModel, null>>({
+          name: "fire",
+          check: (m) => m.armed,
+          run: () => {
+            throw new Error("fired");
+          },
+        }),
+    ],
+    numRuns: 20,
+    seed: fixedSeed,
+  });
+  assert.equal(r.ok, false);
+  // Dropping "arm" disables "fire" (skipped on replay), so it must stay.
+  assert.deepEqual(
+    r.counterexample!.map((c) => c.name),
+    ["arm", "fire"],
+  );
+});

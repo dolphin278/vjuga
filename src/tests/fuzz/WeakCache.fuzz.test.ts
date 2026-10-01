@@ -58,7 +58,7 @@ test("stateful: WeakCache matches a strong-ref Map oracle", () => {
           run: (m, c) => assert.equal(WeakCache.size(c), m.map.size),
         }),
     ],
-    numRuns: 300_000,
+    numRuns: 1_000_000,
     maxCommands: 40,
     timeoutMs: 300_000,
   });

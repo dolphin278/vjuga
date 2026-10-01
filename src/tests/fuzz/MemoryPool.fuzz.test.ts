@@ -322,7 +322,7 @@ test("stateful: MemoryPool with throwing factory/reset, minSize and identity che
           },
         }),
     ],
-    numRuns: 300_000,
+    numRuns: 1_000_000,
     maxCommands: 40,
     timeoutMs: 300_000,
   });

@@ -87,6 +87,18 @@ bench("ErrorChain.find: mixed type chain — find specific type", () => {
   return find((e) => e instanceof DatabaseError, mixedChain);
 });
 
+// Cyclic chain (Brent cycle detection): tail of 2 leading into a ring of 3.
+const cyc = Array.from({ length: 5 }, (_, i) => new Error(`c${i}`));
+for (let i = 0; i < 5; i++) cyc[i]!.cause = cyc[i === 4 ? 2 : i + 1];
+
+bench("ErrorChain.toArray (cyclic, 5 distinct)", () => {
+  return toArray(cyc[0]!);
+});
+
+bench("ErrorChain.find: no match (cyclic, 5 distinct)", () => {
+  return find((_e) => false, cyc[0]!);
+});
+
 bench("makeChain (3 levels)", () => {
   return makeChain(3);
 });

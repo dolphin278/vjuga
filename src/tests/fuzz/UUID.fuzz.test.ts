@@ -28,6 +28,6 @@ test("uuid(): any-case input is normalized to lowercase; equal UUIDs compare equ
       assert.equal(UUID.uuid(mixed), base);
       assert.equal(UUID.validator()(mixed)[1], base);
     },
-    { numRuns: 100_000 },
+    { numRuns: 1_000_000 },
   );
 });

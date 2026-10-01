@@ -185,6 +185,6 @@ test("safeParse: randomly \\u-escaped __proto__/constructor keys never survive o
       }
       assert.equal(({} as Record<string, unknown>).polluted, undefined);
     },
-    { numRuns: 200_000 },
+    { numRuns: 1_000_000 },
   );
 });

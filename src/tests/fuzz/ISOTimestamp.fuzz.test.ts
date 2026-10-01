@@ -19,7 +19,7 @@ test("fromEpochMs matches native toISOString over the full Date range (integers)
     (ms) => {
       assert.equal(ISO.fromEpochMs(ms), new Date(ms).toISOString());
     },
-    { numRuns: 500_000 },
+    { numRuns: 1_000_000 },
   );
 });
 
@@ -31,7 +31,7 @@ test("fromEpochMs matches native for fractional ms and Unix.toISO", () => {
       const s = Unix.unixTimestamp(ms / 1000);
       assert.equal(Unix.toISO(s), new Date(s * 1000).toISOString());
     },
-    { numRuns: 200_000 },
+    { numRuns: 1_000_000 },
   );
 });
 
@@ -54,6 +54,6 @@ test("isoTimestamp round-trips every valid Date in 0000-9999 and rejects rolled-
       // Hour 24 is never valid.
       assert.equal(ISO.validator()(s.slice(0, 11) + "24" + s.slice(13))[0], false);
     },
-    { numRuns: 200_000 },
+    { numRuns: 1_000_000 },
   );
 });

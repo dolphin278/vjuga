@@ -6,8 +6,7 @@
  * for all items ever added (no false negatives) and occasionally `true` for
  * items that were never added (false positives at rate ≤ fpr). Not suitable
  * for exact membership — use a plain `Set` when false positives are
- * unacceptable. Items must be strings (no coercion): hashing a non-string
- * reads `.length` / `charCodeAt` and gives meaningless results.
+ * unacceptable. Items must be strings (no coercion; non-strings hash wrongly).
  *
  * Internal design:
  *   kBits:  Uint32Array — m/32 words; bit i at word[i>>>5] pos[i&31].
@@ -27,9 +26,6 @@
  * each code unit, which skews the FPR for structured/non-ASCII keys). h2 is
  * forced odd to guarantee coprimality with the power-of-2 modulus.
  * `make` caps m at 2^32 bits (512 MiB) and throws if `fpr` is unreachable.
- *
- * Prior art: Kirsch, A. & Mitzenmacher, M. "Less Hashing, Same Performance:
- * Building a Better Bloom Filter." ESA 2006.
  *
  * @example
  * ```ts

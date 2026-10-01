@@ -14,17 +14,13 @@
  *   kRoot:     RadixNode<T>      — root node of the tree (prefix = "")
  *   kSize:     number            — total number of key-value pairs in the tree
  *
- * The children array is sorted so that lookups can use binary search over the
- * first character of each child's prefix. This gives O(log k) child lookup
- * where k is the branching factor, which is superior to a linear scan for
- * nodes with many children (e.g., URL routers with many first-path-segment
- * variations).
+ * Children are sorted so lookups binary-search the first character of each
+ * child's prefix: O(log k) child lookup for branching factor k (e.g., URL
+ * routers with many first-path-segment variations).
  *
- * Values: `undefined` means "no value", so `insert(tree, key, undefined)` is
- * defined to behave exactly like `remove(tree, key)`.
- *
- * Ordering: `entries` and `prefixMatch` return results in lexicographic
- * (UTF-16 code unit) order of keys — a key sorts before its extensions.
+ * `undefined` means "no value": `insert(tree, key, undefined)` is `remove`.
+ * `entries`/`prefixMatch` return results in lexicographic (UTF-16 code unit)
+ * key order.
  *
  * When to use: key spaces with shared string prefixes where prefix-based
  * retrieval is needed alongside exact lookup — URL routing, file-path

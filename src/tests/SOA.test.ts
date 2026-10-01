@@ -228,6 +228,7 @@ test("SOA-set ignores extra item keys and bounds-checks", () => {
 });
 
 function hasFastProperties(o: object): boolean | undefined {
+  void o; // referenced inside the eval string below
   try {
     // oxlint-disable-next-line no-eval
     return eval("%HasFastProperties(o)") as boolean;
@@ -288,16 +289,28 @@ test("SOA handles a column named __proto__ (own data property)", () => {
 
 test("SOA-get/pop fall back to defineProperty rows when code generation is unavailable", () => {
   const RealFunction = globalThis.Function;
-  const soa = { x: [1, 2], y: [3, 4] };
+  // Unique column names: row factories are shared across SOAs with the same shape.
+  const soa = { fbx: [1, 2], fby: [3, 4] };
   // oxlint-disable-next-line no-extend-native
   (globalThis as { Function: unknown }).Function = function () {
     throw new EvalError("code generation disabled");
   };
   try {
-    assert.deepEqual(SOA.get(soa, 1), { x: 2, y: 4 });
-    assert.deepEqual(SOA.pop(soa), { x: 2, y: 4 });
+    assert.deepEqual(SOA.get(soa, 1), { fbx: 2, fby: 4 });
+    assert.deepEqual(SOA.pop(soa), { fbx: 2, fby: 4 });
   } finally {
     globalThis.Function = RealFunction;
   }
-  assert.deepEqual(soa, { x: [1], y: [3] });
+  assert.deepEqual(soa, { fbx: [1], fby: [3] });
+});
+
+test("SOA-get shape-keyed row factory cache stays bounded and correct", () => {
+  // More distinct shapes than the shared-factory cap forces a cache reset.
+  for (let i = 0; i < 80; i++) {
+    const name = `col${i}`;
+    const soa = { [name]: [i, i + 1] } as Record<string, number[]>;
+    assert.deepEqual(SOA.get(soa as SOA.SOA<Record<string, number>>, 1), { [name]: i + 1 });
+  }
+  const again = { col0: [5, 6] };
+  assert.deepEqual(SOA.get(again, 0), { col0: 5 });
 });

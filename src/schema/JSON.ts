@@ -4,7 +4,7 @@
  * When to use: a schema is known at init time and you want typed parse +
  * validation in one step (`parse` → `Result<T, SchemaError>`, never throws) or
  * a serializer that emits exactly the schema's keys. For ad-hoc JSON use
- * `vjuga/JSON`. Not a speed win for stringify (see below).
+ * `@dolphin278/vjuga/JSON`. Not a speed win for stringify (see below).
  *
  * Performance (Node 26, M1 Pro, output consumed with `Buffer.byteLength`):
  *   stringify is ~1.2–2.5x slower than native (2 fields 97 vs 79 ns; 5 fields

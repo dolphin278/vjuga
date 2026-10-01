@@ -12,8 +12,8 @@
  * bookkeeping adds overhead that only pays off at scale.
  *
  * Design tradeoffs:
- *   - LIFO stack is 13× faster than a Queue-backed free list in
- *     micro-benchmarks (cache-hot top-of-stack vs ring-buffer pointer chase).
+ *   - LIFO array stack rather than a ring buffer: the most recently released
+ *     (cache-hot) object is handed out next, with no index wraparound.
  *   - `maxSize` must be a non-negative number and `minSize` a non-negative
  *     integer; otherwise `make` throws `RangeError`. A throwing `factory`
  *     does not consume a slot; a throwing `reset` drops that instance (it is
@@ -25,7 +25,7 @@
  * @example
  * ```ts
  * import * as MemoryPool from "@dolphin278/vjuga/MemoryPool";
- * const pool = MemoryPool.make({ factory: () => [], reset: (a) => { a.length = 0; } });
+ * const pool = MemoryPool.make({ factory: (): number[] => [], reset: (a) => { a.length = 0; } });
  * const arr = MemoryPool.acquire(pool);
  * arr.push(1, 2, 3);
  * MemoryPool.release(pool, arr); // reset clears it, returned to free list

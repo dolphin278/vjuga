@@ -25,7 +25,9 @@ import type { Fn } from "./FunctionUtils.js";
 /**
  * Returns a throttled version of `fn` that fires at most once per `ms`
  * milliseconds (leading-edge: the first call in a quiet period fires
- * immediately; subsequent calls within the same window are dropped).
+ * immediately; subsequent calls within the same window are dropped, including
+ * re-entrant calls made by `fn` itself). If `fn` throws, the window still
+ * applies and the exception propagates to the caller.
  *
  * @param fn - Function to throttle. Must not rely on `this`.
  * @param ms - Minimum interval between invocations, in milliseconds.
@@ -35,8 +37,10 @@ export function throttle<T extends unknown[]>(fn: Fn<T>, ms: number): Fn<T> {
 
   return function throttled(...args: T): void {
     if (timer.contents !== undefined) return;
-    Reflect.apply(fn, undefined, args);
+    // Arm the timer BEFORE calling fn: re-entrant calls are dropped and a
+    // throwing fn still starts the quiet window.
     timer.contents = setTimeout(clearTimer, ms, timer);
+    Reflect.apply(fn, undefined, args);
   };
 }
 

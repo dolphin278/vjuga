@@ -7,7 +7,7 @@
  * `vjuga/JSON`. Not a speed win for stringify (see below).
  *
  * Performance (Node 26, M1 Pro, output consumed with `Buffer.byteLength`):
- *   stringify is ~1.2–1.9x slower than native (2 fields 97 vs 79 ns; 5 fields
+ *   stringify is ~1.2–2.5x slower than native (2 fields 97 vs 79 ns; 5 fields
  *   265 vs 140 ns; 100 objects 8.3 vs 3.3 µs): generated code builds a rope
  *   that must be flattened; native writes a flat string in C++.
  *   parse is ~5–20% slower than bare `JSON.parse` (validation included).

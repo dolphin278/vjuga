@@ -4,6 +4,10 @@
  *
  * All three use the same data. fast-json-stringify uses JSON Schema definition,
  * vjuga uses Schema DSL — both compile at init time.
+ *
+ * Every case consumes its output with `Buffer.byteLength`, as a real writer
+ * would: string-concatenating serializers return an unflattened rope, and
+ * timing creation alone hides the flattening cost (overstated ~10x before).
  */
 import { bench, run, group } from "mitata";
 import { reportOptimizationStatus } from "../_v8.js";
@@ -151,27 +155,27 @@ const arrayObj = Array.from({ length: 100 }, (_, i) => ({
 // ---------------------------------------------------------------------------
 
 group("2 fields", () => {
-  bench("vjuga Schema.stringify", () => smallVjuga(smallObj));
-  bench("fast-json-stringify", () => smallFJS(smallObj));
-  bench("JSON.stringify", () => JSON.stringify(smallObj));
+  bench("vjuga Schema.stringify", () => Buffer.byteLength(smallVjuga(smallObj)));
+  bench("fast-json-stringify", () => Buffer.byteLength(smallFJS(smallObj)));
+  bench("JSON.stringify", () => Buffer.byteLength(JSON.stringify(smallObj)));
 });
 
 group("5 fields", () => {
-  bench("vjuga Schema.stringify", () => mediumVjuga(mediumObj));
-  bench("fast-json-stringify", () => mediumFJS(mediumObj));
-  bench("JSON.stringify", () => JSON.stringify(mediumObj));
+  bench("vjuga Schema.stringify", () => Buffer.byteLength(mediumVjuga(mediumObj)));
+  bench("fast-json-stringify", () => Buffer.byteLength(mediumFJS(mediumObj)));
+  bench("JSON.stringify", () => Buffer.byteLength(JSON.stringify(mediumObj)));
 });
 
 group("nested (object + array)", () => {
-  bench("vjuga Schema.stringify", () => nestedVjuga(nestedObj));
-  bench("fast-json-stringify", () => nestedFJS(nestedObj));
-  bench("JSON.stringify", () => JSON.stringify(nestedObj));
+  bench("vjuga Schema.stringify", () => Buffer.byteLength(nestedVjuga(nestedObj)));
+  bench("fast-json-stringify", () => Buffer.byteLength(nestedFJS(nestedObj)));
+  bench("JSON.stringify", () => Buffer.byteLength(JSON.stringify(nestedObj)));
 });
 
 group("100-element array of objects", () => {
-  bench("vjuga Schema.stringify", () => arrayVjuga(arrayObj));
-  bench("fast-json-stringify", () => arrayFJS(arrayObj));
-  bench("JSON.stringify", () => JSON.stringify(arrayObj));
+  bench("vjuga Schema.stringify", () => Buffer.byteLength(arrayVjuga(arrayObj)));
+  bench("fast-json-stringify", () => Buffer.byteLength(arrayFJS(arrayObj)));
+  bench("JSON.stringify", () => Buffer.byteLength(JSON.stringify(arrayObj)));
 });
 
 await run();

@@ -27,6 +27,7 @@ const tabularObj = {
 // Compiled functions
 const toonStr = ST.stringify(simpleSchema);
 const toonPar = ST.parse(simpleSchema);
+const toonFlexPar = ST.parse(simpleSchema, { flexibleOrder: true });
 const toonTabStr = ST.stringify(tabularSchema);
 const toonTabPar = ST.parse(tabularSchema);
 const jsonStr = SJ.stringify(simpleSchema);
@@ -45,6 +46,7 @@ const tabularToon = toonTabStr(tabularObj);
   for (let i = 0; i < 200_000; i++) {
     toonStr(simpleObj);
     toonPar(simpleToon);
+    toonFlexPar(simpleToon);
     toonTabStr(tabularObj);
     toonTabPar(tabularToon);
   }
@@ -66,6 +68,7 @@ bench("JSON.stringify — tabular 5 rows (native)", () => JSON.stringify(tabular
 // --- Parse benchmarks ---
 
 bench("TOON.parse — 3 fields", () => toonPar(simpleToon));
+bench("TOON.parse — 3 fields (flexibleOrder)", () => toonFlexPar(simpleToon));
 bench("TOON.parse — tabular 5 rows", () => toonTabPar(tabularToon));
 
 // --- Output size comparison ---

@@ -739,7 +739,8 @@ export interface ToonParseOptions {
   /** @deprecated No effect — parsing is always strict (counts, number grammar, literals). */
   readonly strict?: boolean;
   /**
-   * Accept object fields in any order, at every nesting level (~2x slower).
+   * Accept object fields in any order, at every nesting level (~2.5x slower
+   * for a 3-field object; see TOON.bench).
    * Tabular headers must still list fields in schema order.
    */
   readonly flexibleOrder?: boolean;

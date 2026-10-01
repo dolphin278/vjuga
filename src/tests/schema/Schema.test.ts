@@ -423,7 +423,10 @@ test("toJsonSchema — tuple", () => {
     type: "array",
     prefixItems: [{ type: "string" }, { type: "number" }],
     items: false,
+    minItems: 2,
   });
+  // Empty tuple: items:false alone already pins the length
+  assert.deepEqual(S.toJsonSchema(S.tuple()), { type: "array", prefixItems: [], items: false });
 });
 
 test("toJsonSchema — record", () => {
@@ -574,9 +577,11 @@ test("fromJsonSchema — enum", () => {
   assert.deepEqual((r[1] as S.EnumSchema<readonly (string | number)[]>).meta.values, ["a", "b", 1]);
 });
 
-test("fromJsonSchema — enum with invalid values", () => {
+test("fromJsonSchema — enum with non-string/number primitives", () => {
   const r = S.fromJsonSchema({ enum: [true] });
-  assert.equal(r[0], false);
+  assert.equal(r[0], true);
+  assert.equal(r[1].kind, "union");
+  assert.equal(S.fromJsonSchema({ enum: [{}] })[0], false);
 });
 
 test("fromJsonSchema — object with required", () => {
@@ -647,9 +652,11 @@ test("fromJsonSchema — array with size constraints", () => {
   assert.equal(s.meta.maxItems, 5);
 });
 
-test("fromJsonSchema — array without items", () => {
+test("fromJsonSchema — array without items accepts any items", () => {
   const r = S.fromJsonSchema({ type: "array" });
-  assert.equal(r[0], false);
+  assert.equal(r[0], true);
+  assert.equal(r[1].kind, "array");
+  assert.equal((r[1] as S.ArraySchema<S.Schema>).meta.items.kind, "unknown");
 });
 
 test("fromJsonSchema — tuple (prefixItems)", () => {
@@ -657,6 +664,7 @@ test("fromJsonSchema — tuple (prefixItems)", () => {
     type: "array",
     prefixItems: [{ type: "string" }, { type: "number" }],
     items: false,
+    minItems: 2,
   });
   assert.equal(r[0], true);
   assert.equal(r[1].kind, "tuple");
@@ -679,35 +687,32 @@ test("fromJsonSchema — nullable pattern (anyOf with null)", () => {
   assert.equal((r[1] as S.NullableSchema<S.Schema>).meta.inner.kind, "string");
 });
 
-test("fromJsonSchema — $ref rejected", () => {
+test("fromJsonSchema — unresolved $ref is Err", () => {
   const r = S.fromJsonSchema({ $ref: "#/definitions/Foo" });
   assert.equal(r[0], false);
+  assert.match(r[1] as string, /unresolved \$ref pointer/);
 });
 
-test("fromJsonSchema — allOf rejected", () => {
-  const r = S.fromJsonSchema({ allOf: [{ type: "string" }] });
-  assert.equal(r[0], false);
-});
-
-test("fromJsonSchema — oneOf rejected", () => {
-  const r = S.fromJsonSchema({ oneOf: [{ type: "string" }] });
-  assert.equal(r[0], false);
-});
-
-test("fromJsonSchema — not rejected", () => {
-  const r = S.fromJsonSchema({ not: { type: "string" } });
-  assert.equal(r[0], false);
-});
-
-test("fromJsonSchema — if/then/else rejected", () => {
+test("fromJsonSchema — combinators lower to new kinds", () => {
+  assert.equal(
+    (S.fromJsonSchema({ allOf: [{ type: "string" }] }) as [true, S.Schema])[1].kind,
+    "string",
+  );
+  const one = S.fromJsonSchema({ oneOf: [{ type: "string" }, { type: "number" }] });
+  assert.equal(one[0], true);
+  assert.equal(one[1].kind, "union");
+  assert.equal((one[1] as S.UnionSchema<S.Schema[]>).meta.exclusive, true);
+  assert.equal((S.fromJsonSchema({ not: { type: "string" } }) as [true, S.Schema])[1].kind, "not");
   // eslint-disable-next-line unicorn/no-thenable
-  const r = S.fromJsonSchema({ if: { type: "string" }, then: { type: "number" } });
-  assert.equal(r[0], false);
+  const cond = S.fromJsonSchema({ if: { type: "string" }, then: { type: "number" } });
+  assert.equal(cond[0], true);
+  assert.equal(cond[1].kind, "conditional");
 });
 
-test("fromJsonSchema — unknown schema", () => {
+test("fromJsonSchema — unknown keywords are annotations", () => {
   const r = S.fromJsonSchema({ foo: "bar" });
-  assert.equal(r[0], false);
+  assert.equal(r[0], true);
+  assert.equal(r[1].kind, "unknown");
 });
 
 // ---------------------------------------------------------------------------
@@ -857,16 +862,18 @@ function fromErr(js: unknown): string {
   return r[1] as string;
 }
 
-test("fromJsonSchema — boolean and null schema nodes are Err", () => {
-  assert.match(fromErr({ type: "object", properties: { a: true } }), /boolean JSON Schemas/);
-  assert.match(fromErr({ anyOf: [true, { type: "string" }] }), /boolean JSON Schemas/);
-  assert.match(fromErr(false), /boolean JSON Schemas/);
-  assert.match(fromErr({ type: "array", prefixItems: [null] }), /got null/);
+test("fromJsonSchema — boolean schemas lower; null / scalar nodes are Err", () => {
+  const ok = S.fromJsonSchema({ type: "object", properties: { a: true } });
+  assert.equal(ok[0], true);
+  const f = S.fromJsonSchema(false);
+  assert.equal(f[0], true);
+  assert.equal(f[1].kind, "not");
+  assert.match(fromErr({ type: "array", prefixItems: [null], items: false }), /got null/);
   assert.match(
-    fromErr({ type: "array", items: { type: "array", prefixItems: [1] } }),
+    fromErr({ type: "array", items: { type: "array", prefixItems: [1], items: false } }),
     /got number/,
   );
-  assert.match(fromErr([{ type: "string" }]), /got object/);
+  assert.match(fromErr([{ type: "string" }]), /got array/);
 });
 
 test("fromJsonSchema — properties must be an object", () => {
@@ -902,7 +909,7 @@ test("fromJsonSchema — multipleOf must be finite and > 0", () => {
 test("fromJsonSchema — unsupported node with a cyclic value does not throw", () => {
   const cyclic: Record<string, unknown> = { type: "weird" };
   cyclic.self = cyclic;
-  assert.match(fromErr(cyclic), /unsupported JSON Schema: keys type,self/);
+  assert.match(fromErr(cyclic), /unsupported type "weird"/);
 });
 
 test("fromJsonSchema — __proto__ property is kept as an own key, order preserved", () => {

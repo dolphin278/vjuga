@@ -300,12 +300,22 @@ function refValidate(s: S.Schema, v: unknown): boolean {
     }
     case "record":
       return isPlainObjectLike(v) && Object.keys(v).every((k) => refValidate(s.meta.values, v[k]));
-    case "union":
-      return (s.meta.variants as S.Schema[]).some((variant) => refValidate(variant, v));
+    case "union": {
+      const matches = (s.meta.variants as S.Schema[]).filter((variant) => refValidate(variant, v));
+      return s.meta.exclusive === true ? matches.length === 1 : matches.length > 0;
+    }
     case "optional":
       return v === undefined || refValidate(s.meta.inner, v);
     case "nullable":
       return v === null || refValidate(s.meta.inner, v);
+    case "unknown":
+      return v !== undefined;
+    case "allOf":
+      return (s.meta.variants as S.Schema[]).every((variant) => refValidate(variant, v));
+    case "not":
+      return v !== undefined && !refValidate(s.meta.inner, v);
+    case "conditional":
+      return refValidate(s.meta.if, v) ? refValidate(s.meta.then, v) : refValidate(s.meta.else, v);
   }
 }
 
@@ -403,7 +413,7 @@ function genNumericMeta(pick: Arb.GenPick): S.NumberConstraints | undefined {
 
 function genSchema(pick: Arb.GenPick, depth: number): S.Schema {
   const leafOnly = depth <= 0;
-  switch (choose(pick, leafOnly ? 7 : 15)) {
+  switch (choose(pick, leafOnly ? 7 : 20)) {
     case 0: {
       if (choose(pick, 2) === 0) return S.string();
       const m: Record<string, unknown> = {};
@@ -472,8 +482,35 @@ function genSchema(pick: Arb.GenPick, depth: number): S.Schema {
     }
     case 13:
       return S.optional(genSchema(pick, depth - 1));
-    default:
+    case 14:
       return S.nullable(genSchema(pick, depth - 1));
+    case 15: {
+      if (choose(pick, 3) === 0) {
+        // Tagged oneOf: shared literal key "t" (switch fast path when distinct)
+        const n = 2 + choose(pick, 2);
+        return S.oneOf(
+          ...Array.from({ length: n }, () =>
+            S.object(
+              { t: S.literal(oneOfValues(pick, LITERALS)), a: genSchema(pick, depth - 1) },
+              { additionalProperties: choose(pick, 3) === 0 },
+            ),
+          ),
+        );
+      }
+      return S.oneOf(...Array.from({ length: choose(pick, 4) }, () => genSchema(pick, depth - 1)));
+    }
+    case 16:
+      return S.allOf(...Array.from({ length: choose(pick, 4) }, () => genSchema(pick, depth - 1)));
+    case 17:
+      return S.not(genSchema(pick, depth - 1));
+    case 18:
+      return S.conditional(
+        genSchema(pick, depth - 1),
+        choose(pick, 4) === 0 ? undefined : genSchema(pick, depth - 1),
+        choose(pick, 4) === 0 ? undefined : genSchema(pick, depth - 1),
+      );
+    default:
+      return S.unknown();
   }
 }
 
@@ -544,6 +581,14 @@ function genValue(pick: Arb.GenPick, s: S.Schema, depth: number): unknown {
     case "optional":
     case "nullable":
       return choose(pick, 4) === 0 ? undefined : genValue(pick, s.meta.inner, depth);
+    case "allOf": {
+      const vs = s.meta.variants as S.Schema[];
+      return vs.length === 0
+        ? oneOfValues(pick, VALUE_POOL)
+        : genValue(pick, vs[choose(pick, vs.length)], depth);
+    }
+    case "conditional":
+      return genValue(pick, choose(pick, 2) === 0 ? s.meta.then : s.meta.if, depth);
     default:
       return oneOfValues(pick, VALUE_POOL);
   }

@@ -16,9 +16,10 @@
  *   stringify: pre-computed key fragments; all-required objects inline into a
  *   single expression. Unions dispatch by typeof when variant types are
  *   disjoint, else by each variant's validator; no match throws `TypeError`.
- *   Non-finite numbers emit `null` like native. parse: native `JSON.parse` +
- *   generated validation; own `__proto__` keys (also `\u`-escaped spellings)
- *   are stripped. `constructor` is ordinary data and kept.
+ *   Non-finite numbers emit `null` like native; `unknown` / `allOf` / `not` /
+ *   `conditional` values use native `JSON.stringify`. parse: native
+ *   `JSON.parse` + generated validation; own `__proto__` keys (also
+ *   `\u`-escaped spellings) are stripped. `constructor` is kept.
  *
  * @example Compile once at init, call on hot path
  * ```ts
@@ -103,6 +104,7 @@ export function stringify<S extends Schema>(schema: S): (value: Infer<S>) => str
   const buf = createBuffer();
   emitRef(buf, "_esc", escapeJsonString);
   emitRef(buf, "_num", numberToJson);
+  emitRef(buf, "_js", JSON.stringify);
 
   emit(buf, "return function stringify(v) {");
   buf.indent++;
@@ -146,6 +148,12 @@ function walkStringify(buf: CodeBuffer, schema: Schema, accessor: string): strin
       return `(${accessor} === undefined ? "null" : ${walkStringify(buf, schema.meta.inner, accessor)})`;
     case "nullable":
       return `(${accessor} === null ? "null" : ${walkStringify(buf, schema.meta.inner, accessor)})`;
+    case "unknown":
+    case "allOf":
+    case "not":
+    case "conditional":
+      // No single shape to specialize on — the value is serialized as-is
+      return `_js(${accessor})`;
     default:
       unreachable(schema);
   }
@@ -390,6 +398,12 @@ function typeTags(schema: Schema): Tag[] {
       return [...typeTags(schema.meta.inner), "undefined"];
     case "nullable":
       return [...typeTags(schema.meta.inner), "null"];
+    case "unknown":
+    case "allOf":
+    case "not":
+    case "conditional":
+      // Conservative: may hold any JSON type, so dispatch by full validator
+      return ["string", "number", "boolean", "null", "array", "object"];
     default:
       unreachable(schema);
   }

@@ -245,6 +245,39 @@ export function emitValidation(
       buf.indent--;
       emit(buf, "}");
       break;
+    case "unknown":
+      emitFail(buf, `${accessor} === undefined`, pathExpr, "any value", accessor);
+      break;
+    case "allOf": {
+      // Sequential inline checks: the first failing variant reports its error
+      const variants = schema.meta.variants as readonly Schema[];
+      for (let i = 0; i < variants.length; i++) {
+        emitValidation(buf, variants[i], accessor, pathExpr);
+      }
+      break;
+    }
+    case "not": {
+      const inner = booleanCheck(buf, schema.meta.inner, accessor);
+      emitFail(
+        buf,
+        `${accessor} === undefined || ${inner}`,
+        pathExpr,
+        "not(" + schema.meta.inner.kind + ")",
+        accessor,
+      );
+      break;
+    }
+    case "conditional":
+      emit(buf, `if (${booleanCheck(buf, schema.meta.if, accessor)}) {`);
+      buf.indent++;
+      emitValidation(buf, schema.meta.then, accessor, pathExpr);
+      buf.indent--;
+      emit(buf, "} else {");
+      buf.indent++;
+      emitValidation(buf, schema.meta.else, accessor, pathExpr);
+      buf.indent--;
+      emit(buf, "}");
+      break;
     default:
       unreachable(schema);
   }
@@ -484,7 +517,14 @@ function acceptsUndefined(schema: Schema): boolean {
       return schema.meta.value === undefined;
     case "union":
       return (schema.meta.variants as readonly Schema[]).some(acceptsUndefined);
+    case "allOf":
+      return (schema.meta.variants as readonly Schema[]).every(acceptsUndefined);
+    case "conditional":
+      // Conservative (either branch): over-approximating only costs the
+      // extra-key fast path, under-approximating would let an extra key pass.
+      return acceptsUndefined(schema.meta.then) || acceptsUndefined(schema.meta.else);
     default:
+      // unknown / not reject undefined; leaf kinds never accept it
       return false;
   }
 }
@@ -659,9 +699,15 @@ function emitUnionValidation(
 ): void {
   const variants = schema.meta.variants as readonly Schema[];
 
+  // Distinct literal tags make a discriminated union exactly-one by construction
   const discriminant = findDiscriminant(variants);
   if (discriminant !== null) {
     emitDiscriminatedValidation(buf, variants, discriminant, accessor, pathExpr);
+    return;
+  }
+
+  if (schema.meta.exclusive === true) {
+    emitExclusiveValidation(buf, variants, accessor, pathExpr);
     return;
   }
 
@@ -686,6 +732,47 @@ function emitUnionValidation(
   }
   buf.indent--;
   emit(buf, "}");
+}
+
+/**
+ * oneOf (non-discriminated): count matching variants. Zero matches reports
+ * the last variant's own error; two or more report `oneOf(exactly one,
+ * matched N)`.
+ */
+function emitExclusiveValidation(
+  buf: CodeBuffer,
+  variants: readonly Schema[],
+  accessor: string,
+  pathExpr: string,
+): void {
+  if (variants.length === 0) {
+    emit(buf, `return _err(_me(${pathExpr}, "never", ${accessor}));`);
+    return;
+  }
+  const count = freshVar(buf);
+  emit(buf, `var ${count} = 0;`);
+  for (let i = 0; i < variants.length; i++) {
+    emit(buf, `if (${booleanCheck(buf, variants[i], accessor)}) ${count}++;`);
+  }
+  emit(buf, `if (${count} === 0) {`);
+  buf.indent++;
+  emitValidation(buf, variants[variants.length - 1], accessor, pathExpr);
+  buf.indent--;
+  emit(buf, `}`);
+  emit(
+    buf,
+    `if (${count} > 1) return _err(_me(${pathExpr}, "oneOf(exactly one, matched " + ${count} + ")", ${accessor}));`,
+  );
+}
+
+/**
+ * JS expression true IFF `schema` accepts the value: the inline `exactCheck`
+ * when one exists, otherwise a call to a compiled boolean sub-validator.
+ */
+function booleanCheck(buf: CodeBuffer, schema: Schema, accessor: string): string {
+  const check = exactCheck(schema, accessor);
+  if (check !== null) return check;
+  return `${emitRef(buf, freshVar(buf), compileBooleanValidator(schema))}(${accessor})`;
 }
 
 const returnTrue = (): boolean => true;
@@ -812,15 +899,44 @@ function exactCheck(schema: Schema, accessor: string): string | null {
     }
     case "union": {
       const variants = schema.meta.variants as readonly Schema[];
-      const checks: string[] = [];
-      for (let i = 0; i < variants.length; i++) {
-        const c = exactCheck(variants[i], accessor);
-        if (c === null) return null;
-        checks.push(c);
+      const checks = exactChecks(variants, accessor);
+      if (checks === null) return null;
+      if (checks.length === 0) return "false";
+      if (schema.meta.exclusive === true) {
+        return `((${checks.map((c) => `(${c} ? 1 : 0)`).join(" + ")}) === 1)`;
       }
-      return checks.length > 0 ? `(${checks.join(" || ")})` : "false";
+      return `(${checks.join(" || ")})`;
+    }
+    case "allOf": {
+      const checks = exactChecks(schema.meta.variants as readonly Schema[], accessor);
+      if (checks === null) return null;
+      return checks.length > 0 ? `(${checks.join(" && ")})` : "true";
+    }
+    case "unknown":
+      return `(${accessor} !== undefined)`;
+    case "not": {
+      const inner = exactCheck(schema.meta.inner, accessor);
+      return inner === null ? null : `(${accessor} !== undefined && !${inner})`;
+    }
+    case "conditional": {
+      const checks = exactChecks(
+        [schema.meta.if, schema.meta.then, schema.meta.else] as readonly Schema[],
+        accessor,
+      );
+      return checks === null ? null : `(${checks[0]} ? ${checks[1]} : ${checks[2]})`;
     }
     default:
       return null;
   }
+}
+
+/** `exactCheck` of every schema, or null if any of them has none. */
+function exactChecks(schemas: readonly Schema[], accessor: string): string[] | null {
+  const checks: string[] = [];
+  for (let i = 0; i < schemas.length; i++) {
+    const c = exactCheck(schemas[i], accessor);
+    if (c === null) return null;
+    checks.push(c);
+  }
+  return checks;
 }

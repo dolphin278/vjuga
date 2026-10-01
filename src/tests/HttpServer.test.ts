@@ -1,6 +1,7 @@
 import * as assert from "node:assert/strict";
 import { test } from "node:test";
 import * as net from "node:net";
+import { EventEmitter } from "node:events";
 import * as HttpServer from "../HttpServer.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -713,7 +714,7 @@ test("a throwing handler destroys only its connection", async () => {
   await HttpServer.close(server);
 });
 
-test("oversized unterminated header block drops the connection", async () => {
+test("oversized unterminated header block → 431 + close", async () => {
   let calls = 0;
   const server = HttpServer.make((_req, socket) => {
     calls++;
@@ -724,7 +725,434 @@ test("oversized unterminated header block drops the connection", async () => {
 
   const out = await sendParts(port, ["GET / HTTP/1.1\r\nX-Pad: " + "a".repeat(70_000)], 200);
   assert.equal(calls, 0);
-  assert.equal(out, "");
+  assert.ok(out.startsWith("HTTP/1.1 431 "), out);
+  assert.ok(out.includes("Connection: close"));
+  await HttpServer.close(server);
+});
+
+// ── In-process connections (fake socket) ────────────────────────────
+//
+// Deterministic coverage of framing, limits, backpressure and lifecycle:
+// a fake socket is handed to the underlying net.Server's 'connection'
+// listener and fed chunks synchronously.
+
+class FakeSocket extends EventEmitter {
+  out: Buffer[] = [];
+  ended = false;
+  destroyed = false;
+  paused = false;
+  timeout = -1;
+  writableNeedDrain = false;
+  writableLength = 0;
+  setNoDelay(): void {}
+  setTimeout(ms: number): void {
+    this.timeout = ms;
+  }
+  write(d: string | Buffer): boolean {
+    this.out.push(Buffer.from(d));
+    return true;
+  }
+  end(d?: Buffer): void {
+    if (d !== undefined) this.out.push(d);
+    this.ended = true;
+  }
+  destroy(): void {
+    this.destroyed = true;
+    this.emit("close");
+  }
+  pause(): void {
+    this.paused = true;
+  }
+  resume(): void {
+    this.paused = false;
+  }
+  cork(): void {}
+  uncork(): void {}
+  feed(...parts: string[]): this {
+    for (const p of parts) this.emit("data", Buffer.from(p));
+    return this;
+  }
+  text(): string {
+    return Buffer.concat(this.out).toString();
+  }
+}
+
+interface Seen {
+  method: number;
+  url: string;
+  body: string | null;
+  host: string | null;
+}
+
+function tcpOf(server: HttpServer.HttpServer): net.Server {
+  const sym = Object.getOwnPropertySymbols(server).find((s) => s.description === "server")!;
+  return (server as unknown as Record<symbol, net.Server>)[sym];
+}
+
+function fakeServer(
+  options?: HttpServer.Options,
+  onReq?: (req: HttpServer.Request, socket: net.Socket) => void,
+): { server: HttpServer.HttpServer; seen: Seen[]; connect: () => FakeSocket } {
+  const seen: Seen[] = [];
+  const server = HttpServer.make((req, socket) => {
+    seen.push({
+      method: req.method,
+      url: req.url,
+      body: req.body,
+      host: HttpServer.getHeader(req, "host"),
+    });
+    if (onReq !== undefined) onReq(req, socket);
+    else HttpServer.respond(socket, 200, "{}");
+  }, options);
+  const connect = (): FakeSocket => {
+    const s = new FakeSocket();
+    tcpOf(server).emit("connection", s);
+    return s;
+  };
+  return { server, seen, connect };
+}
+
+function statusOf(s: FakeSocket): number {
+  return parseStatus(s.text());
+}
+
+test("method token is parsed in full (G6-11)", () => {
+  const { seen, connect } = fakeServer();
+  const methods = ["GET", "PUT", "POST", "PATCH", "DELETE", "HEAD", "FOO", "GEX", "PUX"];
+  methods.push("POSX", "PATCX", "DELETX", "OPTIONS", "TRACE", "GARBAGE");
+  const s = connect();
+  for (const m of methods) s.feed(`${m} /${m} HTTP/1.1\r\n\r\n`);
+  assert.deepEqual(
+    seen.map((r) => r.method),
+    [1, 3, 2, 5, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  );
+  assert.equal(HttpServer.PATCH, 5);
+  assert.equal(s.ended, false);
+});
+
+test("Content-Length is honored in any position, any case, with OWS, for every method (G6-2/G6-3)", () => {
+  const { seen, connect } = fakeServer();
+  const smuggled = "GET /admin HTTP/1.1\r\n\r\n";
+  const n = smuggled.length;
+  const s = connect();
+  s.feed(`POST /first HTTP/1.1\r\nContent-Length: ${n}\r\nHost: h\r\n\r\n${smuggled}`);
+  s.feed(`POST /upper HTTP/1.1\r\nHost: h\r\nCONTENT-LENGTH:${n}\r\n\r\n${smuggled}`);
+  s.feed(`POST /ows HTTP/1.1\r\nHost: h\r\ncontent-length: \t${n} \t\r\n\r\n${smuggled}`);
+  s.feed(`DELETE /del HTTP/1.1\r\nHost: h\r\nContent-length: ${n}\r\n\r\n${smuggled}`);
+  s.feed(`GET /get HTTP/1.1\r\nContent-Length: ${n}\r\n\r\n${smuggled}`);
+  s.feed(`POST /dup HTTP/1.1\r\nContent-Length: 2\r\ncontent-length: 2\r\n\r\nok`);
+  s.feed(`POST /zero HTTP/1.1\r\nContent-Length: 0\r\nContent-Lengthy: 9\r\n\r\n`);
+  assert.deepEqual(
+    seen.map((r) => [r.url, r.body]),
+    [
+      ["/first", smuggled],
+      ["/upper", smuggled],
+      ["/ows", smuggled],
+      ["/del", smuggled],
+      ["/get", smuggled],
+      ["/dup", "ok"],
+      ["/zero", null],
+    ],
+  );
+  assert.equal(seen[0].host, "h");
+  assert.equal(s.ended, false);
+});
+
+test("malformed framing → 400 + close", () => {
+  const bad = [
+    "POST / HTTP/1.1\r\nContent-Length: -5\r\n\r\n",
+    "POST / HTTP/1.1\r\nContent-Length: \r\n\r\n",
+    "POST / HTTP/1.1\r\nContent-Length: 5, 5\r\n\r\nhello",
+    "POST / HTTP/1.1\r\nContent-Length: 5 x\r\n\r\nhello",
+    "POST / HTTP/1.1\r\ncontent-length: 0\r\nContent-Length: 3\r\n\r\nabc",
+    "POST / HTTP/1.1\r\nContent-Length : 3\r\n\r\nabc",
+    "POST / HTTP/1.1\r\nContent-Length\t: 3\r\n\r\nabc",
+    "POST / HTTP/1.1\r\nTransfer-Encoding : chunked\r\n\r\n",
+    "POST / HTTP/1.1\r\nX: a\r\n Content-Length: 3\r\n\r\nabc", // obs-fold
+    "POST / HTTP/1.1\r\nX: a\r\n\tContent-Length: 3\r\n\r\nabc",
+    "GET / HTTP/1.1\r\nX: a\nContent-Length: 3\r\n\r\nabc", // bare LF
+    "GET / HTTP/1.1\nHost: h\r\n\r\n", // bare LF ends the request line
+    "GET\r\nHost: h\r\n\r\n", // no spaces
+    " GET / HTTP/1.1\r\n\r\n", // empty method
+    "GET  HTTP/1.1\r\n\r\n", // empty URL
+    "GET /\r\nHost: h x\r\n\r\n", // no version
+    "GET / \r\n\r\n", // empty version
+    "GET /x\r\n\r\n",
+  ];
+  for (const req of bad) {
+    const { seen, connect } = fakeServer();
+    const s = connect().feed(req, "GET /after HTTP/1.1\r\n\r\n");
+    assert.equal(statusOf(s), 400, JSON.stringify(req));
+    assert.ok(s.text().includes("Connection: close"));
+    assert.equal(s.ended, true);
+    assert.equal(seen.length, 0, JSON.stringify(req));
+  }
+});
+
+test("Transfer-Encoding → 501 + close", () => {
+  for (const te of [
+    "Transfer-Encoding: chunked",
+    "transfer-encoding:gzip",
+    "TRANSFER-ENCODING: x",
+  ]) {
+    const { seen, connect } = fakeServer();
+    const s = connect().feed(
+      `POST / HTTP/1.1\r\nHost: h\r\nContent-Length: 5\r\n${te}\r\n\r\n0\r\n\r\nGET /smuggled HTTP/1.1\r\n\r\n`,
+    );
+    assert.equal(statusOf(s), 501);
+    assert.equal(s.ended, true);
+    assert.equal(seen.length, 0);
+  }
+  // Names that merely start like the framing headers are ordinary headers
+  const { seen, connect } = fakeServer();
+  connect().feed("GET / HTTP/1.1\r\nTE: trailers\r\nTransfer-Encodings: x\r\nC: y\r\nt: z\r\n\r\n");
+  assert.equal(seen.length, 1);
+});
+
+test("body size limit → 413 + close (G6-4)", () => {
+  {
+    const { seen, connect } = fakeServer({ maxBodySize: 4 });
+    const ok = connect().feed("POST / HTTP/1.1\r\nContent-Length: 4\r\n\r\nabcd");
+    assert.equal(statusOf(ok), 200);
+    const s = connect().feed("POST / HTTP/1.1\r\nContent-Length: 5\r\n\r\nabcde");
+    assert.equal(statusOf(s), 413);
+    assert.equal(s.ended, true);
+    assert.equal(seen.length, 1);
+  }
+  // Absurd lengths are rejected without precision loss, default limit 1 MiB
+  const { connect } = fakeServer();
+  const huge = connect().feed("POST / HTTP/1.1\r\nContent-Length: 99999999999999999999\r\n\r\n");
+  assert.equal(statusOf(huge), 413);
+  const over = connect().feed(`POST / HTTP/1.1\r\nContent-Length: ${1024 * 1024 + 1}\r\n\r\n`);
+  assert.equal(statusOf(over), 413);
+});
+
+test("header size limit holds regardless of TCP chunking (G6-4)", () => {
+  const { seen, connect } = fakeServer({ maxHeaderSize: 64 });
+  // Complete header block over the limit, delivered in one chunk
+  const a = connect().feed(`GET / HTTP/1.1\r\nX-Pad: ${"a".repeat(64)}\r\n\r\n`);
+  assert.equal(statusOf(a), 431);
+  assert.equal(a.ended, true);
+  // Same block trickled byte by byte
+  const b = connect();
+  for (const ch of `GET / HTTP/1.1\r\nX-Pad: ${"a".repeat(64)}\r\n\r\n`) b.feed(ch);
+  assert.equal(statusOf(b), 431);
+  // Exactly at the limit is fine
+  const c = connect().feed(`GET / HTTP/1.1\r\nX: ${"a".repeat(64 - 23)}\r\n\r\n`);
+  assert.equal(statusOf(c), 200);
+  assert.equal(seen.length, 1);
+});
+
+test("rejected connection ignores further input", () => {
+  const { seen, connect } = fakeServer();
+  const s = connect().feed("BAD\r\n\r\n");
+  const before = s.out.length;
+  s.feed("GET / HTTP/1.1\r\n\r\n");
+  assert.equal(s.out.length, before);
+  assert.equal(seen.length, 0);
+});
+
+test("leading empty lines before a request are ignored", () => {
+  const { seen, connect } = fakeServer();
+  connect().feed("\r\n\nGET /a HTTP/1.1\r\n\r\n\r\n", "\r\n", "GET /b HTTP/1.1\r\n\r\n");
+  assert.deepEqual(
+    seen.map((r) => r.url),
+    ["/a", "/b"],
+  );
+});
+
+test("body split across chunks waits without re-parsing, then dispatches once", () => {
+  const { seen, connect } = fakeServer();
+  const s = connect();
+  s.feed(
+    "POST /p HTTP/1.1\r\nContent-Length: 10\r\n\r\nab",
+    "cd",
+    "efgh",
+    "ij",
+    "GET /n HTTP/1.1\r\n\r\n",
+  );
+  assert.deepEqual(
+    seen.map((r) => [r.url, r.body]),
+    [
+      ["/p", "abcdefghij"],
+      ["/n", null],
+    ],
+  );
+});
+
+test("large buffers are released once the connection is idle", () => {
+  const { seen, connect } = fakeServer();
+  const body = "x".repeat(200_000);
+  const s = connect();
+  s.feed(`POST / HTTP/1.1\r\nContent-Length: ${body.length}\r\n\r\n${body}`);
+  s.feed("GET /next HTTP/1.1\r\n\r\n");
+  assert.equal(seen.length, 2);
+  assert.equal(seen[0].body, body);
+});
+
+test("backpressure: dispatch pauses until the socket drains (G6-5)", () => {
+  const { seen, connect } = fakeServer(undefined, (_req, socket) => {
+    HttpServer.respond(socket, 200, "{}");
+    (socket as unknown as FakeSocket).writableNeedDrain = true;
+  });
+  const s = connect();
+  const req = "GET / HTTP/1.1\r\n\r\n";
+  s.feed(req.repeat(3));
+  assert.equal(seen.length, 1);
+  assert.equal(s.paused, true);
+  s.feed(req); // arrives while paused — buffered only
+  assert.equal(seen.length, 1);
+  s.writableNeedDrain = false;
+  s.emit("drain");
+  assert.equal(seen.length, 2); // paused again after the next response
+  s.writableNeedDrain = false;
+  s.emit("drain");
+  s.writableNeedDrain = false;
+  s.emit("drain");
+  assert.equal(seen.length, 4);
+  s.writableNeedDrain = false;
+  s.emit("drain"); // nothing buffered
+  assert.equal(seen.length, 4);
+  assert.equal(s.paused, false);
+});
+
+test("handler exceptions destroy the connection and reach onError", () => {
+  const errors: unknown[] = [];
+  let calls = 0;
+  const { connect } = fakeServer({ onError: (e) => errors.push(e) }, (req, socket) => {
+    calls++;
+    if (req.url === "/boom") throw new Error("boom");
+    HttpServer.respond(socket, 200, "{}");
+    (socket as unknown as FakeSocket).writableNeedDrain = true;
+  });
+  const s = connect().feed("GET /ok HTTP/1.1\r\n\r\nGET /boom HTTP/1.1\r\n\r\n");
+  assert.equal(s.paused, true);
+  s.writableNeedDrain = false;
+  s.emit("drain"); // throws inside resume()
+  assert.equal(s.destroyed, true);
+  assert.equal(calls, 2);
+  assert.equal((errors[0] as Error).message, "boom");
+  s.feed("GET /ignored HTTP/1.1\r\n\r\n");
+  assert.equal(calls, 2);
+});
+
+test("keepAliveTimeout arms a socket inactivity timeout (G6-7)", () => {
+  const def = fakeServer().connect();
+  assert.equal(def.timeout, 5000);
+  def.emit("timeout");
+  assert.equal(def.destroyed, true);
+  const custom = fakeServer({ keepAliveTimeout: 20 }).connect();
+  assert.equal(custom.timeout, 20);
+  const off = fakeServer({ keepAliveTimeout: 0 }).connect();
+  assert.equal(off.timeout, -1);
+});
+
+test("headersTimeout bounds the time to receive a header block (G6-7)", async () => {
+  const { seen, connect } = fakeServer({ headersTimeout: 30 });
+  const slow = connect().feed("GET / HTTP/1.1\r\n");
+  slow.feed("X: 1\r\n"); // still within the deadline
+  const fast = connect().feed("GET /fast HTTP/1.1\r\n\r\nGET /next");
+  await new Promise((r) => setTimeout(r, 50));
+  slow.feed("X: 2\r\n");
+  assert.equal(slow.destroyed, true);
+  fast.feed(" HTTP/1.1\r\n\r\n");
+  assert.equal(fast.destroyed, true); // the pending /next started the clock
+  assert.deepEqual(
+    seen.map((r) => r.url),
+    ["/fast"],
+  );
+  // A request that completes in time resets the clock; body phase is exempt
+  const ok = connect().feed("POST /b HTTP/1.1\r\nContent-Length: 2\r\n\r\n");
+  await new Promise((r) => setTimeout(r, 50));
+  ok.feed("hi");
+  assert.equal(ok.destroyed, false);
+  assert.equal(seen[1].body, "hi");
+  // Disabled
+  const off = fakeServer({ headersTimeout: 0 });
+  const s = off.connect().feed("GET / HTTP/1.1\r\n");
+  await new Promise((r) => setTimeout(r, 10));
+  s.feed("\r\n");
+  assert.equal(off.seen.length, 1);
+});
+
+test("close() destroys idle connections and closes busy ones once idle (G6-7)", async () => {
+  const { server, seen, connect } = fakeServer();
+  await HttpServer.listen(server, 0);
+  const idle = connect().feed("GET / HTTP/1.1\r\n\r\n");
+  const flushing = connect();
+  flushing.writableLength = 10;
+  const midRequest = connect().feed("GET /late HTTP/1.1\r\n");
+  const closed = HttpServer.close(server);
+  assert.equal(idle.destroyed, true);
+  assert.equal(flushing.ended, true);
+  assert.equal(flushing.destroyed, false);
+  assert.equal(midRequest.ended, false);
+  midRequest.feed("\r\n");
+  assert.equal(statusOf(midRequest), 200);
+  assert.equal(midRequest.ended, true);
+  assert.deepEqual(
+    seen.map((r) => r.url),
+    ["/", "/late"],
+  );
+  await closed;
+});
+
+test("close() leaves a paused connection to finish after drain", async () => {
+  const { server, seen, connect } = fakeServer(undefined, (_req, socket) => {
+    HttpServer.respond(socket, 200, "{}");
+    (socket as unknown as FakeSocket).writableNeedDrain = true;
+  });
+  await HttpServer.listen(server, 0);
+  const s = connect().feed("GET /1 HTTP/1.1\r\n\r\nGET /2 HTTP/1.1\r\n\r\nGET /3");
+  const closed = HttpServer.close(server);
+  assert.equal(s.destroyed, false);
+  s.writableNeedDrain = false;
+  s.emit("drain"); // dispatches /2, pauses again with /3 partial
+  assert.equal(s.ended, false);
+  s.writableNeedDrain = false;
+  s.emit("drain");
+  s.feed(" HTTP/1.1\r\n\r\n");
+  assert.equal(s.ended, false); // paused after /3
+  s.writableNeedDrain = false;
+  s.emit("drain");
+  assert.equal(s.ended, true);
+  assert.equal(seen.length, 3);
+  await closed;
+});
+
+test("close() over TCP resolves with an idle keep-alive client (G6-7)", async () => {
+  const server = HttpServer.make((_req, socket) => HttpServer.respond(socket, 200, "{}"));
+  await HttpServer.listen(server, 0);
+  const port = getPort(server);
+  const c = net.createConnection({ port, host: "127.0.0.1" });
+  const gotResponse = new Promise((r) => c.once("data", r));
+  c.on("error", () => {});
+  c.on("connect", () => c.write("GET / HTTP/1.1\r\n\r\n"));
+  await gotResponse;
+  await HttpServer.close(server);
+  c.destroy();
+});
+
+test("backpressure over TCP: a non-reading client does not grow the queue (G6-5)", async () => {
+  const body = JSON.stringify("x".repeat(100_000));
+  let handled = 0;
+  let maxQueued = 0;
+  const server = HttpServer.make((_req, socket) => {
+    handled++;
+    HttpServer.respond(socket, 200, body);
+    maxQueued = Math.max(maxQueued, socket.writableLength);
+  });
+  await HttpServer.listen(server, 0);
+  const port = getPort(server);
+  const c = net.createConnection({ port, host: "127.0.0.1" });
+  c.pause();
+  c.on("error", () => {});
+  await new Promise((r) => c.on("connect", r));
+  c.write("GET / HTTP/1.1\r\n\r\n".repeat(2000));
+  await new Promise((r) => setTimeout(r, 300));
+  assert.ok(handled < 100, `handled ${handled}`);
+  assert.ok(maxQueued < 4 * 1024 * 1024, `queued ${maxQueued}`);
+  c.destroy();
   await HttpServer.close(server);
 });
 

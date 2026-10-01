@@ -193,12 +193,9 @@ export function make(capacity: number, fpr: number = 0.01): BloomFilter {
     [kMask]: mask,
     [kCount]: 0,
   };
-  // Double-write the two fields that are mutated after construction so V8
-  // marks them mutable from the first make() call — prevents deoptimisation
-  // cascade on first mutation. kK and kM are never mutated post-construction
-  // so they don't need a second write; kBits is a typed array reference that
-  // is also never reassigned (only its contents change).
-  bf[kMask] = mask;
+  // Double-write kCount so V8 marks it mutable from the first make() call — prevents a
+  // deoptimisation cascade on the first add(). kBits/kK/kM/kMask are never reassigned
+  // after construction (only the typed array's contents change), so they stay const.
   bf[kCount] = 0;
   return bf;
 }

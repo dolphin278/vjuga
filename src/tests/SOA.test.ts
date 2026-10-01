@@ -207,7 +207,7 @@ test("SOA-createView revalidates the descriptor cache when a column array is rep
   // Adding or removing a column is also picked up on the next createView.
   const grown = soa as { x: number[]; y: number[]; z?: number[] };
   grown.z = [7, 8, 9];
-  assert.equal((SOA.createView(grown as { x: number[]; y: number[]; z: number[] }, 2)).z, 9);
+  assert.equal(SOA.createView(grown as { x: number[]; y: number[]; z: number[] }, 2).z, 9);
   delete grown.z;
   assert.equal(SOA.createView(soa, 2).x, 30);
 });

@@ -64,9 +64,7 @@ export function make(capacity: number): BitSet {
     [kBits]: bits,
     [kLength]: capacity,
   };
-  // Double-write kLength so V8 marks it mutable from the first make() call,
-  // preventing deoptimization on later writes inside set/clear/toggle.
-  bs[kLength] = capacity;
+  // kLength is never reassigned, so no double-write is needed to keep it mutable.
   return bs;
 }
 
@@ -175,17 +173,15 @@ function checkSameCapacity(a: BitSet, b: BitSet): void {
 // ---------------------------------------------------------------------------
 // _makeFromBits — fast private constructor for algebra results.
 //
-// `make(capacity)` validates capacity, allocates a fresh Uint32Array, and
-// double-writes kLength — ~400 ns overhead.  Algebra ops (and/or/xor/not)
+// `make(capacity)` validates capacity and allocates a fresh Uint32Array —
+// ~400 ns overhead.  Algebra ops (and/or/xor/not)
 // always produce a BitSet of the same capacity as an existing valid input, so
 // no validation is needed and the bits array is supplied by the caller.
 // This drops algebra op cost from ~500 ns to ~20 ns (just Uint32Array alloc
 // + object literal creation).
 // ---------------------------------------------------------------------------
 function _makeFromBits(capacity: number, bits: Uint32Array): BitSet {
-  const bs: BitSet = { [kBits]: bits, [kLength]: capacity };
-  bs[kLength] = capacity; // double-write: keeps kLength mutable in V8's hidden class
-  return bs;
+  return { [kBits]: bits, [kLength]: capacity };
 }
 
 /** Returns a new BitSet = bitwise AND of `a` and `b`. Throws if capacities differ. */

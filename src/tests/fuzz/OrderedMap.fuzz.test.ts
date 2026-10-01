@@ -375,3 +375,63 @@ test("OrderedMap property: range returns all and only in-bounds entries", () => 
     { numRuns: 1_000_000 },
   );
 });
+
+// ---------------------------------------------------------------------------
+// AVL balance + NaN-total-order property: after random set/del sequences the
+// map matches a Map oracle, iterates in order (NaN last) and every lookup makes
+// at most the AVL height bound of comparator calls.
+// ---------------------------------------------------------------------------
+
+test("OrderedMap property: AVL balance bound and NaN-last order hold under random ops", () => {
+  const keyArb = Arb.oneOf(Arb.integer(0, 60), Arb.constantFrom(NaN, -0, 0, Infinity, -Infinity));
+  const opArb = Arb.tuple(Arb.constantFrom("set", "del"), keyArb);
+  Prop.assert(
+    Arb.array(opArb, { minLength: 0, maxLength: 120 }),
+    (ops) => {
+      let calls = 0;
+      const m = OM.make<number, number>((a, b) => {
+        calls++;
+        // Same total order as the default comparator, but counted.
+        if (a < b) return -1;
+        if (a > b) return 1;
+        if (a !== a) return b !== b ? 0 : 1;
+        if (b !== b) return -1;
+        return 0;
+      });
+      // Oracle keyed by a canonical form: NaN and -0/0 collapse like the comparator.
+      const canon = (k: number): number | string => (k !== k ? "NaN" : k === 0 ? 0 : k);
+      const oracle = new Map<number | string, [number, number]>();
+      let n = 0;
+      for (const [op, k] of ops) {
+        if (op === "set") {
+          OM.set(m, k, n);
+          const prev = oracle.get(canon(k));
+          oracle.set(canon(k), [prev ? prev[0] : k, n]);
+        } else {
+          if (OM.del(m, k) !== oracle.delete(canon(k))) return false;
+        }
+        n++;
+      }
+      if (OM.size(m) !== oracle.size) return false;
+      const sorted = [...oracle.values()].sort((a, b) => {
+        const an = a[0] !== a[0];
+        const bn = b[0] !== b[0];
+        return an || bn ? Number(an) - Number(bn) : a[0] - b[0];
+      });
+      const got = [...OM.entries(m)];
+      if (got.length !== sorted.length) return false;
+      for (let i = 0; i < got.length; i++) {
+        if (String(got[i][0]) !== String(sorted[i][0])) return false;
+        if (got[i][1] !== sorted[i][1]) return false;
+      }
+      const bound = Math.ceil(1.4405 * Math.log2(oracle.size + 2));
+      for (const [k] of oracle.values()) {
+        calls = 0;
+        if (OM.get(m, k) === undefined) return false;
+        if (calls > bound) return false;
+      }
+      return true;
+    },
+    { numRuns: 1_000_000 },
+  );
+});

@@ -173,7 +173,8 @@ for (let i = 0; i < 1000; i++) push(warmSOA, { x: i * 0.1, y: i * 0.2, vx: 0.5, 
 
 bench("SOA.get (warm, long-lived SOA)", () => get(warmSOA, 5));
 
-bench("SOA.set (warm, long-lived SOA)", () => set(warmSOA, 5, { x: 1.5, y: 2.5, vx: 0.5, vy: 0.5 }));
+bench("SOA.set (warm, long-lived SOA)", () =>
+  set(warmSOA, 5, { x: 1.5, y: 2.5, vx: 0.5, vy: 0.5 }));
 
 bench("SOA.pop+push (warm, long-lived SOA)", () => push(warmSOA, pop(warmSOA)));
 

@@ -216,3 +216,16 @@ test("pool: invalid arguments reject, never throw synchronously", async () => {
     /iter/,
   );
 });
+
+test("pool: input array is snapshotted; mutation during the run has no effect", async () => {
+  const items = [1, 2, 3];
+  const seen: number[] = [];
+  const results = await pool(items, 1, async (x) => {
+    seen.push(x);
+    items.push(99);
+    items[2] = -1;
+    return x;
+  });
+  assert.deepEqual(seen, [1, 2, 3]);
+  assert.equal(results.length, 3);
+});

@@ -107,7 +107,8 @@ export interface PoolOptions {
  *   non-function `fn`, a non-iterable `items` or an iterator that throws make
  *   the returned promise reject (`RangeError` / `TypeError` / the thrown
  *   error); `pool` never throws synchronously.
- * - `items` is any `Iterable`, consumed eagerly when `pool` is called;
+ * - `items` is any `Iterable` (arrays included), copied eagerly when `pool` is
+ *   called, so later mutation of it has no effect;
  *   empty input resolves to `[]`.
  * - `fn` receives `(item, index, signal)` so it can cooperate with abort.
  *   `signal.aborted` is checked before each start: aborting (even from inside
@@ -146,7 +147,7 @@ export async function pool<T, R>(
   if (typeof fn !== "function") {
     throw new TypeError("PromiseUtils.pool: fn must be a function");
   }
-  const arr: readonly T[] = Array.isArray(items) ? items : [...items];
+  const arr: readonly T[] = [...items]; // snapshot: later mutation of `items` has no effect
   const n = arr.length;
   const results = Array<PromiseSettledResult<Awaited<R>>>(n);
   if (n === 0) return results;

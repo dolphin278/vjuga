@@ -50,13 +50,18 @@ export interface CheckConfig {
   readonly seed?: Seed;
   /** Maximum size parameter passed to arbitraries. Default 100. */
   readonly maxSize?: number;
-  /** Maximum shrink iterations before giving up. Default 1000. */
+  /** Maximum successful shrink steps before giving up. Default 1000. */
   readonly maxShrinks?: number;
-  /** Path string for exact replay of a specific counterexample. */
+  /** Maximum predicate evaluations spent while shrinking (successful or not).
+   *  Default `max(10_000, 10 * maxShrinks)`. Bounds shrinking time when most
+   *  candidates pass. */
+  readonly maxShrinkEvaluations?: number;
+  /** Path string (from a failed `CheckResult.path`) for exact replay of a
+   *  counterexample; requires the same `seed`. The predicate is evaluated once. */
   readonly path?: string;
   /** Wall-clock deadline in milliseconds. When set, the run loop exits early if
-   *  the deadline passes before numRuns completes; CheckResult.numRuns reflects
-   *  actual completed runs. */
+   *  the deadline passes before numRuns completes (CheckResult.numRuns reflects
+   *  actual completed runs), and shrinking stops at the deadline. */
   readonly timeoutMs?: number;
 }
 
@@ -72,7 +77,8 @@ export interface CheckResult<T> {
   readonly counterexample?: T;
   /** Number of successful shrink steps (only present on failure). */
   readonly shrinks?: number;
-  /** The error thrown by the predicate (only present on failure). */
+  /** The error thrown by the predicate for `counterexample` (undefined when
+   *  the predicate returned `false` for it). */
   readonly error?: unknown;
   /** Path string for exact replay (only present on failure). */
   readonly path?: string;
@@ -137,49 +143,111 @@ function stringify(value: unknown, depth = 4, seen = new Set<unknown>()): string
 // Internal: path encoding/decoding
 // ---------------------------------------------------------------------------
 
-function encodePath(indices: number[]): string {
-  return indices.join(":");
+/** Path format: `<testIdx>@<size>[:<childIdx>...]`. */
+function encodePath(testIdx: number, size: number, indices: number[]): string {
+  let out = `${testIdx}@${size}`;
+  for (const idx of indices) out += `:${idx}`;
+  return out;
 }
 
-function decodePath(path: string): number[] {
-  return path.split(":").map(Number);
+interface ParsedPath {
+  readonly testIdx: number;
+  /** Undefined for legacy paths (`<testIdx>:...`) that predate size encoding. */
+  readonly size: number | undefined;
+  readonly shrinkIndices: number[];
 }
+
+function decodePath(path: string): ParsedPath {
+  const parts = path.split(":");
+  const head = parts[0]!.split("@");
+  const nums = [...head, ...parts.slice(1)].map(Number);
+  if (head.length > 2 || nums.some((n) => !Number.isSafeInteger(n) || n < 0)) {
+    throw new Error(`Property: invalid replay path "${path}"`);
+  }
+  return {
+    testIdx: nums[0]!,
+    size: head.length === 2 ? nums[1]! : undefined,
+    shrinkIndices: nums.slice(head.length),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Internal: predicate evaluation
+// ---------------------------------------------------------------------------
+
+/** Sentinel returned by `evalSync` when the predicate holds. */
+const PASSED: unique symbol = Symbol("passed");
+
+/** Runs the predicate; returns PASSED, or the thrown error (undefined for `false`). */
+function evalSync<T>(predicate: Fn1<T, boolean | void>, value: T): unknown {
+  try {
+    return predicate(value) === false ? undefined : PASSED;
+  } catch (e) {
+    return e;
+  }
+}
+
+/* node:coverage disable */
+async function evalAsync<T>(
+  predicate: (value: T) => Promise<boolean | void>,
+  value: T,
+): Promise<unknown> {
+  try {
+    return (await predicate(value)) === false ? undefined : PASSED;
+  } catch (e) {
+    return e;
+  }
+}
+/* node:coverage enable */
 
 // ---------------------------------------------------------------------------
 // Internal: shrink loop
 // ---------------------------------------------------------------------------
 
+interface ShrinkLimits {
+  readonly maxShrinks: number;
+  readonly maxShrinkEvaluations: number;
+  readonly deadline: number | undefined;
+}
+
+interface ShrinkResult<T> {
+  counterexample: T;
+  shrinks: number;
+  error: unknown;
+  pathIndices: number[];
+}
+
+/** True once the evaluation budget or the wall-clock deadline is exhausted. */
+function outOfBudget(evaluations: number, limits: ShrinkLimits): boolean {
+  return (
+    evaluations >= limits.maxShrinkEvaluations ||
+    (limits.deadline !== undefined && Date.now() > limits.deadline)
+  );
+}
+
 function shrinkSync<T>(
   tree: Tree<T>,
   predicate: Fn1<T, boolean | void>,
-  maxShrinks: number,
-): { counterexample: T; shrinks: number; error: unknown; pathIndices: number[] } {
+  initialError: unknown,
+  limits: ShrinkLimits,
+): ShrinkResult<T> {
   let best = tree.value;
-  let bestError: unknown = undefined;
+  let bestError = initialError;
   let shrinkCount = 0;
+  let evaluations = 0;
   const pathIndices: number[] = [];
 
   let current = tree;
-  outer: while (shrinkCount < maxShrinks) {
+  outer: while (shrinkCount < limits.maxShrinks) {
     let childIdx = 0;
     let found = false;
     for (const child of current.shrinks) {
-      /* node:coverage ignore next 2 */
-      if (shrinkCount >= maxShrinks) break outer;
-      try {
-        const result = predicate(child.value);
-        if (result === false) {
-          best = child.value;
-          bestError = undefined;
-          shrinkCount++;
-          pathIndices.push(childIdx);
-          current = child;
-          found = true;
-          break;
-        }
-      } catch (e) {
+      if (outOfBudget(evaluations, limits)) break outer;
+      evaluations++;
+      const outcome = evalSync(predicate, child.value);
+      if (outcome !== PASSED) {
         best = child.value;
-        bestError = e;
+        bestError = outcome;
         shrinkCount++;
         pathIndices.push(childIdx);
         current = child;
@@ -198,33 +266,26 @@ function shrinkSync<T>(
 async function shrinkAsync<T>(
   tree: Tree<T>,
   predicate: (value: T) => Promise<boolean | void>,
-  maxShrinks: number,
-): Promise<{ counterexample: T; shrinks: number; error: unknown; pathIndices: number[] }> {
+  initialError: unknown,
+  limits: ShrinkLimits,
+): Promise<ShrinkResult<T>> {
   let best = tree.value;
-  let bestError: unknown = undefined;
+  let bestError = initialError;
   let shrinkCount = 0;
+  let evaluations = 0;
   const pathIndices: number[] = [];
 
   let current = tree;
-  outer: while (shrinkCount < maxShrinks) {
+  outer: while (shrinkCount < limits.maxShrinks) {
     let childIdx = 0;
     let found = false;
     for (const child of current.shrinks) {
-      if (shrinkCount >= maxShrinks) break outer;
-      try {
-        const result = await predicate(child.value);
-        if (result === false) {
-          best = child.value;
-          bestError = undefined;
-          shrinkCount++;
-          pathIndices.push(childIdx);
-          current = child;
-          found = true;
-          break;
-        }
-      } catch (e) {
+      if (outOfBudget(evaluations, limits)) break outer;
+      evaluations++;
+      const outcome = await evalAsync(predicate, child.value);
+      if (outcome !== PASSED) {
         best = child.value;
-        bestError = e;
+        bestError = outcome;
         shrinkCount++;
         pathIndices.push(childIdx);
         current = child;
@@ -257,25 +318,86 @@ function replayPath<T>(tree: Tree<T>, indices: number[]): Tree<T> {
       }
       childIdx++;
     }
-    /* node:coverage ignore next 2 */
-    if (!found) break;
+    if (!found) throw new Error(`Property: replay path diverged at shrink index ${idx}`);
   }
   return current;
+}
+
+/** Regenerates the tree for a path's test iteration and walks to its node. */
+function replayTarget<T>(
+  arb: Arbitrary<T>,
+  cfg: ResolvedConfig,
+  path: string,
+): { tree: Tree<T>; parsed: ParsedPath } {
+  const parsed = decodePath(path);
+  const prng = make(cfg.seed);
+  // Advance PRNG to the failing test iteration
+  for (let i = 0; i < parsed.testIdx; i++) {
+    split(prng); // discard
+  }
+  const size = parsed.size ?? sizeFor(parsed.testIdx, cfg.numRuns, cfg.maxSize);
+  const tree = arb(split(prng), size);
+  return { tree: replayPath(tree, parsed.shrinkIndices), parsed };
+}
+
+function replayResult<T>(
+  cfg: ResolvedConfig,
+  path: string,
+  tree: Tree<T>,
+  parsed: ParsedPath,
+  outcome: unknown,
+): CheckResult<T> {
+  if (outcome === PASSED) return { ok: true, numRuns: 1, seed: cfg.seed };
+  return {
+    ok: false,
+    numRuns: 1,
+    seed: cfg.seed,
+    counterexample: tree.value,
+    shrinks: parsed.shrinkIndices.length,
+    error: outcome,
+    path,
+  };
 }
 
 // ---------------------------------------------------------------------------
 // Internal: resolve config defaults
 // ---------------------------------------------------------------------------
 
+type ResolvedConfig = ReturnType<typeof resolveConfig>;
+
 /* node:coverage ignore next */
 function resolveConfig(config?: CheckConfig) {
+  const maxShrinks = config?.maxShrinks ?? 1000;
   return {
     numRuns: config?.numRuns ?? 100,
     seed: config?.seed ?? randomSeed(),
     maxSize: config?.maxSize ?? 100,
-    maxShrinks: config?.maxShrinks ?? 1000,
+    maxShrinks,
+    maxShrinkEvaluations: config?.maxShrinkEvaluations ?? Math.max(10_000, 10 * maxShrinks),
     path: config?.path,
     timeoutMs: config?.timeoutMs,
+  };
+}
+
+/** Size for test iteration `i`: ramps linearly from 0 to maxSize. */
+function sizeFor(i: number, numRuns: number, maxSize: number): number {
+  return numRuns <= 1 ? maxSize : Math.floor((i * maxSize) / (numRuns - 1));
+}
+
+function failure<T>(
+  cfg: ResolvedConfig,
+  i: number,
+  size: number,
+  shrinkResult: ShrinkResult<T>,
+): CheckResult<T> {
+  return {
+    ok: false,
+    numRuns: i + 1,
+    seed: cfg.seed,
+    counterexample: shrinkResult.counterexample,
+    shrinks: shrinkResult.shrinks,
+    error: shrinkResult.error,
+    path: encodePath(i, size, shrinkResult.pathIndices),
   };
 }
 
@@ -285,6 +407,10 @@ function resolveConfig(config?: CheckConfig) {
 
 /**
  * Runs a property check synchronously. Returns a detailed result object.
+ *
+ * With `config.path` set, regenerates exactly that counterexample (same
+ * `seed` required), evaluates the predicate once and reports `ok: true` if it
+ * now holds.
  */
 export function check<T>(
   arb: Arbitrary<T>,
@@ -292,69 +418,22 @@ export function check<T>(
   config?: CheckConfig,
 ): CheckResult<T> {
   const cfg = resolveConfig(config);
-  const prng = make(cfg.seed);
 
-  // Path replay mode: advance PRNG to the right test iteration, then navigate shrink tree
   if (cfg.path !== undefined) {
-    const indices = decodePath(cfg.path);
-    const testIdx = indices[0]!;
-    const shrinkIndices = indices.slice(1);
-    // Advance PRNG to the failing test iteration
-    for (let i = 0; i < testIdx; i++) {
-      split(prng); // discard
-    }
-    /* node:coverage ignore next 4 */
-    const size =
-      cfg.numRuns <= 1
-        ? cfg.maxSize
-        : Math.floor((testIdx * cfg.maxSize) / Math.max(1, cfg.numRuns - 1));
-    const testPrng = split(prng);
-    const tree = arb(testPrng, size);
-    const target = replayPath(tree, shrinkIndices);
-    return {
-      ok: false,
-      numRuns: 1,
-      seed: cfg.seed,
-      counterexample: target.value,
-      shrinks: shrinkIndices.length,
-      path: cfg.path,
-    };
+    const { tree, parsed } = replayTarget(arb, cfg, cfg.path);
+    return replayResult(cfg, cfg.path, tree, parsed, evalSync(predicate, tree.value));
   }
 
+  const prng = make(cfg.seed);
   const deadline = cfg.timeoutMs !== undefined ? Date.now() + cfg.timeoutMs : undefined;
   let i = 0;
   for (; i < cfg.numRuns; i++) {
     if (deadline !== undefined && Date.now() > deadline) break;
-    /* node:coverage ignore next */
-    const size = cfg.numRuns <= 1 ? cfg.maxSize : Math.floor((i * cfg.maxSize) / (cfg.numRuns - 1));
-    const testPrng = split(prng);
-    const tree = arb(testPrng, size);
-
-    let failed = false;
-    let caughtError: unknown;
-    try {
-      const result = predicate(tree.value);
-      if (result === false) {
-        failed = true;
-      }
-    } catch (e) {
-      failed = true;
-      caughtError = e;
-    }
-
-    if (failed) {
-      const shrinkResult = shrinkSync(tree, predicate, cfg.maxShrinks);
-      const finalError = shrinkResult.error ?? caughtError;
-      const pathStr = encodePath([i, ...shrinkResult.pathIndices]);
-      return {
-        ok: false,
-        numRuns: i + 1,
-        seed: cfg.seed,
-        counterexample: shrinkResult.counterexample,
-        shrinks: shrinkResult.shrinks,
-        error: finalError,
-        path: pathStr,
-      };
+    const size = sizeFor(i, cfg.numRuns, cfg.maxSize);
+    const tree = arb(split(prng), size);
+    const outcome = evalSync(predicate, tree.value);
+    if (outcome !== PASSED) {
+      return failure(cfg, i, size, shrinkSync(tree, predicate, outcome, { ...cfg, deadline }));
     }
   }
 
@@ -382,6 +461,7 @@ export function assert<T>(
 /* node:coverage disable */
 /**
  * Runs a property check with an async predicate. Returns a detailed result.
+ * Path replay behaves as in `check`.
  */
 export async function checkAsync<T>(
   arb: Arbitrary<T>,
@@ -389,67 +469,23 @@ export async function checkAsync<T>(
   config?: CheckConfig,
 ): Promise<CheckResult<T>> {
   const cfg = resolveConfig(config);
-  const prng = make(cfg.seed);
 
   if (cfg.path !== undefined) {
-    const indices = decodePath(cfg.path);
-    const testIdx = indices[0]!;
-    const shrinkIndices = indices.slice(1);
-    for (let i = 0; i < testIdx; i++) {
-      split(prng);
-    }
-    /* node:coverage ignore next */
-    const size =
-      cfg.numRuns <= 1
-        ? cfg.maxSize
-        : Math.floor((testIdx * cfg.maxSize) / Math.max(1, cfg.numRuns - 1));
-    const testPrng = split(prng);
-    const tree = arb(testPrng, size);
-    const target = replayPath(tree, shrinkIndices);
-    return {
-      ok: false,
-      numRuns: 1,
-      seed: cfg.seed,
-      counterexample: target.value,
-      shrinks: shrinkIndices.length,
-      path: cfg.path,
-    };
+    const { tree, parsed } = replayTarget(arb, cfg, cfg.path);
+    return replayResult(cfg, cfg.path, tree, parsed, await evalAsync(predicate, tree.value));
   }
 
+  const prng = make(cfg.seed);
   const deadline = cfg.timeoutMs !== undefined ? Date.now() + cfg.timeoutMs : undefined;
   let i = 0;
   for (; i < cfg.numRuns; i++) {
     if (deadline !== undefined && Date.now() > deadline) break;
-    /* node:coverage ignore next */
-    const size = cfg.numRuns <= 1 ? cfg.maxSize : Math.floor((i * cfg.maxSize) / (cfg.numRuns - 1));
-    const testPrng = split(prng);
-    const tree = arb(testPrng, size);
-
-    let failed = false;
-    let caughtError: unknown;
-    try {
-      const result = await predicate(tree.value);
-      if (result === false) {
-        failed = true;
-      }
-    } catch (e) {
-      failed = true;
-      caughtError = e;
-    }
-
-    if (failed) {
-      const shrinkResult = await shrinkAsync(tree, predicate, cfg.maxShrinks);
-      const finalError = shrinkResult.error ?? caughtError;
-      const pathStr = encodePath([i, ...shrinkResult.pathIndices]);
-      return {
-        ok: false,
-        numRuns: i + 1,
-        seed: cfg.seed,
-        counterexample: shrinkResult.counterexample,
-        shrinks: shrinkResult.shrinks,
-        error: finalError,
-        path: pathStr,
-      };
+    const size = sizeFor(i, cfg.numRuns, cfg.maxSize);
+    const tree = arb(split(prng), size);
+    const outcome = await evalAsync(predicate, tree.value);
+    if (outcome !== PASSED) {
+      const shrinkResult = await shrinkAsync(tree, predicate, outcome, { ...cfg, deadline });
+      return failure(cfg, i, size, shrinkResult);
     }
   }
 

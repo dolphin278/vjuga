@@ -54,6 +54,7 @@ import {
   freshVar,
   compileFunction,
   compileHelper,
+  typeCheckExpr,
 } from "./Codegen.js";
 
 /**
@@ -206,7 +207,9 @@ function walkStringifyObject(
     const { key, expr, optional } = childExprs[i];
     const keyFragment = JSON.stringify(key) + ":";
     if (optional) {
-      body += `  if (o[${JSON.stringify(key)}] !== undefined) {\n`;
+      // Names like `toString` would read an inherited member when absent.
+      const own = key in Object.prototype ? `Object.hasOwn(o, ${JSON.stringify(key)}) && ` : "";
+      body += `  if (${own}o[${JSON.stringify(key)}] !== undefined) {\n`;
       body += `    s += (first ? "" : ",") + ${JSON.stringify(keyFragment)} + ${expr};\n`;
       body += "    first = false;\n";
       body += "  }\n";
@@ -310,10 +313,8 @@ function walkStringifyUnion(
   if (discriminant !== null) {
     let body = `function ${helperName}(v) {\n  switch (v[${JSON.stringify(discriminant)}]) {\n`;
     for (let i = 0; i < variants.length; i++) {
-      const obj = variants[i];
-      /* node:coverage disable */
-      if (obj.kind !== "object") continue; // guaranteed by findDiscriminant
-      /* node:coverage enable */
+      // Every variant is an object — guaranteed by findDiscriminant.
+      const obj = variants[i] as Schema & { readonly kind: "object" };
       // Literal values are passed by reference, never interpolated as source.
       const lit = emitRef(buf, freshVar(buf), obj.meta.properties[discriminant].meta.value);
       body += `    case ${lit}: return ${walkStringify(buf, obj, "v")};\n`;
@@ -338,7 +339,7 @@ function walkStringifyUnion(
     }
     const check = overlaps
       ? `${emitRef(buf, freshVar(buf), validate(variants[i]))}(v)[0]`
-      : tags[i].map((t: Tag) => TAG_CHECKS[t]).join(" || ");
+      : (typeCheckExpr(variants[i], "v") ?? tags[i].map((t: Tag) => TAG_CHECKS[t]).join(" || "));
     body += `  if (${check}) return ${walkStringify(buf, variants[i], "v")};\n`;
   }
   body += noMatch;

@@ -554,6 +554,27 @@ test("stringify union throws on a value matching no variant", () => {
   assert.throws(() => disc({ t: "zzz" } as never), /does not match any union variant/);
 });
 
+test("stringify union with a null literal variant and an invalid variant kind", () => {
+  const fn = SJ.stringify(S.union(S.literal(null), S.string()));
+  assert.equal(fn(null), "null");
+  assert.equal(fn("x"), '"x"');
+  const bad = { kind: "INVALID", meta: undefined } as unknown as S.Schema;
+  assert.throws(() => SJ.stringify(S.union(S.string(), bad)), /unreachable/i);
+});
+
+test("optional properties named like Object.prototype members are own-checked", () => {
+  const schema = S.object({
+    toString: S.optional(S.integer()),
+    constructor: S.optional(S.string()),
+    a: S.integer(),
+  });
+  // Property names that shadow Object.prototype members confuse TS inference.
+  const str = SJ.stringify(schema) as unknown as (v: object) => string;
+  assert.equal(str({ a: 1 }), '{"a":1}');
+  assert.equal(str({ toString: 2, a: 1 }), '{"toString":2,"a":1}');
+  assert.equal(str({ constructor: "c", a: 1 }), '{"constructor":"c","a":1}');
+});
+
 test("discriminated union literal values are not interpolated into source", () => {
   const g = globalThis as { PWN?: number };
   g.PWN = 0;

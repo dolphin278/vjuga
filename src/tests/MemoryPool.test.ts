@@ -199,3 +199,78 @@ test("withAcquire returns the value from fn", () => {
   });
   assert.equal(result, 42);
 });
+
+test("a throwing factory does not leak a slot", () => {
+  let fail = true;
+  const pool = make({
+    maxSize: 1,
+    factory: () => {
+      if (fail) throw new Error("factory boom");
+      return {};
+    },
+  });
+  assert.throws(() => acquire(pool), /factory boom/);
+  fail = false;
+  // The slot must still be available.
+  const a = acquire(pool);
+  assert.ok(a);
+});
+
+test("a throwing reset frees the slot, drops the instance and propagates", () => {
+  let allocated = 0;
+  const pool = make({
+    maxSize: 1,
+    factory: () => ({ id: allocated++ }),
+    reset: () => {
+      throw new Error("reset boom");
+    },
+  });
+  const a = acquire(pool);
+  assert.throws(() => release(pool, a), /reset boom/);
+  const b = acquire(pool);
+  assert.notEqual(b, a, "dirty instance must not be recycled");
+  assert.equal(allocated, 2);
+});
+
+test("withAcquire: a throwing reset does not mask the error from fn", () => {
+  const pool = make({
+    maxSize: 1,
+    factory: () => ({}),
+    reset: () => {
+      throw new Error("reset boom");
+    },
+  });
+  assert.throws(
+    () =>
+      withAcquire(pool, () => {
+        throw new Error("user boom");
+      }),
+    /user boom/,
+  );
+  // Slot freed.
+  acquire(pool);
+});
+
+test("withAcquire: a throwing reset on the success path propagates", () => {
+  const pool = make({
+    factory: () => ({}),
+    reset: () => {
+      throw new Error("reset boom");
+    },
+  });
+  assert.throws(() => withAcquire(pool, () => 1), /reset boom/);
+});
+
+test("make validates maxSize and minSize", () => {
+  const factory = () => ({});
+  assert.throws(() => make({ factory, maxSize: NaN }), RangeError);
+  assert.throws(() => make({ factory, maxSize: -1 }), RangeError);
+  assert.throws(() => make({ factory, minSize: -1 }), RangeError);
+  assert.throws(() => make({ factory, minSize: 1.5 }), RangeError);
+  assert.throws(() => make({ factory, minSize: NaN }), RangeError);
+  // Valid edge cases.
+  assert.doesNotThrow(() => make({ factory, maxSize: 0 }));
+  assert.doesNotThrow(() => make({ factory, maxSize: Infinity }));
+  const zero = make({ factory, maxSize: 0 });
+  assert.throws(() => acquire(zero), MemoryPoolExhaustedError);
+});

@@ -14,6 +14,10 @@
  * Design tradeoffs:
  *   - LIFO stack is 13× faster than a Queue-backed free list in
  *     micro-benchmarks (cache-hot top-of-stack vs ring-buffer pointer chase).
+ *   - `maxSize` must be a non-negative number and `minSize` a non-negative
+ *     integer; otherwise `make` throws `RangeError`. A throwing `factory`
+ *     does not consume a slot; a throwing `reset` drops that instance (it is
+ *     not recycled) and frees its slot, and the error propagates.
  *   - No ownership tracking or double-release guards — intentionally simple.
  *     If ownership tracking is needed during development, wrap the pool in a
  *     Set-based borrow-checker at the call site.
@@ -80,6 +84,13 @@ export function make<T extends object>(options: MemoryPoolConfig<T>): MemoryPool
   const { factory, reset, maxSize: _maxSize, minSize } = options;
   const maxSize = _maxSize ?? 1024;
 
+  // `!(x >= 0)` also rejects NaN, which would otherwise silently mean "unlimited".
+  if (!(maxSize >= 0)) {
+    throw new RangeError("maxSize must be a non-negative number");
+  }
+  if (minSize !== undefined && !(Number.isInteger(minSize) && minSize >= 0)) {
+    throw new RangeError("minSize must be a non-negative integer");
+  }
   if (minSize !== undefined && minSize > maxSize) {
     throw new MemoryPoolMinSizeError();
   }
@@ -120,13 +131,23 @@ export function acquire<T extends object>(pool: MemoryPool<T>): T {
     throw new MemoryPoolExhaustedError();
   }
 
+  // Count only after the factory succeeds: a throwing factory must not leak a slot.
+  const instance = pool[kFactory]();
   pool[kAcquiredCount]++;
-  return pool[kFactory]();
+  return instance;
 }
 
 export function release<T extends object>(pool: MemoryPool<T>, instance: T): void {
-  if (pool[kReset] !== undefined) {
-    Reflect.apply(pool[kReset], undefined, [instance]);
+  const reset = pool[kReset];
+  if (reset !== undefined) {
+    try {
+      reset(instance);
+    } catch (error) {
+      // The instance may be half-reset, so drop it instead of recycling, but
+      // free its slot so the pool does not shrink permanently.
+      pool[kAcquiredCount]--;
+      throw error;
+    }
   }
 
   pool[kAcquiredCount]--;
@@ -135,9 +156,18 @@ export function release<T extends object>(pool: MemoryPool<T>, instance: T): voi
 
 export function withAcquire<T extends object, R>(pool: MemoryPool<T>, fn: (instance: T) => R): R {
   const instance = acquire(pool);
+  let result: R;
   try {
-    return fn(instance);
-  } finally {
-    release(pool, instance);
+    result = fn(instance);
+  } catch (error) {
+    // Do not let a throwing `reset` mask the error from `fn`.
+    try {
+      release(pool, instance);
+    } catch {
+      // `fn`'s error takes precedence.
+    }
+    throw error;
   }
+  release(pool, instance);
+  return result;
 }

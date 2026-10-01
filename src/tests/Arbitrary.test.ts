@@ -869,3 +869,376 @@ test("leaf creates a tree with no shrinks", () => {
   assert.equal(tree.value, 99);
   assert.deepEqual(firstShrinks(tree), []);
 });
+
+// ---------------------------------------------------------------------------
+// Re-iterable shrink trees (G7-1)
+// ---------------------------------------------------------------------------
+
+/** Serializes a value deterministically (handles bigint / Date / undefined). */
+function ser(v: unknown): string {
+  return JSON.stringify(v, (_k, x) =>
+    typeof x === "bigint"
+      ? `${x}n`
+      : x === undefined
+        ? "<undef>"
+        : x instanceof Date
+          ? `D${x.getTime()}`
+          : x,
+  );
+}
+
+/** Snapshot of the first `width` children, `depth` levels deep. */
+function snapshot<T>(tree: Arb.Tree<T>, depth: number, width = 6): unknown {
+  const kids: unknown[] = [];
+  if (depth > 0) {
+    let n = 0;
+    for (const child of tree.shrinks) {
+      kids.push(snapshot(child, depth - 1, width));
+      if (++n >= width) break;
+    }
+  }
+  return [ser(tree.value), kids];
+}
+
+const reiterableCases: [string, Arb.Arbitrary<unknown>][] = [
+  ["integer", Arb.integer(-1_000_000, 1_000_000)],
+  ["bigint", Arb.bigint(-(10n ** 12n), 10n ** 12n)],
+  ["float", Arb.float(-1000, 1000)],
+  ["date", Arb.date()],
+  ["string", Arb.string({ maxLength: 8 })],
+  ["boolean", Arb.boolean()],
+  ["constantFrom", Arb.constantFrom("a", "b", "c")],
+  ["array", Arb.array(Arb.integer(-1000, 1000))],
+  ["tuple", Arb.tuple(Arb.integer(-1000, 1000), Arb.string())],
+  ["record", Arb.record({ a: Arb.integer(-1000, 1000), b: Arb.string() })],
+  ["map", Arb.map(Arb.integer(-1000, 1000), (n) => n * 2)],
+  ["filter", Arb.filter(Arb.integer(-1000, 1000), (n) => n % 2 === 0)],
+  [
+    "chain",
+    Arb.chain(Arb.integer(1, 5), (n) => Arb.array(Arb.integer(-1000, 1000), { maxLength: n })),
+  ],
+  ["oneOf", Arb.oneOf<unknown>(Arb.string(), Arb.integer(-1000, 1000), Arb.integer(5000, 9000))],
+  [
+    "frequency",
+    Arb.frequency<unknown>(
+      { weight: 3, arb: Arb.string() },
+      { weight: 1, arb: Arb.integer(-1000, 1000) },
+      { weight: 1, arb: Arb.array(Arb.integer(0, 1000)) },
+    ),
+  ],
+  ["uniqueArray", Arb.uniqueArray(Arb.integer(0, 1000), { minLength: 1 })],
+  ["dictionary", Arb.dictionary(Arb.string({ minLength: 1 }), Arb.integer(-1000, 1000))],
+  ["subarray", Arb.subarray([1, 2, 3, 4, 5, 6])],
+  [
+    "gen",
+    Arb.gen((pick) => (pick(Arb.boolean()) ? pick(Arb.string()) : pick(Arb.integer(-1000, 1000)))),
+  ],
+  [
+    "letrec",
+    Arb.letrec((tie) => ({
+      json: Arb.oneOf<unknown>(Arb.integer(-1000, 1000), Arb.string(), Arb.array(tie("json"))),
+    })).json,
+  ],
+];
+
+for (const [name, arb] of reiterableCases) {
+  test(`${name}: iterating shrinks twice yields the same children (3 levels)`, () => {
+    for (let s = 0n; s < 30n; s++) {
+      const tree = arb(rng(s), 60);
+      const first = snapshot(tree, 3);
+      // Partial iteration must not drain anything.
+      for (const _child of tree.shrinks) break;
+      assert.deepEqual(snapshot(tree, 3), first, `seed ${s}`);
+    }
+  });
+}
+
+test("tuple shrinking reaches the true minimum (sibling trees not drained)", () => {
+  // Every counterexample must be exactly [20, 0] — the minimal failing pair.
+  for (let s = 1n; s <= 30n; s++) {
+    const tree = Arb.tuple(Arb.integer(0, 100), Arb.integer(0, 100))(rng(s), 100);
+    let [a, b] = tree.value;
+    if (a - b < 20) continue;
+    let current: Arb.Tree<[number, number]> = tree;
+    let progressed = true;
+    while (progressed) {
+      progressed = false;
+      for (const child of current.shrinks) {
+        if (child.value[0] - child.value[1] >= 20) {
+          current = child;
+          [a, b] = child.value;
+          progressed = true;
+          break;
+        }
+      }
+    }
+    assert.deepEqual([a, b], [20, 0], `seed ${s}`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Large-number shrinking (G7-2)
+// ---------------------------------------------------------------------------
+
+test("integer shrink candidates beyond int32 stay in range and are finite", () => {
+  const lo = 2 ** 40;
+  const tree = Arb.integer(lo, lo + 1_000_000)(rng(5n), 100);
+  const kids = [...tree.shrinks].map((t) => t.value);
+  assert.ok(kids.length > 0 && kids.length < 64, `got ${kids.length} children`);
+  for (const k of kids) assert.ok(k >= lo && k <= lo + 1_000_000, `out of range: ${k}`);
+});
+
+test("date shrink candidates stay in range", () => {
+  const d0 = new Date("2020-01-01");
+  const d1 = new Date("2030-01-01");
+  const tree = Arb.date(d0, d1)(rng(3n), 100);
+  for (const c of tree.shrinks) {
+    assert.ok(c.value >= d0 && c.value <= d1, `out of range: ${c.value.toISOString()}`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Sizing (G7-4)
+// ---------------------------------------------------------------------------
+
+test("integer is biased toward the target at small sizes", () => {
+  const prng = rng(2n);
+  for (let i = 0; i < 500; i++) {
+    assert.equal(Arb.integer(-1000, 1000)(PRNG.split(prng), 0).value, 0);
+    const v = Arb.integer(0, 1_000_000)(PRNG.split(prng), 10).value;
+    assert.ok(v <= 10, `size 10 produced ${v}`);
+    const w = Arb.integer(0, 10)(PRNG.split(prng), 3).value;
+    assert.ok(w <= 3, `small range at size 3 produced ${w}`);
+  }
+});
+
+test("integer validates its bounds", () => {
+  assert.throws(() => Arb.integer(0.5, 10), RangeError);
+  assert.throws(() => Arb.integer(5, 1), RangeError);
+  assert.throws(() => Arb.integer(0, Number.NaN), RangeError);
+  assert.throws(() => Arb.integer(0, 2 ** 60), RangeError);
+});
+
+test("integer with min === max always yields it", () => {
+  assert.equal(Arb.integer(7, 7)(rng(), 100).value, 7);
+});
+
+test("bigint validates min <= max", () => {
+  assert.throws(() => Arb.bigint(5n, 1n), RangeError);
+});
+
+// ---------------------------------------------------------------------------
+// float shrinking stays in range (G7-9)
+// ---------------------------------------------------------------------------
+
+function everyNode<T>(tree: Arb.Tree<T>, depth: number, f: (v: T) => void): void {
+  f(tree.value);
+  if (depth === 0) return;
+  for (const child of tree.shrinks) everyNode(child, depth - 1, f);
+}
+
+test("float(0.5, 1) shrink candidates never leave [0.5, 1)", () => {
+  for (let s = 0n; s < 20n; s++) {
+    everyNode(Arb.float(0.5, 1)(rng(s), 100), 3, (v) => assert.ok(v >= 0.5 && v < 1, `${v}`));
+  }
+});
+
+test("float(-1, -0.5) shrinks toward -0.5 without reaching it", () => {
+  for (let s = 0n; s < 20n; s++) {
+    everyNode(Arb.float(-1, -0.5)(rng(s), 100), 3, (v) => assert.ok(v >= -1 && v < -0.5, `${v}`));
+  }
+});
+
+test("float validates bounds and supports min === max", () => {
+  assert.throws(() => Arb.float(1, 0), RangeError);
+  assert.throws(() => Arb.float(0, Infinity), RangeError);
+  const t = Arb.float(2, 2)(rng(), 100);
+  assert.equal(t.value, 2);
+  assert.deepEqual([...t.shrinks], []);
+});
+
+// ---------------------------------------------------------------------------
+// uniqueArray (G7-5)
+// ---------------------------------------------------------------------------
+
+test("uniqueArray throws when minLength unique values are impossible", () => {
+  assert.throws(
+    () => Arb.uniqueArray(Arb.boolean(), { minLength: 3, maxLength: 3 })(rng(1n), 100),
+    /minLength is 3/,
+  );
+});
+
+test("uniqueArray reaches minLength even at size 0 (retries at larger sizes)", () => {
+  for (let s = 0n; s < 20n; s++) {
+    const t = Arb.uniqueArray(Arb.integer(0, 50), { minLength: 4, maxLength: 4 })(rng(s), 0);
+    assert.equal(t.value.length, 4);
+    assert.equal(new Set(t.value).size, 4);
+  }
+});
+
+test("uniqueArray shrink candidates stay unique at every depth", () => {
+  for (let s = 0n; s < 20n; s++) {
+    const t = Arb.uniqueArray(Arb.integer(0, 50), { minLength: 2, maxLength: 4 })(rng(s), 50);
+    everyNode(t, 3, (v) => {
+      assert.equal(new Set(v).size, v.length, `duplicate in ${ser(v)}`);
+      assert.ok(v.length >= 2);
+    });
+  }
+});
+
+test("dictionary keeps minSize distinct keys while shrinking", () => {
+  const arb = Arb.dictionary(Arb.constantFrom("a", "b", "c", "d"), Arb.integer(-9, 9), {
+    minSize: 2,
+    maxSize: 2,
+  });
+  for (let s = 0n; s < 20n; s++) {
+    everyNode(arb(rng(s), 50), 3, (d) => assert.equal(Object.keys(d).length, 2));
+  }
+});
+
+// ---------------------------------------------------------------------------
+// letrec termination (G7-3)
+// ---------------------------------------------------------------------------
+
+function countNodes(v: unknown): number {
+  return Array.isArray(v) ? 1 + v.reduce((a: number, x) => a + countNodes(x), 0) : 1;
+}
+
+test("letrec doc example at size 100 stays within the expansion budget", () => {
+  const { json } = Arb.letrec((tie) => ({
+    json: Arb.oneOf<unknown>(Arb.integer(), Arb.string(), Arb.array(tie("json"))),
+  }));
+  // Budget: ≤ size+1 arrays generated at non-zero size, each ≤ 10 elements.
+  const bound = 10 * (100 + 1) + 1;
+  for (let s = 0n; s < 200n; s++) {
+    const tree = json(rng(s), 100);
+    assert.ok(countNodes(tree.value) <= bound, `seed ${s}: ${countNodes(tree.value)} nodes`);
+    // Shrinking re-derives oneOf alternatives outside the generation: still bounded.
+    let n = 0;
+    for (const child of tree.shrinks) {
+      assert.ok(countNodes(child.value) <= bound);
+      if (++n > 20) break;
+    }
+  }
+});
+
+test("letrec references called directly start their own budget", () => {
+  let ref: Arb.Arbitrary<unknown> | undefined;
+  Arb.letrec((tie) => {
+    ref = tie("json");
+    return { json: Arb.oneOf<unknown>(Arb.integer(), Arb.array(tie("json"))) };
+  });
+  for (let s = 0n; s < 50n; s++) {
+    assert.ok(countNodes(ref!(rng(s), 100).value) <= 10 * 101 + 1);
+  }
+});
+
+test("letrec budget resets after a throwing generation", () => {
+  let boom = true;
+  const { t } = Arb.letrec((tie) => ({
+    t: Arb.map(Arb.array(tie("t"), { maxLength: 2 }), (xs) => {
+      if (boom) throw new Error("boom");
+      return xs;
+    }),
+  }));
+  assert.throws(() => t(rng(1n), 10), /boom/);
+  boom = false;
+  assert.ok(Array.isArray(t(rng(1n), 10).value));
+});
+
+// ---------------------------------------------------------------------------
+// gen replay (G7-10)
+// ---------------------------------------------------------------------------
+
+test("gen replay never feeds a value from a different arbitrary into a pick", () => {
+  const arb = Arb.gen((pick) =>
+    pick(Arb.boolean())
+      ? { kind: "s", v: pick(Arb.string({ minLength: 1 })) as unknown }
+      : { kind: "n", v: pick(Arb.integer(1, 10)) as unknown },
+  );
+  for (let s = 0n; s < 40n; s++) {
+    everyNode(arb(rng(s), 50), 3, (x) => {
+      if (x.kind === "n") assert.equal(typeof x.v, "number", ser(x));
+      else assert.equal(typeof x.v, "string", ser(x));
+    });
+  }
+});
+
+test("gen replay draws fresh values for picks beyond the recorded ones", () => {
+  const arb = Arb.gen((pick) => {
+    const n = pick(Arb.integer(0, 3));
+    const out: number[] = [];
+    for (let i = 0; i <= 3 - n; i++) out.push(pick(Arb.integer(1, 9)));
+    return out;
+  });
+  for (let s = 0n; s < 40n; s++) {
+    everyNode(arb(rng(s), 50), 3, (xs) => {
+      for (const x of xs) assert.equal(typeof x, "number", ser(xs));
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// frequency (G7-12, G7-15)
+// ---------------------------------------------------------------------------
+
+test("frequency never shrinks into a weight-0 entry", () => {
+  const arb = Arb.frequency(
+    { weight: 0, arb: Arb.constant(-999) },
+    { weight: 1, arb: Arb.integer(1, 5) },
+    { weight: 2, arb: Arb.integer(100, 200) },
+  );
+  for (let s = 0n; s < 50n; s++) {
+    everyNode(arb(rng(s), 100), 2, (v) => assert.notEqual(v, -999));
+  }
+});
+
+test("frequency shrinks lower-weight choices toward higher-weight entries only", () => {
+  const arb = Arb.frequency(
+    { weight: 1, arb: Arb.constant("low") },
+    { weight: 5, arb: Arb.constant("high") },
+  );
+  for (let s = 0n; s < 50n; s++) {
+    const t = arb(rng(s), 100);
+    const kids = [...t.shrinks].map((c) => c.value);
+    assert.deepEqual(kids, t.value === "low" ? ["high"] : []);
+  }
+});
+
+test("frequency validates weights", () => {
+  assert.throws(() => Arb.frequency({ weight: -1, arb: Arb.constant(1) }), RangeError);
+  assert.throws(() => Arb.frequency({ weight: Number.NaN, arb: Arb.constant(1) }), RangeError);
+  assert.throws(() => Arb.frequency({ weight: 0, arb: Arb.constant(1) }), RangeError);
+});
+
+// ---------------------------------------------------------------------------
+// string simplification at minLength (G7-13)
+// ---------------------------------------------------------------------------
+
+test("string at minLength still simplifies characters toward 'a'", () => {
+  let tree = Arb.string({ minLength: 3, maxLength: 3 })(rng(4n), 100);
+  for (let steps = 0; steps < 10; steps++) {
+    const [first] = tree.shrinks;
+    if (first === undefined) break;
+    assert.equal(first.value.length, 3);
+    tree = first;
+  }
+  assert.equal(tree.value, "aaa");
+});
+
+test("bigint shrinks toward the upper bound for all-negative ranges", () => {
+  const tree = Arb.bigint(-1000n, -5n)(rng(9n), 100);
+  const kids = [...tree.shrinks].map((t) => t.value);
+  if (tree.value !== -5n) assert.equal(kids[0], -5n);
+  for (const k of kids) assert.ok(k >= -1000n && k <= -5n);
+});
+
+test("letrec shape arbs invoked during an active generation share its budget", () => {
+  const out: { a: Arb.Arbitrary<unknown>; b: Arb.Arbitrary<unknown> } = Arb.letrec((tie) => ({
+    a: Arb.oneOf<unknown>(Arb.integer(), (p, s) => out.b(p, s)),
+    b: Arb.array(tie("a")),
+  }));
+  for (let s = 0n; s < 50n; s++) {
+    assert.ok(countNodes(out.a(rng(s), 100).value) <= 10 * 101 + 1);
+  }
+});

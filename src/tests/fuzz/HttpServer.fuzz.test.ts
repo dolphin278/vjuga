@@ -17,6 +17,7 @@ class FakeSocket extends EventEmitter {
   out: Buffer[] = [];
   ended = false;
   destroyed = false;
+  paused = false;
   writableNeedDrain = false;
   writableLength = 0;
   setNoDelay(): void {}
@@ -32,8 +33,12 @@ class FakeSocket extends EventEmitter {
   destroy(): void {
     this.destroyed = true;
   }
-  pause(): void {}
-  resume(): void {}
+  pause(): void {
+    this.paused = true;
+  }
+  resume(): void {
+    this.paused = false;
+  }
 }
 
 interface Seen {
@@ -51,7 +56,8 @@ interface Harness {
   socket: FakeSocket;
 }
 
-function connect(options: HttpServer.Options): Harness {
+/** `drainMask` bit i set → the i-th response reports a full write buffer. */
+function connect(options: HttpServer.Options, drainMask = 0): Harness {
   const seen: Seen[] = [];
   const errors: unknown[] = [];
   const server = HttpServer.make(
@@ -63,6 +69,8 @@ function connect(options: HttpServer.Options): Harness {
         id: HttpServer.getHeader(req, "x-id"),
       });
       HttpServer.respondRaw(socket, OK);
+      if ((drainMask >>> (seen.length - 1)) & 1)
+        (socket as unknown as FakeSocket).writableNeedDrain = true;
     },
     { headersTimeout: 0, keepAliveTimeout: 0, ...options, onError: (e) => errors.push(e) },
   );
@@ -74,13 +82,23 @@ function connect(options: HttpServer.Options): Harness {
 }
 
 /** Feed `stream` cut at the given points (sorted, deduplicated, in range). */
-function feed(h: Harness, stream: Buffer, cuts: number[]): void {
+function feed(h: Harness, stream: Buffer, cuts: number[], drainEvery = false): void {
   let prev = 0;
   for (const c of cuts) {
     h.socket.emit("data", stream.subarray(prev, c));
     prev = c;
+    if (drainEvery) drain(h);
   }
   if (prev < stream.length) h.socket.emit("data", stream.subarray(prev));
+  drain(h);
+}
+
+/** Let the server resume until it stops pausing for backpressure. */
+function drain(h: Harness): void {
+  while (h.socket.paused) {
+    h.socket.writableNeedDrain = false;
+    h.socket.emit("drain");
+  }
 }
 
 function cutPoints(len: number, raw: number[], bytewise: boolean): number[] {
@@ -113,6 +131,8 @@ interface Case {
   stream: Buffer;
   expected: Seen[];
   cuts: number[];
+  drainMask: number;
+  drainEvery: boolean;
 }
 
 const validCase: Arb.Arbitrary<Case> = Arb.gen((pick) => {
@@ -150,15 +170,19 @@ const validCase: Arb.Arbitrary<Case> = Arb.gen((pick) => {
   const stream = Buffer.from(parts.join(""));
   const bytewise = pick(Arb.integer(0, 15)) === 0;
   const raw = pick(Arb.array(Arb.nat(1 << 20), { minLength: 0, maxLength: 8 }));
-  return { stream, expected, cuts: cutPoints(stream.length, raw, bytewise) };
+  // Backpressure on a random subset of responses; drain either after every
+  // chunk or only at the end (so chunks pile up while paused)
+  const drainMask = pick(Arb.integer(0, 3)) === 0 ? pick(Arb.nat(63)) : 0;
+  const drainEvery = pick(Arb.boolean());
+  return { stream, expected, cuts: cutPoints(stream.length, raw, bytewise), drainMask, drainEvery };
 });
 
 test("valid pipelined stream: dispatch matches the oracle for any chunking", () => {
   Prop.assert(
     validCase,
-    ({ stream, expected, cuts }) => {
-      const h = connect({});
-      feed(h, stream, cuts);
+    ({ stream, expected, cuts, drainMask, drainEvery }) => {
+      const h = connect({}, drainMask);
+      feed(h, stream, cuts, drainEvery);
       assert.deepEqual(h.seen, expected);
       assert.deepEqual(h.errors, []);
       assert.equal(h.socket.ended || h.socket.destroyed, false);

@@ -129,3 +129,62 @@ test("stringify produces JSON parseable by native JSON.parse", () => {
     { numRuns: 1_000_000 },
   );
 });
+
+// ---------------------------------------------------------------------------
+// G6-6: \u-escaped dangerous keys never survive safeParse
+// ---------------------------------------------------------------------------
+
+const escapeWord = (word: string, mask: boolean[], upper: boolean[]): string => {
+  let out = "";
+  for (let i = 0; i < word.length; i++) {
+    if (mask[i % mask.length]) {
+      let hex = word.charCodeAt(i).toString(16).padStart(4, "0");
+      if (upper[i % upper.length]) hex = hex.toUpperCase();
+      out += "\\u" + hex;
+    } else {
+      out += word[i];
+    }
+  }
+  return out;
+};
+
+test("safeParse: randomly \\u-escaped __proto__/constructor keys never survive or pollute", () => {
+  const bools = Arb.array(Arb.boolean(), { minLength: 1, maxLength: 11 });
+  Prop.assert(
+    Arb.tuple<[boolean[], boolean[], boolean[], string, number, unknown]>(
+      bools,
+      bools,
+      bools,
+      Arb.constantFrom("__proto__", "constructor"),
+      Arb.integer(0, 3),
+      jsonValue,
+    ),
+    ([mask, upper, mask2, word, depth, filler]) => {
+      const key = escapeWord(word, mask, upper);
+      // Second, independently-escaped key at the same level.
+      const key2 = escapeWord("__proto__", mask2, upper);
+      let text = `{"${key}":{"polluted":true},"${key2}":{"polluted":true},"f":${JSON.stringify(filler)}}`;
+      for (let i = 0; i < depth; i++) text = `[{"k":${text}}]`;
+      const r = VJSON.safeParse(text);
+      assert.equal(r[0], true);
+
+      const stack: unknown[] = [r[1]];
+      let current: unknown;
+      while ((current = stack.pop()) !== undefined) {
+        if (current === null || typeof current !== "object") continue;
+        if (Array.isArray(current)) {
+          for (const item of current) stack.push(item);
+        } else {
+          assert.equal(Object.getPrototypeOf(current), Object.prototype);
+          for (const k of Object.getOwnPropertyNames(current)) {
+            assert.notEqual(k, "__proto__");
+            assert.notEqual(k, "constructor");
+            stack.push((current as Record<string, unknown>)[k]);
+          }
+        }
+      }
+      assert.equal(({} as Record<string, unknown>).polluted, undefined);
+    },
+    { numRuns: 200_000 },
+  );
+});

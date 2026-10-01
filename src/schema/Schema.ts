@@ -264,7 +264,9 @@ export function enum_<const V extends readonly (string | number)[]>(...values: V
  * optional (key may be absent). Only OWN properties count: inherited values
  * never satisfy a property. Undeclared own enumerable keys are rejected by
  * default (`additionalProperties: false`); pass `{ additionalProperties: true }`
- * to allow them (they are then neither validated nor stripped).
+ * to allow them (they are then neither validated nor stripped). The check
+ * assumes declared properties are enumerable (always true for parsed JSON):
+ * a non-enumerable declared own property can mask one undeclared key.
  */
 export function object<const P extends Record<string, Schema>>(
   properties: P,

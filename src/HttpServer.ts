@@ -187,22 +187,14 @@ export function make(handler: Handler): HttpServer {
     // V8 optimizes closure variable access as a direct context-slot read,
     // which beats both alternatives by 3–6% throughput.
     socket.on("data", (chunk: Buffer) => {
-      // Ensure buffer capacity
-      const needed = conn.used + chunk.length;
-      if (needed > conn.buf.length) {
-        const newSize = Math.max(conn.buf.length * 2, needed);
-        const newBuf = Buffer.allocUnsafe(newSize);
-        /* node:coverage ignore next 2 */
-        if (conn.used > 0) conn.buf.copy(newBuf, 0, 0, conn.used);
-        conn.buf = newBuf;
+      // No exception may escape a 'data' listener: it would be uncaught and
+      // take down the whole process. Kill only the offending connection.
+      try {
+        onData(conn, socket, chunk, handler);
+      } catch {
+        conn.used = 0;
+        socket.destroy();
       }
-
-      // Append chunk
-      chunk.copy(conn.buf, conn.used);
-      conn.used += chunk.length;
-
-      // Process all complete requests (pipelining support)
-      processBuffer(conn, socket, handler);
     });
 
     socket.on("error", noop);
@@ -214,6 +206,25 @@ export function make(handler: Handler): HttpServer {
   };
 
   return server;
+}
+
+function onData(conn: ConnState, socket: net.Socket, chunk: Buffer, handler: Handler): void {
+  // Ensure buffer capacity
+  const needed = conn.used + chunk.length;
+  if (needed > conn.buf.length) {
+    const newSize = Math.max(conn.buf.length * 2, needed);
+    const newBuf = Buffer.allocUnsafe(newSize);
+    /* node:coverage ignore next 2 */
+    if (conn.used > 0) conn.buf.copy(newBuf, 0, 0, conn.used);
+    conn.buf = newBuf;
+  }
+
+  // Append chunk
+  chunk.copy(conn.buf, conn.used);
+  conn.used = needed;
+
+  // Process all complete requests (pipelining support)
+  processBuffer(conn, socket, handler);
 }
 
 // ── Lifecycle ───────────────────────────────────────────────────────
@@ -361,14 +372,15 @@ function processBuffer(conn: ConnState, socket: net.Socket, handler: Handler): v
 
   while (offset < conn.used) {
     const consumed = tryParse(conn.buf, offset, conn.used, conn.req);
-    if (consumed === -1) break; // incomplete request — wait for more data
-    // Guard against oversized headers (tryParse returns -2)
-    /* node:coverage disable */
-    if (consumed === -2) {
+    // Progress invariant: a parse must advance and stay inside the valid
+    // region, otherwise compaction would corrupt `used` (G6-1).
+    if (consumed <= offset || consumed > conn.used) {
+      if (consumed === -1) break; // incomplete request — wait for more data
+      // Oversized headers (-2) or invariant violation: drop the connection
+      conn.used = 0;
       socket.destroy();
       return;
     }
-    /* node:coverage enable */
     handler(conn.req, socket);
     offset = consumed;
   }
@@ -393,10 +405,11 @@ function tryParse(buf: Buffer, offset: number, end: number, req: Request): numbe
   if (end - offset < 18) return -1;
 
   // Find end of headers (\r\n\r\n)
+  // Buffer is reused: bytes past `end` are stale, so a match is only valid
+  // when the whole terminator lies inside [offset, end).
   const headerEnd = buf.indexOf(CRLFCRLF, offset);
-  if (headerEnd === -1 || headerEnd >= end) {
+  if (headerEnd === -1 || headerEnd + 4 > end) {
     // Guard against oversized headers
-    /* node:coverage ignore next 2 */
     if (end - offset > MAX_HEADER_SIZE) return -2;
     return -1;
   }

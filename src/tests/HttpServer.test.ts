@@ -650,6 +650,84 @@ test("very short request data (< 18 bytes): waits for more", async () => {
   await HttpServer.close(server);
 });
 
+// ── Robustness (G6-1) ───────────────────────────────────────────────
+
+/** Write each part on its own tick, then collect everything until close/timeout. */
+function sendParts(port: number, parts: Array<string | Buffer>, waitMs = 80): Promise<string> {
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ port, host: "127.0.0.1" });
+    let data = "";
+    let done = false;
+    const finish = (): void => {
+      if (done) return;
+      done = true;
+      socket.destroy();
+      resolve(data);
+    };
+    socket.setEncoding("utf8");
+    socket.on("data", (d) => (data += d));
+    socket.on("error", finish);
+    socket.on("close", finish);
+    socket.on("connect", async () => {
+      for (const p of parts) {
+        socket.write(p);
+        await new Promise((r) => setTimeout(r, 15));
+      }
+      setTimeout(finish, waitMs);
+    });
+  });
+}
+
+test("stale bytes past `used` never satisfy the header terminator (G6-1)", async () => {
+  const urls: string[] = [];
+  const server = HttpServer.make((req, socket) => {
+    urls.push(req.url);
+    HttpServer.respond(socket, 200, "{}");
+  });
+  await HttpServer.listen(server, 0);
+  const port = getPort(server);
+
+  // Second request ends in "\r\n\r" and the stale byte right after `used` is
+  // "\n" from the first request — previously matched, drove used to -1 and
+  // crashed the process with ERR_OUT_OF_RANGE on the next chunk.
+  const a = "GET /a HTTP/1.1\r\nX: y\r\n\r\n";
+  const b = "GET /b HTTP/1.1\r\nX: z\r\n\r";
+  const out = await sendParts(port, [a, b, "\n", "GET /c HTTP/1.1\r\n\r\n"]);
+  assert.deepEqual(urls, ["/a", "/b", "/c"]);
+  assert.equal(out.split("HTTP/1.1 200").length - 1, 3);
+  await HttpServer.close(server);
+});
+
+test("a throwing handler destroys only its connection", async () => {
+  const server = HttpServer.make((req, socket) => {
+    if (req.url === "/boom") throw new Error("boom");
+    HttpServer.respond(socket, 200, "{}");
+  });
+  await HttpServer.listen(server, 0);
+  const port = getPort(server);
+
+  const out = await sendParts(port, ["GET /boom HTTP/1.1\r\n\r\n"], 200);
+  assert.equal(out, "");
+  const r = await rawRequest(port, "GET /ok HTTP/1.1\r\n\r\n");
+  assert.equal(parseStatus(r), 200);
+  await HttpServer.close(server);
+});
+
+test("oversized unterminated header block drops the connection", async () => {
+  let calls = 0;
+  const server = HttpServer.make((_req, socket) => {
+    calls++;
+    HttpServer.respond(socket, 200, "{}");
+  });
+  await HttpServer.listen(server, 0);
+  const port = getPort(server);
+
+  const out = await sendParts(port, ["GET / HTTP/1.1\r\nX-Pad: " + "a".repeat(70_000)], 200);
+  assert.equal(calls, 0);
+  assert.equal(out, "");
+  await HttpServer.close(server);
+});
+
 // ── Utility ─────────────────────────────────────────────────────────
 
 function getPort(server: HttpServer.HttpServer): number {

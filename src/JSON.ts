@@ -144,7 +144,9 @@ export interface SafeParseOptions {
    *   document is not modified. Use when a downstream validator must see
    *   poisoned input.
    * - `"keep"`: leave the keys in place (same document as `parse`, but with
-   *   `Result` errors). Unknown values behave like `"strip"`.
+   *   `Result` errors).
+   *
+   * Unknown values fail closed and behave like `"reject"`.
    */
   readonly onDangerousKey?: DangerousKeyPolicy;
 }
@@ -183,6 +185,9 @@ export function safeParse(json: string, options?: SafeParseOptions): Result<JSON
   } catch (e) {
     return err("invalid JSON: " + (e instanceof Error ? e.message : String(e)));
   }
+  // JS callers (or `as string` casts) can pass values JSON.parse coerces
+  // (123, null, objects with toString); the raw-text scan needs a string.
+  if (typeof json !== "string") return err("invalid JSON: expected a string, got " + typeof json);
   // Fast path: skip tree walk when no dangerous tokens exist in the source.
   // indexOf is O(n) but with SIMD acceleration it's far cheaper than
   // Object.keys + iteration on every parsed object node.
@@ -194,13 +199,15 @@ export function safeParse(json: string, options?: SafeParseOptions): Result<JSON
     json.indexOf(ESCAPE_TOKEN) !== -1
   ) {
     const policy = options?.onDangerousKey;
-    if (policy === "reject") {
+    if (policy === undefined || policy === "strip") {
+      stripDangerousKeys(value);
+    } else if (policy !== "keep") {
+      // "reject", and any unknown value (fail closed: a misspelled "reject"
+      // must not silently hand back a sanitized Ok).
       const key = findDangerousKey(value);
       if (key !== undefined) {
         return err(`dangerous JSON key "${key}" (prototype-pollution risk)`);
       }
-    } else if (policy !== "keep") {
-      stripDangerousKeys(value);
     }
   }
   return ok(value);

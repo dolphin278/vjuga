@@ -279,6 +279,9 @@ test("safeParse policies: reject iff a dangerous key exists, keep == parse, stri
         assert.match(rejected[1] as string, /^dangerous JSON key "(__proto__|constructor)"/);
       }
       assert.equal(VJSON.findDangerousKey(raw!) !== undefined, dangerous !== undefined);
+      // Unknown policies fail closed: same verdict as "reject".
+      const unknownPolicy = { onDangerousKey: "rejct" } as unknown as VJSON.SafeParseOptions;
+      assert.deepEqual(VJSON.safeParse(text, unknownPolicy), rejected);
 
       assert.deepEqual(VJSON.safeParse(text, { onDangerousKey: "keep" }), [true, raw]);
 

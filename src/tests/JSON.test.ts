@@ -7,6 +7,7 @@ import {
   safeParse,
   escapeJsonString,
   findDangerousKey,
+  type SafeParseOptions,
 } from "../JSON.js";
 
 describe("JSON", () => {
@@ -171,6 +172,25 @@ describe("JSON", () => {
       assert.deepEqual(safeParse(evil as unknown as string), [false, "invalid JSON: boom"]);
     });
 
+    it("should return Err (not throw) for non-string input that JSON.parse coerces", () => {
+      const inputs: unknown[] = [
+        123,
+        true,
+        null,
+        undefined,
+        {
+          toString(): string {
+            return '{"a":1}';
+          },
+        },
+      ];
+      for (const input of inputs) {
+        const r = safeParse(input as string);
+        assert.equal(r[0], false, String(input));
+        assert.ok((r[1] as string).startsWith("invalid JSON"), String(input));
+      }
+    });
+
     it("should strip __proto__ keys from objects", () => {
       const r = safeParse('{"__proto__":{"polluted":true},"safe":"value"}');
       assert.equal(r[0], true);
@@ -302,6 +322,22 @@ describe("safeParse onDangerousKey (5b)", () => {
     assert.ok(Object.hasOwn(v, "constructor"));
     assert.equal(({} as Record<string, unknown>).x, undefined);
     assert.deepEqual(r[1], parse(poisoned));
+  });
+
+  it("unknown policy values fail closed (behave like reject)", () => {
+    const opts = { onDangerousKey: "rejected" } as unknown as SafeParseOptions;
+    const r = safeParse('{"__proto__":{"x":1},"a":1}', opts);
+    assert.equal(r[0], false);
+    assert.match(r[1] as string, /^dangerous JSON key "__proto__"/);
+    assert.deepEqual(safeParse('{"a":1}', opts), [true, { a: 1 }]);
+    assert.deepEqual(safeParse('{"\\u0061":1}', opts), [true, { a: 1 }]);
+  });
+
+  it("an explicit undefined policy is the default strip", () => {
+    assert.deepEqual(safeParse('{"__proto__":{"x":1},"a":1}', { onDangerousKey: undefined }), [
+      true,
+      { a: 1 },
+    ]);
   });
 
   it("parse keeps dangerous keys (non-stripping, by design)", () => {

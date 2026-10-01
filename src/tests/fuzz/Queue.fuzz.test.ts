@@ -269,6 +269,8 @@ test("large random walk across the shrink threshold (wrapped and unwrapped) matc
       const arr = Queue.toArray(q);
       return arr.length === model.length && arr.every((v, i) => v === model[i]);
     },
+    // Each run builds 10k-40k element queues (~1s), so 1M runs is infeasible; 30 runs sweeps peak sizes
+    // and PRNG seeds across the shrink threshold (deterministic coverage lives in Queue.test.ts).
     { numRuns: 30 },
   );
 });

@@ -20,6 +20,12 @@
  * nodes with many children (e.g., URL routers with many first-path-segment
  * variations).
  *
+ * Values: `undefined` means "no value", so `insert(tree, key, undefined)` is
+ * defined to behave exactly like `remove(tree, key)`.
+ *
+ * Ordering: `entries` and `prefixMatch` return results in lexicographic
+ * (UTF-16 code unit) order of keys — a key sorts before its extensions.
+ *
  * When to use: key spaces with shared string prefixes where prefix-based
  * retrieval is needed alongside exact lookup — URL routing, file-path
  * indexing, autocomplete, IP prefix matching. For exact-match-only
@@ -142,8 +148,15 @@ function findInsertionIndex<T>(children: RadixNode<T>[], char: number): number {
  * child whose prefix shares a common prefix with the remaining key. If the
  * child's prefix partially matches, split the child node. Create a new leaf
  * for the remaining characters.
+ *
+ * Inserting `undefined` is equivalent to `remove(tree, key)` (the tree uses
+ * `undefined` to mean "no value").
  */
 export function insert<T>(tree: RadixTree<T>, key: string, value: T): void {
+  if (value === undefined) {
+    remove(tree, key);
+    return;
+  }
   let node = tree[kRoot];
   let remaining = key;
 
@@ -228,37 +241,39 @@ export function insert<T>(tree: RadixTree<T>, key: string, value: T): void {
  * Looks up a key in the tree.
  * Returns the associated value, or undefined if not found.
  *
- * Walk down the tree matching prefixes. If we exhaust the key exactly at a
- * node that holds a value, return it. Otherwise return undefined.
+ * Walk down the tree matching prefixes by offset (no substring allocation).
+ * If we exhaust the key exactly at a node that holds a value, return it.
+ * Otherwise return undefined.
  */
 export function lookup<T>(tree: RadixTree<T>, key: string): T | undefined {
   let node = tree[kRoot];
-  let remaining = key;
+  // `pos` is the offset of the unconsumed part of `key` — no substrings.
+  let pos = 0;
+  const len = key.length;
 
   // Explicit loop — avoids recursion overhead.
   for (;;) {
-    if (remaining.length === 0) {
+    if (pos === len) {
       return node[kValue];
     }
 
     const children = node[kChildren];
-    const childIdx = findChild(children, remaining.charCodeAt(0));
+    const childIdx = findChild(children, key.charCodeAt(pos));
     if (childIdx === -1) return undefined;
 
     const child = children[childIdx];
     const childPrefix = child[kPrefix];
+    const plen = childPrefix.length;
 
     // Check if the remaining key starts with the child's prefix.
-    // Manual character comparison loop avoids creating substring objects
-    // on the hot path — only charCodeAt comparisons are needed.
-    if (remaining.length < childPrefix.length) return undefined;
-    for (let i = 0; i < childPrefix.length; i++) {
-      if (remaining.charCodeAt(i) !== childPrefix.charCodeAt(i)) {
+    if (len - pos < plen) return undefined;
+    for (let i = 0; i < plen; i++) {
+      if (key.charCodeAt(pos + i) !== childPrefix.charCodeAt(i)) {
         return undefined;
       }
     }
 
-    remaining = remaining.substring(childPrefix.length);
+    pos += plen;
     node = child;
   }
 }
@@ -363,7 +378,8 @@ export function remove<T>(tree: RadixTree<T>, key: string): boolean {
 }
 
 /**
- * Returns all values whose keys start with the given prefix.
+ * Returns all values whose keys start with the given prefix, in lexicographic
+ * (UTF-16 code unit) key order.
  *
  * Walks the tree to find the node where the prefix ends, then collects all
  * values in the subtree rooted at that node using an explicit stack (no
@@ -412,22 +428,19 @@ export function prefixMatch<T>(tree: RadixTree<T>, prefix: string): T[] {
     node = child;
   }
 
-  // Collect all values in the subtree using an explicit stack.
-  // Stack-based DFS avoids recursion and keeps the JIT's inlining budget
-  // free for the inner loop.
+  // Collect all values in the subtree with an explicit-stack DFS. Children
+  // are pushed in reverse so they pop in sorted order, giving lexicographic
+  // key order (a node's own value comes before its children's).
   const result: T[] = [];
   const stack: RadixNode<T>[] = [node];
 
-  for (let top = 0; top < stack.length; top++) {
-    const current = stack[top];
+  while (stack.length > 0) {
+    const current = stack.pop() as RadixNode<T>;
     if (current[kValue] !== undefined) {
       result.push(current[kValue]);
     }
     const ch = current[kChildren];
-    // Push children in reverse order so they are visited in sorted order
-    // (leftmost child is popped last from stack, but since we iterate
-    // forward through the stack array, we push in forward order).
-    for (let i = 0; i < ch.length; i++) {
+    for (let i = ch.length - 1; i >= 0; i--) {
       stack.push(ch[i]);
     }
   }
@@ -436,25 +449,27 @@ export function prefixMatch<T>(tree: RadixTree<T>, prefix: string): T[] {
 }
 
 /**
- * Returns all key-value pairs in the tree as an array of [key, value] tuples.
+ * Returns all key-value pairs in the tree as an array of [key, value] tuples,
+ * in lexicographic (UTF-16 code unit) key order.
  *
- * Uses an explicit stack of [node, accumulated-key] pairs rather than
- * recursion — avoids call-stack growth and keeps the JIT inlining budget
- * available for leaf operations.
+ * Uses an explicit DFS with two parallel stacks (nodes and accumulated keys)
+ * rather than recursion — avoids call-stack growth and per-node tuples.
  */
 export function entries<T>(tree: RadixTree<T>): [string, T][] {
   const result: [string, T][] = [];
-  // Stack entries are [node, accumulated key prefix].
-  const stack: [RadixNode<T>, string][] = [[tree[kRoot], ""]];
+  const nodes: RadixNode<T>[] = [tree[kRoot]];
+  const keys: string[] = [""];
 
-  for (let top = 0; top < stack.length; top++) {
-    const [current, accKey] = stack[top];
+  while (nodes.length > 0) {
+    const current = nodes.pop() as RadixNode<T>;
+    const accKey = keys.pop() as string;
     if (current[kValue] !== undefined) {
       result.push([accKey, current[kValue]]);
     }
     const ch = current[kChildren];
-    for (let i = 0; i < ch.length; i++) {
-      stack.push([ch[i], accKey + ch[i][kPrefix]]);
+    for (let i = ch.length - 1; i >= 0; i--) {
+      nodes.push(ch[i]);
+      keys.push(accKey + ch[i][kPrefix]);
     }
   }
 

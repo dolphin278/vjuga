@@ -202,3 +202,42 @@ test("SOA createView reflects correct values", () => {
     { numRuns: 1_000_000, seed: fixedSeed },
   );
 });
+
+// ---------------------------------------------------------------------------
+// set/swapRemove bounds: arbitrary numeric indices never corrupt the SOA
+// ---------------------------------------------------------------------------
+
+test("set/swapRemove with arbitrary indices either succeed in range or throw RangeError untouched", () => {
+  const indexArb = Arb.oneOf(
+    Arb.integer(-5, 12),
+    Arb.float(-5, 12),
+    Arb.constantFrom(NaN, Infinity, -Infinity, -0),
+  );
+  Prop.assert(
+    Arb.tuple(Arb.integer(0, 8), indexArb, pointArb),
+    ([len, index, pt]) => {
+      const soa: PointSOA = freshSOA();
+      for (let i = 0; i < len; i++) SOA.push(soa, { x: i, y: -i });
+      const snapshot = JSON.stringify(soa);
+      const inRange = Number.isInteger(index) && index >= 0 && index < len;
+      // Extra keys on the item must be ignored.
+      const item = { ...pt, extra: 1 } as Point;
+      for (const op of [() => SOA.set(soa, index, item), () => SOA.swapRemove(soa, index)]) {
+        let threw = false;
+        try {
+          op();
+        } catch (e) {
+          if (!(e instanceof RangeError)) return false;
+          threw = true;
+        }
+        if (threw === inRange) return false;
+        if (soa.x.length !== soa.y.length) return false;
+        if (Object.keys(soa.x).length !== soa.x.length) return false; // no stray named props
+        if (!inRange && JSON.stringify(soa) !== snapshot) return false;
+        if (inRange) break; // state changed; only one op per run once in range
+      }
+      return true;
+    },
+    { numRuns: 1_000_000 },
+  );
+});

@@ -167,3 +167,67 @@ test("validator() returns Err for semantically invalid ISO string", () => {
   assert.equal(r[0], false);
   assert.ok(r[1] instanceof ValidationError);
 });
+
+// --- fromEpochMs fallback (negative / fractional / out-of-range) ---
+
+test("fromEpochMs() matches native for negative ms", () => {
+  for (const ms of [-1, -999, -1000, -86400000, -62135596800000, -1e12]) {
+    assert.equal(ISOTimestamp.fromEpochMs(ms), new Date(ms).toISOString());
+  }
+  assert.equal(ISOTimestamp.fromEpochMs(-1), "1969-12-31T23:59:59.999Z");
+});
+
+test("fromEpochMs() matches native for fractional ms", () => {
+  for (const ms of [0.5, 1.0005, 1704067200000.9, -0.5]) {
+    assert.equal(ISOTimestamp.fromEpochMs(ms), new Date(ms).toISOString());
+  }
+});
+
+test("fromEpochMs() matches native at and beyond year 9999", () => {
+  assert.equal(ISOTimestamp.fromEpochMs(253402300799999), "9999-12-31T23:59:59.999Z");
+  assert.equal(ISOTimestamp.fromEpochMs(253402300800000), "+010000-01-01T00:00:00.000Z");
+  assert.equal(ISOTimestamp.fromEpochMs(8.64e15), new Date(8.64e15).toISOString());
+});
+
+test("fromEpochMs() throws RangeError on NaN / Infinity / beyond Date range", () => {
+  assert.throws(() => ISOTimestamp.fromEpochMs(NaN), RangeError);
+  assert.throws(() => ISOTimestamp.fromEpochMs(Infinity), RangeError);
+  assert.throws(() => ISOTimestamp.fromEpochMs(8.64e15 + 1), RangeError);
+});
+
+// --- calendar validation (G6-9) ---
+
+test("isoTimestamp() rejects impossible day-of-month", () => {
+  for (const s of [
+    "2023-02-29T00:00:00Z",
+    "2024-02-30T00:00:00Z",
+    "2024-04-31T00:00:00Z",
+    "2024-06-31T00:00:00Z",
+    "2024-01-32T00:00:00Z",
+    "2024-01-00T00:00:00Z",
+    "1900-02-29T00:00:00Z",
+    "2024-00-10T00:00:00Z",
+  ]) {
+    assert.throws(() => ISOTimestamp.isoTimestamp(s), RangeError, s);
+    assert.equal(ISOTimestamp.validator()(s)[0], false, s);
+  }
+});
+
+test("isoTimestamp() accepts leap days and month ends", () => {
+  for (const s of [
+    "2024-02-29T00:00:00Z",
+    "2000-02-29T00:00:00Z",
+    "2024-04-30T23:59:59.999Z",
+    "2024-12-31T23:59:59Z",
+    "2023-02-28T00:00Z",
+  ]) {
+    assert.equal(ISOTimestamp.isoTimestamp(s), s);
+  }
+});
+
+test("isoTimestamp() rejects hour 24", () => {
+  assert.throws(() => ISOTimestamp.isoTimestamp("2024-01-15T24:00:00Z"), RangeError);
+  assert.throws(() => ISOTimestamp.isoTimestamp("2024-01-15T24:00Z"), RangeError);
+  assert.equal(ISOTimestamp.validator()("2024-01-15T24:00:00Z")[0], false);
+  assert.equal(ISOTimestamp.isoTimestamp("2024-01-15T23:59:59Z"), "2024-01-15T23:59:59Z");
+});

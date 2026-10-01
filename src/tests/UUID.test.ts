@@ -10,9 +10,37 @@ test("uuid() accepts valid v4 UUID (lowercase)", () => {
   assert.equal(id, "550e8400-e29b-41d4-a716-446655440000");
 });
 
-test("uuid() accepts valid v4 UUID (uppercase)", () => {
+test("uuid() accepts valid v4 UUID (uppercase) and lowercases it", () => {
   const id = UUID.uuid("550E8400-E29B-41D4-A716-446655440000");
-  assert.equal(id, "550E8400-E29B-41D4-A716-446655440000");
+  assert.equal(id, "550e8400-e29b-41d4-a716-446655440000");
+  assert.equal(id, UUID.uuid("550e8400-e29b-41d4-a716-446655440000"));
+});
+
+test("uuid() accepts Nil and Max UUIDs (any case)", () => {
+  assert.equal(UUID.uuid("00000000-0000-0000-0000-000000000000"), UUID.NIL);
+  assert.equal(UUID.uuid("FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF"), UUID.MAX);
+  assert.equal(UUID.version(UUID.NIL), 0);
+  assert.equal(UUID.version(UUID.MAX), 15);
+  assert.throws(() => UUID.uuid("00000000-0000-0000-0000-000000000001"), RangeError);
+});
+
+test("validator() lowercases and accepts Nil/Max", () => {
+  const v = UUID.validator();
+  const r = v("550E8400-E29B-41D4-A716-446655440000");
+  assert.deepEqual(r, [true, "550e8400-e29b-41d4-a716-446655440000"]);
+  assert.equal(v(UUID.NIL)[0], true);
+  assert.equal(v(UUID.MAX)[0], true);
+});
+
+test("v7() uses fresh random bytes across pool refills and stays valid", () => {
+  const seen = new Set<string>();
+  for (let i = 0; i < 1000; i++) {
+    const id = UUID.v7();
+    assert.equal(UUID.uuid(id), id);
+    assert.equal(UUID.version(id), 7);
+    seen.add(id);
+  }
+  assert.equal(seen.size, 1000);
 });
 
 test("uuid() accepts valid v7 UUID", () => {

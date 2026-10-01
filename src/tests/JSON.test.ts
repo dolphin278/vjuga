@@ -187,3 +187,36 @@ describe("JSON", () => {
     });
   });
 });
+
+describe("safeParse \\u-escaped dangerous keys (G6-6)", () => {
+  const polluted = (): boolean => (({}) as Record<string, unknown>).polluted === true;
+
+  for (const key of [
+    "\\u005f_proto__",
+    "__\\u0070roto__",
+    "\\u005F\\u005F\\u0070\\u0072\\u006F\\u0074\\u006F\\u005F\\u005F",
+    "\\u0063onstructor",
+    "constr\\u0075ctor",
+  ]) {
+    it(`strips escaped key ${key}`, () => {
+      const r = safeParse(`{"${key}":{"polluted":true},"a":1}`);
+      assert.equal(r[0], true);
+      const v = r[1] as Record<string, unknown>;
+      assert.equal(Object.prototype.hasOwnProperty.call(v, "__proto__"), false);
+      assert.equal(Object.prototype.hasOwnProperty.call(v, "constructor"), false);
+      assert.equal(v.a, 1);
+      assert.equal(polluted(), false);
+    });
+  }
+
+  it("strips escaped keys nested in arrays and objects", () => {
+    const r = safeParse('[{"x":{"\\u005f_proto__":{"polluted":true}}}]');
+    const x = (r[1] as Record<string, unknown>[])[0].x as object;
+    assert.equal(Object.prototype.hasOwnProperty.call(x, "__proto__"), false);
+  });
+
+  it("keeps benign \\u escapes intact", () => {
+    const r = safeParse('{"caf\\u00e9":"na\\u00efve"}');
+    assert.deepEqual(r[1], { café: "naïve" });
+  });
+});

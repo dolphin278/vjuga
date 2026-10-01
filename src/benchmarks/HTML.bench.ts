@@ -19,6 +19,17 @@ const emptyStr = "";
 const singleChar = "<";
 const unicodeStr = "Hello 🌍 world — no special HTML chars here";
 
+// Regex baseline for the "vs String.replace(/regex/)" claim in the module docstring.
+const HTML_RE = /[&<>"']/g;
+const HTML_MAP: Record<string, string> = {
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  '"': "&quot;",
+  "'": "&#039;",
+};
+const regexEscape = (s: string): string => s.replace(HTML_RE, (c) => HTML_MAP[c]);
+
 // --- Warm-up ---
 {
   for (let i = 0; i < 100_000; i++) {
@@ -77,6 +88,22 @@ if (typeof Bun !== "undefined") {
     return Bun.escapeHTML(cleanStr);
   });
 }
+
+bench("regex baseline: no special chars (short)", () => {
+  return regexEscape(cleanStr);
+});
+
+bench("regex baseline: few special chars", () => {
+  return regexEscape(fewSpecial);
+});
+
+bench("regex baseline: many special chars", () => {
+  return regexEscape(manySpecial);
+});
+
+bench("regex baseline: long special (1500 chars)", () => {
+  return regexEscape(longSpecial);
+});
 
 await run();
 

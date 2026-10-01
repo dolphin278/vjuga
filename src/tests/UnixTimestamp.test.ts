@@ -139,3 +139,8 @@ test("toISO() matches native for negative and fractional seconds", () => {
 test("unixTimestamp() accepts millisecond-magnitude values (documented: no unit check)", () => {
   assert.equal(UnixTimestamp.unixTimestamp(1705312200000), 1705312200000);
 });
+
+test("fromISO() accepts sub-millisecond fractions (truncated, never rounded up)", () => {
+  const iso = ISOTimestamp.isoTimestamp("2024-12-31T23:59:59.9999999Z");
+  assert.equal(UnixTimestamp.fromISO(iso), Date.UTC(2024, 11, 31, 23, 59, 59) / 1000);
+});

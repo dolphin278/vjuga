@@ -1,5 +1,5 @@
 /**
- * Result<T, E> — discriminated-union type for computations that may fail.
+ * Result — discriminated-union type for computations that may fail.
  *
  * Representation: a two-element readonly tuple where index 0 is the boolean
  * discriminant (true = Ok, false = Err) and index 1 is the payload.
@@ -37,6 +37,11 @@ export type Result<T, E> = Ok<T> | Err<E>;
 /**
  * Constructs an Ok result wrapping `value`.
  * `T` is a const type parameter, so `ok(true)` is `Ok<true>`.
+ *
+ * Note: `const T` makes nested literals readonly (`ok({ a: [1] })` is
+ * `Ok<{ readonly a: readonly [1] }>`), so it is not directly assignable to a
+ * `Result<{ a: number[] }, E>`. Annotate the type argument explicitly
+ * (`ok<{ a: number[] }>({ a: [1] })`) when a mutable shape is required.
  */
 export function ok<const T>(value: T): Ok<T> {
   return [true, value];
@@ -115,7 +120,9 @@ export function unwrapOr<T, E, U>(result: Result<T, E>, fallback: U): T | U {
  *
  * This is an escape hatch — prefer `unwrapOr` or `flatMap` at boundaries.
  * If the Err payload is an Error instance it is re-thrown directly;
- * otherwise it is wrapped in a plain Error via String().
+ * otherwise it is wrapped in a plain Error via String() (a payload that cannot
+ * be stringified, e.g. a null-prototype object, gets a generic message). The
+ * original payload is always available as `cause`.
  */
 export function unwrap<T, E>(result: Result<T, E>): T {
   if (result[0]) {
@@ -123,7 +130,15 @@ export function unwrap<T, E>(result: Result<T, E>): T {
   }
   const payload = result[1];
   if (payload instanceof Error) throw payload;
-  throw new Error(String(payload), { cause: payload });
+  throw new Error(safeString(payload), { cause: payload });
+}
+
+function safeString(value: unknown): string {
+  try {
+    return String(value);
+  } catch {
+    return "Result is Err (payload is not stringifiable)";
+  }
 }
 
 /**
@@ -147,7 +162,9 @@ export function fromThrowable<T, E = unknown>(
 /**
  * Converts a `Promise<T>` to a `Promise<Result<T, E>>`.
  *
- * The returned promise always resolves — it never rejects.
+ * The returned promise always resolves — it never rejects — unless `mapErrFn`
+ * itself throws, in which case that exception rejects the returned promise
+ * (it is not swallowed). Non-thenable inputs resolve to `Ok`.
  *
  * @param mapErrFn - Optional mapper applied to the rejection reason.
  *   Defaults to identity (raw caught value, typed as `unknown`).
@@ -156,7 +173,7 @@ export function fromPromise<T, E = unknown>(
   promise: Promise<T>,
   mapErrFn?: (error: unknown) => E,
 ): Promise<Result<T, E>> {
-  return promise.then(
+  return Promise.resolve(promise).then(
     (value) => ok(value) as Result<T, E>,
     (e: unknown) =>
       err(
@@ -167,7 +184,10 @@ export function fromPromise<T, E = unknown>(
 
 /**
  * Wraps an async function so it always resolves to `Result<T, E>` and never
- * rejects. The returned wrapper has the same signature as `fn`.
+ * throws synchronously. Synchronous throws from `fn` and non-thenable return
+ * values are handled like rejections / resolutions. The returned wrapper has
+ * the same signature as `fn`. If `mapErrFn` itself throws, that exception
+ * rejects the returned promise (it is not swallowed).
  *
  * @param mapErrFn - Optional mapper applied to the rejection reason.
  */
@@ -176,9 +196,12 @@ export function fromAsyncThrowable<Args extends readonly unknown[], T, E = unkno
   mapErrFn?: (error: unknown) => E,
 ): (...args: Args) => Promise<Result<T, E>> {
   return function asyncWrapped(...args: Args): Promise<Result<T, E>> {
-    return fromPromise(
-      Reflect.apply(fn, undefined, args as unknown as unknown[]) as Promise<T>,
-      mapErrFn,
-    );
+    let promise: Promise<T>;
+    try {
+      promise = Reflect.apply(fn, undefined, args as unknown as unknown[]) as Promise<T>;
+    } catch (e) {
+      promise = Promise.reject(e);
+    }
+    return fromPromise(promise, mapErrFn);
   };
 }

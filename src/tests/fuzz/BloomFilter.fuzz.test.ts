@@ -195,3 +195,53 @@ test("BloomFilter property: count equals add calls including duplicates", () => 
     { numRuns: 1_000_000 },
   );
 });
+
+// ---------------------------------------------------------------------------
+// Statistical: measured FPR tracks the exact theoretical FPR for any key family.
+// numRuns is intentionally below 1M: every run builds a filter of up to 3000 items
+// and probes 20k absent keys (~2 ms), so 1M runs would take 30+ minutes without
+// adding statistical power (the bound is already ~5 sigma).
+// ---------------------------------------------------------------------------
+
+test("BloomFilter property: measured FPR <= theoretical FPR (+noise) across key families", () => {
+  const unit = [
+    (i: number, p: string) => p + i,
+    (i: number, p: string) => p + String.fromCharCode(0x4e00 + (i % 5000), (0x4e00 + i / 5000) | 0),
+    (i: number, p: string) =>
+      p +
+      String.fromCharCode(
+        0x4100 + ((i % 50) << 8),
+        0x4100 + ((((i / 50) | 0) % 50) << 8),
+        0x4100 + (((i / 2500) | 0) << 8),
+      ),
+    (i: number, p: string) => p + i.toString(36) + String.fromCharCode(0xd800 + (i % 1000)),
+    (i: number, p: string) => p + (Math.imul(i, 0x9e3779b1) >>> 0).toString(16),
+  ];
+  Prop.assert(
+    Arb.tuple(
+      Arb.integer(500, 3000),
+      Arb.constantFrom(0.1, 0.01, 0.001),
+      Arb.integer(0, unit.length - 1),
+      Arb.string({ minLength: 0, maxLength: 6 }),
+    ),
+    ([n, fpr, fam, prefix]) => {
+      const key = unit[fam];
+      const bf = BF.make(n, fpr);
+      for (let i = 0; i < n; i++) BF.add(bf, key(i, prefix));
+      const m = BF.bitCount(bf);
+      const k = BF.hashCount(bf);
+      const expected = Math.pow(1 - Math.exp((-k * n) / m), k);
+      const probes = 20_000;
+      let fp = 0;
+      for (let i = n; i < n + probes; i++) if (BF.mightContain(bf, key(i, prefix))) fp++;
+      const measured = fp / probes;
+      // Double hashing has an irreducible floor: a probe that shares (h1 mod m, h2 mod m) with
+      // any member (prob ~ 2n/m^2) is always a false positive, however large k is.
+      const floor = (2 * n) / (m * m);
+      const rate = expected * 1.25 + 3 * floor;
+      const bound = rate + 5 * Math.sqrt(rate / probes) + 1 / probes;
+      return measured <= bound && measured <= fpr * 1.0001 + 5 * Math.sqrt(fpr / probes);
+    },
+    { numRuns: 5000 },
+  );
+});

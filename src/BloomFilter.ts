@@ -6,13 +6,14 @@
  * for all items ever added (no false negatives) and occasionally `true` for
  * items that were never added (false positives at rate ≤ fpr). Not suitable
  * for exact membership — use a plain `Set` when false positives are
- * unacceptable.
+ * unacceptable. Items must be strings (no coercion): hashing a non-string
+ * reads `.length` / `charCodeAt` and gives meaningless results.
  *
  * Internal design:
  *   kBits:  Uint32Array — m/32 words; bit i at word[i>>>5] pos[i&31].
  *   kK:     number      — number of hash probes per item.
- *   kM:     number      — total bit count (always a power of 2, ≥ 32).
- *   kMask:  number      — m − 1; used as `pos & kMask` instead of `pos % m`.
+ *   kM:     number      — total bit count (a power of 2 in [32, 2^32]).
+ *   kMask:  number      — (m − 1) | 0; used as `pos & kMask` instead of `pos % m`.
  *   kCount: number      — number of items added (monotonically increasing).
  *
  * Design tradeoffs: bit array sized to next power of 2 (≥ rawM) so that
@@ -21,8 +22,11 @@
  * theoretical minimum. Deletion is unsupported — a counting Bloom filter
  * supports it at 4× memory cost. Kirsch–Mitzenmacher (2006) derives k probe
  * positions from two 32-bit FNV-1a hashes in a single string scan, halving
- * hashing cost versus two independent passes. h2 is forced odd to guarantee
- * coprimality with the power-of-2 modulus, ensuring all k positions are distinct.
+ * hashing cost versus two independent passes. Each hash is passed through the
+ * murmur3 fmix32 finalizer (FNV-1a's low bits depend only on the low bits of
+ * each code unit, which skews the FPR for structured/non-ASCII keys). h2 is
+ * forced odd to guarantee coprimality with the power-of-2 modulus.
+ * `make` caps m at 2^32 bits (512 MiB) and throws if `fpr` is unreachable.
  *
  * Prior art: Kirsch, A. & Mitzenmacher, M. "Less Hashing, Same Performance:
  * Building a Better Bloom Filter." ESA 2006.
@@ -56,6 +60,8 @@ export interface BloomFilter {
 // Minimum of 32 guarantees bitCount() % 32 === 0 and gives ≥ 1 word.
 // Uses float multiplication (not bit shifts) to avoid Int32 overflow for large n.
 // ---------------------------------------------------------------------------
+const MAX_BITS = 2 ** 32;
+
 function nextPow2(n: number): number {
   let p = 32;
   while (p < n) p *= 2;
@@ -105,24 +111,39 @@ function hashPairInto(s: string): void {
     h1 = Math.imul(h1 ^ c, FNV_PRIME);
     h2 = Math.imul(h2 ^ c, FNV_PRIME);
   }
-  _h1 = h1 >>> 0;
-  _h2 = (h2 | 1) >>> 0; // h2 forced odd: gcd(h2, 2^k) = 1
+  // murmur3 fmix32 finalizer: avalanche so every output bit depends on every input bit.
+  h1 ^= h1 >>> 16;
+  h1 = Math.imul(h1, 0x85ebca6b);
+  h1 ^= h1 >>> 13;
+  h1 = Math.imul(h1, 0xc2b2ae35);
+  h1 ^= h1 >>> 16;
+  h2 ^= h2 >>> 16;
+  h2 = Math.imul(h2, 0x85ebca6b);
+  h2 ^= h2 >>> 13;
+  h2 = Math.imul(h2, 0xc2b2ae35);
+  h2 ^= h2 >>> 16;
+  // Kept as int32 (no `>>> 0`): uint32 values above 2^31 are not Smis and would be
+  // boxed as HeapNumbers when stored to the module-level registers (~2x slower).
+  _h1 = h1;
+  _h2 = h2 | 1; // h2 forced odd: gcd(h2, 2^k) = 1
 }
 
 /**
  * Creates a BloomFilter sized for `capacity` items at a false-positive rate
  * of `fpr` (default 0.01 = 1%). The bit array is sized to the next power of 2
- * ≥ the theoretical optimum, enabling fast bitwise-AND modulo.
+ * ≥ the theoretical optimum, enabling fast bitwise-AND modulo, and is capped
+ * at 2^32 bits.
  *
  * Throws `RangeError` for:
  * - `capacity` < 1 or non-integer
- * - `fpr` ≤ 0 or ≥ 1
+ * - `fpr` ≤ 0, ≥ 1 or NaN
+ * - a (capacity, fpr) pair that cannot be met within the 2^32-bit cap
  */
 export function make(capacity: number, fpr: number = 0.01): BloomFilter {
   if (capacity < 1 || (capacity | 0) !== capacity) {
     throw new RangeError(`BloomFilter.make: capacity must be a positive integer, got ${capacity}`);
   }
-  if (fpr <= 0 || fpr >= 1) {
+  if (!(fpr > 0 && fpr < 1)) {
     throw new RangeError(`BloomFilter.make: fpr must be in (0, 1), got ${fpr}`);
   }
 
@@ -135,7 +156,8 @@ export function make(capacity: number, fpr: number = 0.01): BloomFilter {
   // exceed the target when kExact ≈ 0.5 + integer AND the theoretical minimum
   // is close to fpr).  We search for the smallest m (power of 2) and the best
   // integer k ∈ {floor(kExact), ceil(kExact)} that satisfies actualFpr ≤ fpr.
-  let m = nextPow2(rawM); // always a power of 2, ≥ 32
+  let m = nextPow2(rawM); // a power of 2, ≥ 32
+  if (m > MAX_BITS) m = MAX_BITS;
   let k = 1;
   for (;;) {
     const kExact = (m / capacity) * LN2;
@@ -153,12 +175,19 @@ export function make(capacity: number, fpr: number = 0.01): BloomFilter {
     // double m (one more power-of-2 step) and retry. This occurs extremely
     // rarely: only when kExact ≈ half-integer AND the theoretical minimum FPR
     // at that m is just barely below fpr.
+    if (m >= MAX_BITS) {
+      throw new RangeError(
+        `BloomFilter.make: fpr ${fpr} is unreachable for capacity ${capacity} within 2^32 bits`,
+      );
+    }
     m *= 2;
   }
-  const mask = m - 1; // precomputed for `pos & mask` = `pos % m` (power-of-2 fast path)
+  // Precomputed for `pos & mask` = `pos % m` (power-of-2 fast path). `| 0` keeps it an int32
+  // (-1 for m = 2^32, where `x & -1` still selects all 32 bits).
+  const mask = (m - 1) | 0;
 
   const bf: BloomFilter = {
-    [kBits]: new Uint32Array(m >>> 5), // m/32 words
+    [kBits]: new Uint32Array(m / 32), // m/32 words (m may be 2^32, so no `>>> 5`)
     [kK]: k,
     [kM]: m,
     [kMask]: mask,
@@ -188,12 +217,12 @@ export function add(bf: BloomFilter, item: string): void {
   // Replaces Math.imul(i, h2)+add (1 mul + 1 add) with a single add per probe.
   // Equivalent to the Kirsch-Mitzenmacher formula because addition distributes
   // over modular arithmetic: acc_{i+1} = (acc_i + h2) mod 2^32.
-  // `>>> 0` keeps acc in [0, 2^32-1] so the sum never loses float precision.
+  // `| 0` wraps the sum to int32; only the low bits are used (`& mask`, `>>> 5`, `& 31`).
   let acc = _h1;
   for (let i = 0; i < k; i++) {
     const pos = acc & mask;
     bits[pos >>> 5] |= 1 << (pos & 31);
-    acc = (acc + h2) >>> 0;
+    acc = (acc + h2) | 0;
   }
   bf[kCount]++;
 }
@@ -213,7 +242,7 @@ export function mightContain(bf: BloomFilter, item: string): boolean {
     const pos = acc & mask;
     // Early-exit on first unset bit — most misses exit after 1 probe.
     if (((bits[pos >>> 5] >>> (pos & 31)) & 1) === 0) return false;
-    acc = (acc + h2) >>> 0;
+    acc = (acc + h2) | 0;
   }
   return true;
 }
@@ -236,7 +265,7 @@ export function count(bf: BloomFilter): number {
   return bf[kCount];
 }
 
-/** Returns the total number of bits in the filter (always a power of 2). */
+/** Returns the total number of bits in the filter (a power of 2, at most 2^32). */
 export function bitCount(bf: BloomFilter): number {
   return bf[kM];
 }

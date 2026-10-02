@@ -484,16 +484,32 @@ test("PromiseUtils: pool matches reference model — order, settledness, concurr
     Arb.constantFrom(1, 2, 3, 5, Infinity),
     // Index of the fn call that aborts (from inside fn); -1 = never.
     Arb.integer(-1, 12),
+    // Abort from outside fn, in a microtask after the k-th async completion
+    // (other slots may still be busy); -1 = never.
+    Arb.integer(-1, 6),
+    // Signal already aborted before pool is called.
+    Arb.constantFrom(false, false, false, true),
   );
 
   await Prop.assertAsync(
     spec,
-    async ([items, limit, abortAt]) => {
+    async ([items, limit, abortAt, extAbortAfter, preAborted]) => {
       const n = items.length;
       const ctrl = new AbortController();
       const started: number[] = [];
       let active = 0;
       let maxActive = 0;
+      let completions = 0;
+      // Number of calls started when the signal fired (n = never aborted).
+      let startedAtAbort = n;
+      if (preAborted) {
+        ctrl.abort("pre");
+        startedAtAbort = 0;
+      } else {
+        ctrl.signal.addEventListener("abort", () => {
+          startedAtAbort = started.length;
+        });
+      }
 
       const results = await PU.pool(
         items,
@@ -501,7 +517,7 @@ test("PromiseUtils: pool matches reference model — order, settledness, concurr
         ([kind, hops], i, signal) => {
           assert.equal(signal, ctrl.signal);
           started.push(i);
-          if (i === abortAt) ctrl.abort("abort");
+          if (i === abortAt) ctrl.abort("inner");
           if (kind === "throw") throw `t${i}`;
           if (kind === "sync") return i * 7;
           active++;
@@ -509,6 +525,7 @@ test("PromiseUtils: pool matches reference model — order, settledness, concurr
           return (async () => {
             for (let h = 0; h <= hops; h++) await Promise.resolve(); // >= 1 hop: overlaps
             active--;
+            if (completions++ === extAbortAfter) queueMicrotask(() => ctrl.abort("ext"));
             if (kind === "rej") throw `e${i}`;
             return i * 7;
           })();
@@ -516,8 +533,11 @@ test("PromiseUtils: pool matches reference model — order, settledness, concurr
         { signal: ctrl.signal },
       );
 
-      // Reference model.
-      const lastStarted = abortAt >= 0 && abortAt < n ? abortAt : n - 1;
+      // Reference model: nothing starts once the signal has fired.
+      const lastStarted = Math.min(startedAtAbort, n) - 1;
+      if (abortAt >= 0 && abortAt < n && !preAborted) {
+        assert.ok(lastStarted <= abortAt, "inner abort stops later starts");
+      }
       assert.deepEqual(
         started,
         Array.from({ length: lastStarted + 1 }, (_, i) => i),
@@ -528,7 +548,7 @@ test("PromiseUtils: pool matches reference model — order, settledness, concurr
         const kind = items[i]![0];
         const expected: PromiseSettledResult<number> =
           i > lastStarted
-            ? { status: "rejected", reason: "abort" }
+            ? { status: "rejected", reason: ctrl.signal.reason }
             : kind === "rej"
               ? { status: "rejected", reason: `e${i}` }
               : kind === "throw"

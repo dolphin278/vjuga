@@ -418,6 +418,9 @@ test("malformed scalar keyword values are Err", () => {
   assert.match(lowerErr({ multipleOf: 0 }), /multipleOf must be a finite number > 0/);
   assert.match(lowerErr({ type: "number", multipleOf: Infinity }), /multipleOf/);
   verdicts({ type: "string", pattern: "^a\\d$" }, ["a1"], ["b1"]);
+  // Documented divergence (no `u` flag): `.` matches one UTF-16 unit
+  verdicts({ type: "string", pattern: "^.$" }, ["a"], ["\u{1F600}"]);
+  verdicts({ type: "string", pattern: "^\\W\\W$" }, ["\u{1F600}"], []);
 });
 
 test("nesting deeper than the cap is Err, not a stack overflow", () => {

@@ -677,7 +677,8 @@ export interface FromJsonSchemaOptions {
  *
  * Divergences from JSON Schema kept for speed: string lengths count UTF-16
  * code units, `integer` means a safe integer, `pattern` compiles without the
- * `u` flag.
+ * `u` flag (on astral characters such as emoji, `.`, `[^…]`, `\S`, `\W`
+ * match half a surrogate pair: `^.$` rejects `"😀"`).
  *
  * @example Local `$ref` and `oneOf`
  * ```ts
@@ -1341,8 +1342,10 @@ function lowerString(ctx: LowerCtx, js: Record<string, unknown>): Schema {
     const pattern = js.pattern;
     if (typeof pattern !== "string") fail(ctx, "pattern must be a string");
     // Validate compiles without the `u` flag. Require unicode-mode validity
-    // (JSON Schema's dialect) and reject the constructs whose meaning differs
-    // between the two modes, so an Ok schema never silently mismatches.
+    // (JSON Schema's dialect) and reject the constructs that only exist in
+    // unicode mode. Still divergent on strings containing astral characters:
+    // `.`, negated classes, `\S` / `\W` / `\D` match one UTF-16 unit, not one
+    // code point (documented on fromJsonSchema).
     if (UNICODE_ONLY.test(pattern)) {
       fail(ctx, "pattern needs unicode mode (\\p{..}, \\u{..} or astral characters)");
     }

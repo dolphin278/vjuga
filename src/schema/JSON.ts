@@ -3,8 +3,8 @@
  *
  * When to use: a schema is known at init time and you want typed parse +
  * validation in one step (`parse` → `Result<T, SchemaError>`, never throws) or
- * a serializer that emits exactly the schema's keys. For ad-hoc JSON use
- * `@dolphin278/vjuga/JSON`. Not a speed win for stringify (see below).
+ * a serializer that emits only declared keys (`unknown` / `not` values as-is).
+ * For ad-hoc JSON use `@dolphin278/vjuga/JSON`. Not a speed win for stringify.
  *
  * Performance (Node 26, M1 Pro, output consumed with `Buffer.byteLength`):
  *   stringify is ~1.2–2.5x slower than native (2 fields 97 vs 79 ns; 5 fields
@@ -16,10 +16,10 @@
  *   stringify: pre-computed key fragments; all-required objects inline into a
  *   single expression. Unions dispatch by typeof when variant types are
  *   disjoint, else by each variant's validator; no match throws `TypeError`.
- *   Non-finite numbers emit `null` like native; `unknown` / `allOf` / `not` /
- *   `conditional` values use native `JSON.stringify`. parse: native
- *   `JSON.parse` + generated validation; own `__proto__` keys (also
- *   `\u`-escaped spellings) are stripped. `constructor` is kept.
+ *   Non-finite numbers emit `null`; `allOf` / `conditional` resolve their
+ *   applicable shapes per call (slower). parse: native `JSON.parse` +
+ *   generated validation; own `__proto__` keys (also `\u`-escaped
+ *   spellings) are stripped. `constructor` is kept.
  *
  * @example Compile once at init, call on hot path
  * ```ts
@@ -99,12 +99,18 @@ function stripProto(root: unknown): void {
  * The compiled function assumes input matches the schema (validate at
  * boundaries, not inside serializers). Use `validate()` separately if the
  * input is untrusted.
+ *
+ * Objects emit only their declared keys, even with `additionalProperties:
+ * true`. An `allOf` emits the keys of every variant (a `record` variant: all
+ * own keys), a `conditional` those of the branch its `if` selects; `unknown`
+ * and `not` declare nothing, so their values are emitted as-is.
  */
 export function stringify<S extends Schema>(schema: S): (value: Infer<S>) => string {
   const buf = createBuffer();
   emitRef(buf, "_esc", escapeJsonString);
   emitRef(buf, "_num", numberToJson);
   emitRef(buf, "_js", JSON.stringify);
+  emitRef(buf, "_ix", stringifyCombinator);
 
   emit(buf, "return function stringify(v) {");
   buf.indent++;
@@ -149,15 +155,170 @@ function walkStringify(buf: CodeBuffer, schema: Schema, accessor: string): strin
     case "nullable":
       return `(${accessor} === null ? "null" : ${walkStringify(buf, schema.meta.inner, accessor)})`;
     case "unknown":
-    case "allOf":
     case "not":
-    case "conditional":
-      // No single shape to specialize on — the value is serialized as-is
+      // Nothing is declared about the value — it is serialized as-is
       // (undefined outside an object field emits null, like optional(T))
       return `(${accessor} === undefined ? "null" : _js(${accessor}))`;
+    case "allOf":
+    case "conditional":
+      // The applicable shapes depend on the value: resolved per call
+      return `_ix(${emitRef(buf, freshVar(buf), schema)}, ${accessor})`;
     default:
       unreachable(schema);
   }
+}
+
+// ---------------------------------------------------------------------------
+// allOf / conditional: shapes resolved against the value
+// ---------------------------------------------------------------------------
+
+/** Compiled `stringify` of a plain shape, by identity. */
+const shapeStringifiers = new WeakMap<Schema, (v: unknown) => string>();
+// Cast: Infer<> over the base `Schema` union is too deep for tsc
+const validateAny = validate as unknown as (s: Schema) => (x: unknown) => Result<unknown, unknown>;
+const stringifyAny = stringify as unknown as (s: Schema) => (v: unknown) => string;
+
+/** Compiled acceptance check of a schema, by identity. */
+const acceptors = new WeakMap<Schema, (v: unknown) => boolean>();
+
+function accepts(schema: Schema, v: unknown): boolean {
+  let check = acceptors.get(schema);
+  if (check === undefined) {
+    const validator = validateAny(schema);
+    check = (x) => validator(x)[0];
+    acceptors.set(schema, check);
+  }
+  return check(v);
+}
+
+function shapeStringify(schema: Schema, v: unknown): string {
+  let str = shapeStringifiers.get(schema);
+  if (str === undefined) {
+    str = stringifyAny(schema);
+    shapeStringifiers.set(schema, str);
+  }
+  return str(v);
+}
+
+/**
+ * Push the shapes that describe `v` under `schema`: allOf contributes every
+ * variant, a conditional the branch its `if` selects, a union the first
+ * variant that accepts `v` (like the union serializer). `unknown` / `not`
+ * declare nothing and contribute no shape.
+ */
+function collectShapes(schema: Schema, v: unknown, out: Schema[]): void {
+  switch (schema.kind) {
+    case "allOf": {
+      const variants = schema.meta.variants as readonly Schema[];
+      for (let i = 0; i < variants.length; i++) collectShapes(variants[i], v, out);
+      return;
+    }
+    case "conditional":
+      collectShapes(accepts(schema.meta.if, v) ? schema.meta.then : schema.meta.else, v, out);
+      return;
+    case "union": {
+      const variants = schema.meta.variants as readonly Schema[];
+      for (let i = 0; i < variants.length; i++) {
+        if (accepts(variants[i], v)) {
+          collectShapes(variants[i], v, out);
+          return;
+        }
+      }
+      throw new TypeError("value does not match any union variant");
+    }
+    case "optional":
+      if (v !== undefined) collectShapes(schema.meta.inner, v, out);
+      return;
+    case "nullable":
+      if (v !== null) collectShapes(schema.meta.inner, v, out);
+      return;
+    case "unknown":
+    case "not":
+      return;
+    default:
+      out.push(schema);
+  }
+}
+
+/** `stringify` of an allOf / conditional node (`_ix` in generated code). */
+function stringifyCombinator(schema: Schema, v: unknown): string {
+  return stringifyShapes([schema], v);
+}
+
+/**
+ * Serialize `v`, valid for every schema in `schemas`, emitting exactly the
+ * keys the applicable shapes declare: the union of their object properties,
+ * or every own key when a record applies. A single shape uses its compiled
+ * serializer; with no shape (only `unknown` / `not`) the value is emitted
+ * as-is.
+ */
+function stringifyShapes(schemas: readonly Schema[], v: unknown): string {
+  if (v === undefined) return "null";
+  const shapes: Schema[] = [];
+  for (let i = 0; i < schemas.length; i++) collectShapes(schemas[i], v, shapes);
+  if (shapes.length === 1) return shapeStringify(shapes[0], v);
+  if (typeof v !== "object" || v === null) {
+    // Primitive output depends only on the value
+    if (typeof v === "string") return escapeJsonString(v);
+    return typeof v === "number" ? numberToJson(v) : String(v);
+  }
+  if (shapes.length === 0) return JSON.stringify(v);
+  return Array.isArray(v) ? stringifyArrayShapes(shapes, v) : stringifyObjectShapes(shapes, v);
+}
+
+function stringifyArrayShapes(shapes: readonly Schema[], a: readonly unknown[]): string {
+  let s = "[";
+  for (let i = 0; i < a.length; i++) {
+    const per: Schema[] = [];
+    for (let j = 0; j < shapes.length; j++) {
+      const shape = shapes[j];
+      if (shape.kind === "array") per.push(shape.meta.items);
+      else if (shape.kind === "tuple" && i < shape.meta.items.length) {
+        per.push(shape.meta.items[i]);
+      }
+    }
+    s += (i === 0 ? "" : ",") + stringifyShapes(per, a[i]);
+  }
+  return s + "]";
+}
+
+function stringifyObjectShapes(shapes: readonly Schema[], o: object): string {
+  const keys: string[] = [];
+  const seen = new Set<string>();
+  let open = false;
+  for (let j = 0; j < shapes.length; j++) {
+    const shape = shapes[j];
+    if (shape.kind === "record") open = true;
+    else if (shape.kind === "object") {
+      for (const k of Object.keys(shape.meta.properties)) {
+        if (!seen.has(k)) {
+          seen.add(k);
+          keys.push(k);
+        }
+      }
+    }
+  }
+  if (open) {
+    // A record applies: every own enumerable key belongs to the value
+    for (const k in o) if (Object.hasOwn(o, k) && !seen.has(k)) keys.push(k);
+  }
+  let s = "{";
+  for (let i = 0; i < keys.length; i++) {
+    const k = keys[i];
+    // Own reads only: `toString` must not pick up Object.prototype's member
+    const x = Object.hasOwn(o, k) ? (o as Record<string, unknown>)[k] : undefined;
+    if (x === undefined) continue;
+    const per: Schema[] = [];
+    for (let j = 0; j < shapes.length; j++) {
+      const shape = shapes[j];
+      if (shape.kind === "record") per.push(shape.meta.values);
+      else if (shape.kind === "object" && Object.hasOwn(shape.meta.properties, k)) {
+        per.push(shape.meta.properties[k]);
+      }
+    }
+    s += (s === "{" ? "" : ",") + escapeJsonString(k) + ":" + stringifyShapes(per, x);
+  }
+  return s + "}";
 }
 
 function walkStringifyObject(

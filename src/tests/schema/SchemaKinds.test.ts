@@ -289,7 +289,7 @@ test("extra-key fast path stays exact around undefined-accepting kinds", () => {
 // JSON / TOON
 // ---------------------------------------------------------------------------
 
-test("JSON.stringify serializes new kinds natively; parse validates them", () => {
+test("JSON.stringify: unknown / not as-is, allOf / conditional by declared keys", () => {
   const s = S.object({
     u: S.unknown(),
     a: S.allOf(S.object({ x: S.number() }, { additionalProperties: true })),
@@ -297,11 +297,113 @@ test("JSON.stringify serializes new kinds natively; parse validates them", () =>
     c: S.conditional(S.string(), S.string()),
     o: S.oneOf(S.string(), S.integer()),
   });
-  const v = { u: { deep: [1, "x"] }, a: { x: 1, y: 2 }, n: 3, c: "s", o: 4 };
+  const v = { u: { deep: [1, "x"] }, a: { x: 1, y: 2 }, n: { m: 3 }, c: "s", o: 4 };
   const out = SJ.stringify(s)(v as never);
-  assert.equal(out, JSON.stringify(v));
-  assert.deepEqual(SJ.parse(s)(out), [true, v]);
+  // `a` declares only x (like an open object); unknown / not declare nothing
+  assert.equal(out, JSON.stringify({ ...v, a: { x: 1 } }));
+  assert.deepEqual(SJ.parse(s)(out), [true, { ...v, a: { x: 1 } }]);
   assert.equal(SJ.parse(s)(JSON.stringify({ ...v, n: null }))[0], false);
+});
+
+/** stringify over the base `Schema` type (Infer<> is too deep for tsc there). */
+const str = (s: S.Schema): ((v: unknown) => string) =>
+  SJ.stringify(s as S.StringSchema) as (v: unknown) => string;
+
+test("JSON.stringify of lowered JSON Schemas does not leak undeclared keys", () => {
+  const user = { id: 1, password: "hunter2" };
+  const props = { id: { type: "integer" } };
+  const lowered = (js: S.JsonSchemaObject): S.Schema => S.fromJsonSchema(js)[1] as S.Schema;
+  // Untyped object keywords → conditional; $ref + sibling required → allOf
+  const untyped = lowered({ properties: props });
+  const refd = lowered({
+    $defs: { U: { type: "object", properties: props } },
+    $ref: "#/$defs/U",
+    required: ["id"],
+  });
+  assert.equal(untyped.kind, "conditional");
+  assert.equal(refd.kind, "allOf");
+  assert.equal(str(untyped)(user), '{"id":1}');
+  assert.equal(str(refd)(user), '{"id":1}');
+  assert.equal(str(untyped)("not an object"), '"not an object"'); // else: unknown
+});
+
+test("JSON.stringify allOf merges object shapes key by key", () => {
+  const s = S.allOf(
+    S.object({ a: S.string(), b: S.optional(S.object({ x: S.number() })) }),
+    S.object({ b: S.object({ y: S.number() }, { additionalProperties: true }), c: S.integer() }),
+    S.unknown(),
+  );
+  const v = { a: "s", b: { x: 1, y: 2, z: 3 }, c: 4, d: 5 };
+  assert.equal(str(s)(v), '{"a":"s","b":{"x":1,"y":2},"c":4}');
+  // Own reads only: an absent `toString` key is skipped, not Object.prototype's
+  const proto = S.allOf(S.object({ toString: S.optional(S.string()) }), S.object({ k: S.null_() }));
+  assert.equal(str(proto)({ k: null }), '{"k":null}');
+  assert.equal(str(proto)({ k: null, toString: "t" }), '{"toString":"t","k":null}');
+});
+
+test("JSON.stringify allOf with a record emits every own key", () => {
+  const s = S.allOf(
+    S.record(S.object({ v: S.number() }, { additionalProperties: true })),
+    S.object({ id: S.object({ v: S.number(), w: S.number() }, { additionalProperties: true }) }),
+  );
+  const v = Object.assign(Object.create({ inherited: 1 }), {
+    q: { v: 1, junk: 0 },
+    id: { v: 2, w: 3, junk: 0 },
+  });
+  assert.equal(str(s)(v), '{"id":{"v":2,"w":3},"q":{"v":1}}');
+});
+
+test("JSON.stringify allOf of array shapes merges per element", () => {
+  const point = S.object({ x: S.number() }, { additionalProperties: true });
+  const s = S.allOf(
+    S.array(point),
+    S.tuple(S.object({ y: S.number() }, { additionalProperties: true }), point),
+  );
+  assert.equal(
+    str(s)([
+      { x: 1, y: 2, z: 0 },
+      { x: 3, y: 4 },
+    ]),
+    '[{"x":1,"y":2},{"x":3}]',
+  );
+  assert.equal(str(S.allOf(S.array(S.number()), S.array(S.integer())))([]), "[]");
+  // Only unknown / not apply: emitted as-is
+  assert.equal(str(S.allOf(S.unknown(), S.not(S.string())))([{ a: 1 }]), '[{"a":1}]');
+  // Shapes that cannot describe the element (invalid input) leave it as-is
+  assert.equal(str(S.allOf(S.array(S.unknown()), S.string()))([{ a: 1 }]), '[{"a":1}]');
+});
+
+test("JSON.stringify conditional / union / optional / nullable inside allOf", () => {
+  const s = S.conditional(
+    S.object({ t: S.literal("a") }, { additionalProperties: true }),
+    S.object({ t: S.literal("a"), x: S.number() }, { additionalProperties: true }),
+    S.allOf(
+      S.union(
+        S.object({ t: S.literal("b"), y: S.number() }, { additionalProperties: true }),
+        S.string(),
+      ),
+      S.unknown(),
+    ),
+  );
+  assert.equal(str(s)({ t: "a", x: 1, y: 2 }), '{"t":"a","x":1}');
+  assert.equal(str(s)({ t: "b", x: 1, y: 2 }), '{"t":"b","y":2}');
+  assert.equal(str(s)("plain"), '"plain"');
+  assert.throws(() => str(s)(7), /does not match any union variant/);
+  const opt = S.allOf(S.optional(S.nullable(S.object({ a: S.number() }))), S.unknown());
+  assert.equal(str(opt)(undefined), "null");
+  assert.equal(str(opt)(null), "null");
+  assert.equal(str(opt)({ a: 1, b: 2 }), '{"a":1}');
+});
+
+test("JSON.stringify allOf of primitive shapes serializes the value", () => {
+  assert.equal(
+    str(S.allOf(S.string({ minLength: 1 }), S.string({ maxLength: 9 })))('a"b'),
+    '"a\\"b"',
+  );
+  assert.equal(str(S.allOf(S.number(), S.number({ minimum: 0 })))(NaN), "null");
+  assert.equal(str(S.allOf(S.integer(), S.number()))(3), "3");
+  assert.equal(str(S.allOf(S.boolean(), S.literal(true)))(true), "true");
+  assert.equal(str(S.allOf(S.null_(), S.nullable(S.string())))(null), "null");
 });
 
 test("JSON.stringify dispatches unions containing new kinds by validator", () => {

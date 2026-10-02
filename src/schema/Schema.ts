@@ -263,6 +263,8 @@ type Simplify<T> = { [K in keyof T]: T[K] };
 /**
  * Validates strings. Pass constraints for minLength/maxLength/pattern/format.
  * `pattern` is a regex source string (compiled with `new RegExp`, no flags).
+ * `format` takes the names `schema/Formats` enforces (`"date"`, `"date-time"`,
+ * `"email"`, ...) and is type-checked against them.
  */
 export function string(constraints?: StringConstraints): StringSchema {
   return { kind: "string", meta: constraints };

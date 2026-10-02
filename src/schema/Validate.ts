@@ -1,43 +1,39 @@
 /**
  * Validate — code-generated schema validators via `new Function`.
  *
- * `validate(schema)` compiles a schema into a single optimized function that
- * validates `unknown` values and returns `Result<T, SchemaError>`. Checks are
- * inlined — no closure chains, no per-field calls, no allocations on success.
+ * `validate(schema)` compiles a schema into one optimized function returning
+ * `Result<T, SchemaError>` (first error). Checks are inlined — no closure
+ * chains, no per-field calls, no allocations on success. `{ allErrors: true }`
+ * compiles a separate collect-all variant returning `Result<T, SchemaError[]>`.
  *
  * When to use: hot-path validation of external input (HTTP bodies, queue
- * payloads, config files). Compile once at module/init scope (~0.1ms); never
- * call `validate(schema)` per request.
+ * payloads, config files); `allErrors` for hand-edited input (YAML, forms)
+ * where every problem should surface in one run. Compile once at init scope.
  *
- * Internal design:
- *   `emitValidation` walks the schema tree and emits inline checks into a
- *   `CodeBuffer`, compiled via `new Function`. Each property / element is read
- *   once into a local; every schema-derived constant is emitted via
- *   `jsLiteral`, so untrusted schemas (`fromJsonSchema`) cannot inject code.
- *   `schema/JSON.parse` reuses the same emitter.
+ * Internal design: `emitValidation` walks the schema and emits inline checks
+ * into a `CodeBuffer`; every schema-derived constant goes through `jsLiteral`,
+ * so untrusted schemas cannot inject code. `schema/JSON.parse` reuses it.
  *
- * Semantics: objects are checked against OWN properties only, and reject
- * undeclared own enumerable keys unless built with `additionalProperties:
- * true`. Unions accept a value iff some variant fully validates it; `oneOf`
- * iff exactly one does; tagged unions dispatch via `switch`. `allOf` checks
- * every variant, `not` / `conditional` use boolean sub-validators; `unknown`
- * and `not` reject `undefined`. Recursive (cyclic) schemas are unsupported.
+ * Semantics: OWN properties only; undeclared own keys fail unless
+ * `additionalProperties: true`. Unions need some variant to fully validate,
+ * `oneOf` exactly one; tagged unions dispatch via `switch`. `unknown` and
+ * `not` reject `undefined`. Formats: RFC 3339 `date-time` / `date` / `time`,
+ * `email`, `uri`, `uuid`, `ipv4`, `ipv6`, legacy `iso-datetime` (see
+ * `schema/Formats`); other names are annotation-only. allErrors: one error
+ * per failed type check (no descent), every failed constraint and extra key,
+ * a single error per untagged union / `oneOf` / `not` / `conditional`;
+ * `errors[0]` is always the first-error result. Cyclic schemas unsupported.
  *
  * @example Compile once, validate many
  * ```ts
  * import * as S from "@dolphin278/vjuga/schema/Schema";
  * import { validate } from "@dolphin278/vjuga/schema/Validate";
- * const checkUser = validate(S.object({ id: S.integer(), name: S.string() }));
+ * const User = S.object({ id: S.integer(), born: S.string({ format: "date" }) });
+ * const checkUser = validate(User);
  * const [ok, value] = checkUser(input);
  * if (!ok) console.error(value.path, value.expected, value.received);
- * ```
- *
- * @example Discriminated union — `switch` on the shared literal key
- * ```ts
- * const checkEvent = validate(S.union(
- *   S.object({ type: S.literal("click"), x: S.number(), y: S.number() }),
- *   S.object({ type: S.literal("key"), code: S.string() }),
- * ));
+ * const [ok2, errors] = validate(User, { allErrors: true })({ id: "x", born: "?" });
+ * // errors: [{ path: "id", ... }, { path: "born", ... }]
  * ```
  */
 
@@ -125,6 +121,12 @@ export function emitStandardRefs(buf: CodeBuffer, okFn: unknown, errFn: unknown)
  * undeclared own keys unless built with `{ additionalProperties: true }`;
  * there is no "strip unknown keys" mode.
  *
+ * With `{ allErrors: true }` the validator returns `Result<Infer<S>,
+ * SchemaError[]>` listing every failure in check order (see the module docs
+ * for what is reported); `errors[0]` equals what the default validator
+ * returns, and success still allocates nothing. The default mode's generated
+ * code is unaffected by the option's existence.
+ *
  * Throws `SyntaxError` for an invalid `pattern` regex and `TypeError` if a
  * schema constraint/literal is not a primitive (malformed hand-built schema).
  *
@@ -133,6 +135,8 @@ export function emitStandardRefs(buf: CodeBuffer, okFn: unknown, errFn: unknown)
  * const check = validate(S.object({ id: S.integer() }));
  * check({ id: 1 });           // [true, { id: 1 }]
  * check({ id: 1, extra: 0 }); // [false, { path: "extra", ... }]
+ * const all = validate(S.object({ a: S.string(), b: S.number() }), { allErrors: true });
+ * all({ a: 1, b: "x", c: 0 }); // [false, [{ path: "a" }, { path: "b" }, { path: "c" }]] (abridged)
  * ```
  */
 export function validate<S extends Schema, O extends ValidateOptions = {}>(

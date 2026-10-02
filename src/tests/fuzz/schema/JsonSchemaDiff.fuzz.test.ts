@@ -27,7 +27,8 @@ import * as Prop from "../../../Property.js";
 import { rng, hashSeed, type Rng } from "./_serial-gen.js";
 
 const NUM_RUNS = 1_000_000;
-const SCHEMA_SEEDS = 4096;
+// Distinct schemas per run of the property (each compiles once, ajv + ours)
+const SCHEMA_SEEDS = 32_768;
 const VALUES_PER_RUN = 6;
 
 interface AjvError {
@@ -41,6 +42,7 @@ interface AjvValidate {
 }
 interface AjvLike {
   compile(schema: unknown): AjvValidate;
+  addSchema(schema: unknown): unknown;
 }
 const require = createRequire(import.meta.url);
 const Ajv2020 = (require("ajv/dist/2020") as { default: new (o: object) => AjvLike }).default;
@@ -48,6 +50,20 @@ const addFormats = (require("ajv-formats") as { default: (a: AjvLike, o: object)
 // One instance for both modes: allErrors never changes ajv's verdict
 const ajv = new Ajv2020({ strict: false, allErrors: true, logger: false });
 addFormats(ajv, { mode: "full" });
+
+// External document reached through `options.refs` (ours) / addSchema (ajv);
+// its internal refs resolve against its own `$id`, not the referring document
+const EXT_ID = "http://example.com/ext.json";
+const EXT = {
+  $id: EXT_ID,
+  $defs: {
+    int: { type: "integer", minimum: 2 },
+    str: { $anchor: "str", type: "string", minLength: 1 },
+    obj: { type: "object", required: ["a"], properties: { a: { $ref: "#/$defs/int" } } },
+  },
+};
+ajv.addSchema(EXT);
+const EXT_REFS = [EXT_ID + "#/$defs/int", EXT_ID + "#str", EXT_ID + "#/$defs/obj"];
 
 type Js = Record<string, unknown> | boolean;
 
@@ -197,8 +213,12 @@ function genJs(r: Rng, depth: number, defs: number): Js {
       break;
     }
     case 3:
-      if (defs > 0) {
-        js.$ref = "#/$defs/d" + int(r, defs);
+      if (chance(r, 0.25)) {
+        js.$ref = pickOf(r, EXT_REFS);
+      } else if (defs > 0) {
+        // Every def carries an $anchor (genDocument): pointer or anchor form
+        const i = int(r, defs);
+        js.$ref = chance(r, 0.5) ? "#/$defs/d" + i : "#a" + i;
         if (chance(r, 0.2)) js.description = "annotation";
         if (chance(r, 0.2)) addGroup(r, js, "string", depth, defs); // sibling assertions
       } else {
@@ -259,7 +279,12 @@ function genDocument(r: Rng): Js {
   const ndefs = int(r, 4);
   const defs: Record<string, Js> = {};
   // d_i may reference only d_j with j < i — never cyclic
-  for (let i = 0; i < ndefs; i++) defs["d" + i] = genJs(r, 2, i);
+  for (let i = 0; i < ndefs; i++) {
+    const def = genJs(r, 2, i);
+    // Boolean schemas cannot carry an $anchor: spell them as objects
+    const obj = typeof def !== "boolean" ? def : def ? {} : { not: {} };
+    defs["d" + i] = { ...obj, $anchor: "a" + i };
+  }
   const root = genJs(r, 3, ndefs);
   if (ndefs === 0 || typeof root === "boolean") return root;
   return { ...root, $defs: defs };
@@ -293,7 +318,7 @@ function compiled(schemaSeed: number): Compiled {
   let c = cache.get(schemaSeed);
   if (c !== undefined) return c;
   const doc = genDocument(rng(schemaSeed ^ 0x5bd1e995));
-  const r = S.fromJsonSchema(doc);
+  const r = S.fromJsonSchema(doc, { refs: { [EXT_ID]: EXT } });
   // Cast: Infer<> over the base `Schema` union is "excessively deep" for tsc
   const ours = r[0]
     ? (validate(r[1] as S.StringSchema) as (v: unknown) => readonly [boolean, unknown])
@@ -321,7 +346,9 @@ function isPlain(s: S.Schema): boolean {
     case "array":
       return isPlain(s.meta.items);
     case "tuple":
-      return (s.meta.items as readonly S.Schema[]).every(isPlain);
+      // A wrong length is the tuple's type error (no descent); ajv still
+      // checks each prefixItems slot, so locations are not comparable
+      return false;
     case "record":
       return isPlain(s.meta.values);
     case "optional":

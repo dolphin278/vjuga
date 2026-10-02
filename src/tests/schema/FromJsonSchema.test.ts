@@ -391,7 +391,10 @@ test("unsupported assertion keywords are Err, never dropped", () => {
     "$dynamicRef",
     "$recursiveRef",
   ]) {
-    assert.match(lowerErr({ [kw]: {} }), new RegExp(kw.replace("$", "\\$") + " is not supported"));
+    assert.match(
+      lowerErr({ [kw]: {} }),
+      new RegExp(kw.replace(/[$]/g, "\\$&") + " is not supported"),
+    );
   }
   assert.match(lowerErr({ type: "array", uniqueItems: true }), /uniqueItems is not supported/);
   assert.equal(lower({ type: "array", uniqueItems: false }).kind, "array");

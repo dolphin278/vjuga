@@ -193,6 +193,39 @@ test("oneOf requires exactly one match", () => {
   assert.equal(errorOf(S.object({ x: S.oneOf(S.string(), S.string()) }), { x: "a" }).path, "x");
 });
 
+test("nested non-exact oneOf reads each value a linear number of times", () => {
+  // Each level's last variant is the previous level: re-running it in the
+  // boolean sub-validators used to double the work per level (~2^depth reads).
+  const depth = 16;
+  let s: S.Schema = S.object({ z: S.string() });
+  for (let i = 0; i < depth; i++) s = S.oneOf(S.object({ ["k" + i]: S.string() }), s);
+  let reads = 0;
+  const input = {};
+  Object.defineProperty(input, "z", {
+    enumerable: true,
+    get() {
+      reads++;
+      return 1;
+    },
+  });
+  assert.deepEqual(errorOf(s, input), { path: "z", expected: "string", received: 1 });
+  assert.ok(reads <= depth + 2, `z read ${reads} times`);
+  assert.equal(accepts(s, { z: "a" }), true);
+});
+
+test("oneOf inside a boolean sub-validator: zero and two matches both fail", () => {
+  // The oneOf is a non-last union variant, so it runs as a boolean sub-validator
+  const inner = S.oneOf(
+    S.object({ a: S.string() }),
+    S.object({ a: S.string() }, { additionalProperties: true }),
+  );
+  const s = S.union(inner, S.literal(0));
+  assert.equal(accepts(s, { a: "x" }), false); // matched 2
+  assert.equal(accepts(s, { a: "x", b: 1 }), true); // matched 1
+  assert.equal(accepts(s, { a: 1 }), false); // matched 0
+  assert.equal(accepts(s, 0), true);
+});
+
 test("discriminated oneOf keeps the switch path", () => {
   const s = S.oneOf(
     S.object({ t: S.literal("a"), x: S.number() }),

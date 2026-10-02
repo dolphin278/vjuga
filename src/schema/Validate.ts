@@ -899,6 +899,12 @@ function emitExclusiveValidation(
   for (let i = 0; i < variants.length; i++) {
     emit(buf, `if (${booleanCheck(buf, variants[i], accessor)}) ${count}++;`);
   }
+  if (booleanBuffers.has(buf)) {
+    // Boolean sub-validator: the error is discarded, so re-running the last
+    // variant for it would only double the work at every nesting level
+    emit(buf, `if (${count} !== 1) ${failStmt(buf, pathExpr, '"oneOf"', accessor)}`);
+    return;
+  }
   emit(buf, `if (${count} === 0) {`);
   buf.indent++;
   emitSingle(buf, variants[variants.length - 1], accessor, pathExpr);
@@ -918,6 +924,16 @@ function booleanCheck(buf: CodeBuffer, schema: Schema, accessor: string): string
   return `${emitRef(buf, freshVar(buf), compileBooleanValidator(schema))}(${accessor})`;
 }
 
+/**
+ * Boolean sub-validators by schema identity. A node shared by several parents
+ * (a `$ref` target, a reused hand-built schema) compiles once, which keeps
+ * combinator-heavy schemas from recompiling the same subtree at every use.
+ */
+const booleanValidators = new WeakMap<Schema, (v: unknown) => boolean>();
+
+/** Buffers being emitted by `compileBooleanValidator` (errors are discarded). */
+const booleanBuffers = new WeakSet<CodeBuffer>();
+
 const returnTrue = (): boolean => true;
 const returnFalse = (): boolean => false;
 const noError = (): undefined => undefined;
@@ -929,7 +945,10 @@ const noError = (): undefined => undefined;
  * compile their own boolean sub-validators the same way.
  */
 function compileBooleanValidator(schema: Schema): (v: unknown) => boolean {
+  const cached = booleanValidators.get(schema);
+  if (cached !== undefined) return cached;
   const buf = createBuffer();
+  booleanBuffers.add(buf);
   emitStandardRefs(buf, returnTrue, returnFalse);
   emitRef(buf, "_me", noError);
   emit(buf, "return function variant(v) {");
@@ -938,7 +957,9 @@ function compileBooleanValidator(schema: Schema): (v: unknown) => boolean {
   emit(buf, "return _ok(v);");
   buf.indent--;
   emit(buf, "}");
-  return compileFunction<(v: unknown) => boolean>(buf);
+  const fn = compileFunction<(v: unknown) => boolean>(buf);
+  booleanValidators.set(schema, fn);
+  return fn;
 }
 
 function emitDiscriminatedValidation(

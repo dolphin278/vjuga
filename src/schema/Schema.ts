@@ -148,6 +148,10 @@ export type ConditionalSchema<I extends Schema, T extends Schema, E extends Sche
  * Concrete type parameters are inferred at builder call sites via `const`
  * type parameters — the `any` here only affects the union discriminant, not
  * the builder return types.
+ *
+ * 18 kinds (`unknown`, `allOf`, `not` and `conditional` were added after v9;
+ * `oneOf` is a `union` with `meta.exclusive: true`). Code that switches over
+ * `kind` exhaustively should handle them or fall through to a `default`.
  */
 export type Schema =
   | StringSchema

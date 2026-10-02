@@ -113,27 +113,100 @@ export function isIPv6(value: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Character classes (ASCII), as bit flags
+// ---------------------------------------------------------------------------
+
+const UNRESERVED = 1; // RFC 3986: ALPHA DIGIT - . _ ~
+const SUB_DELIM = 2; // RFC 3986: ! $ & ' ( ) * + , ; =
+const COLON = 4;
+const AT = 8;
+const SLASH = 16;
+const QUESTION = 32;
+const HEX = 64;
+const DIGIT = 128;
+const ALNUM = 256;
+const ATEXT = 512; // RFC 5322 atext
+const QTEXT = 1024; // RFC 5322 qtext (printable ASCII except " and \, plus space)
+const SCHEME_TAIL = 2048; // ALPHA DIGIT + - .
+
+const CLASS = (() => {
+  const t = new Uint16Array(128);
+  const set = (chars: string, flag: number): void => {
+    for (let i = 0; i < chars.length; i++) t[chars.charCodeAt(i)] |= flag;
+  };
+  const alnum = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  set(alnum + "-._~", UNRESERVED);
+  set("!$&'()*+,;=", SUB_DELIM);
+  set(":", COLON);
+  set("@", AT);
+  set("/", SLASH);
+  set("?", QUESTION);
+  set("0123456789abcdefABCDEF", HEX);
+  set("0123456789", DIGIT);
+  set(alnum, ALNUM);
+  set(alnum + "!#$%&'*+/=?^_`{|}~-", ATEXT);
+  for (let c = 0x20; c < 0x7f; c++) if (c !== 0x22 && c !== 0x5c) t[c] |= QTEXT;
+  set(alnum + "+-.", SCHEME_TAIL);
+  return t;
+})();
+
+/** True if char code `c` is ASCII and in class `mask`. */
+function is(c: number, mask: number): boolean {
+  return c < 128 && (CLASS[c] & mask) !== 0;
+}
+
+// ---------------------------------------------------------------------------
 // email
 // ---------------------------------------------------------------------------
 
-// atext (RFC 5322 3.2.3) dot-atom, or a quoted string of qtext / quoted-pair
-const ATEXT = "[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]";
-const EMAIL_LOCAL = new RegExp(
-  `^(?:${ATEXT}+(?:\\.${ATEXT}+)*|"(?:[\\x20\\x21\\x23-\\x5B\\x5D-\\x7E]|\\\\[\\x20-\\x7E])*")@`,
-);
-const LABEL = /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/;
-const IPV6_TAG = /^IPv6:/i;
+/** End index (just past the closing `"`) of a quoted local part, or -1. */
+function quotedEnd(s: string): number {
+  for (let i = 1; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c === 0x22 /* " */) return i + 1;
+    if (c === 0x5c /* \ */) {
+      const n = s.charCodeAt(++i);
+      if (!(n >= 0x20 && n < 0x7f)) return -1; // quoted-pair: VCHAR or space
+    } else if (!is(c, QTEXT)) {
+      return -1;
+    }
+  }
+  return -1;
+}
 
-/** RFC 1123 host name: dot-separated labels of 1–63 chars, 253 max. */
-function isDomain(s: string): boolean {
-  if (s.length > 253) return false;
-  const labels = s.split(".");
-  for (let i = 0; i < labels.length; i++) {
-    const l = labels[i];
-    if (l.length > 63 || !LABEL.test(l)) return false;
+/** End index of a dot-atom local part (`atext+` runs joined by single dots), or -1. */
+function dotAtomEnd(s: string): number {
+  let run = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (is(c, ATEXT)) run++;
+    else if (c === 0x2e /* . */ && run > 0) run = 0;
+    else return run > 0 ? i : -1;
+  }
+  return -1; // no "@" follows
+}
+
+/** RFC 1123 host name in `s[start..]`: labels of 1–63 alnum/`-` chars, 253 max. */
+function isDomainFrom(s: string, start: number): boolean {
+  const len = s.length;
+  if (start >= len || len - start > 253) return false;
+  let labelStart = start;
+  for (let i = start; i <= len; i++) {
+    const c = i === len ? 0x2e : s.charCodeAt(i);
+    if (c === 0x2e /* . */) {
+      // label = alnum [ *(alnum / "-") alnum ], 1..63 chars
+      const n = i - labelStart;
+      if (n === 0 || n > 63 || !is(s.charCodeAt(i - 1), ALNUM)) return false;
+      if (!is(s.charCodeAt(labelStart), ALNUM)) return false;
+      labelStart = i + 1;
+    } else if (!is(c, ALNUM) && c !== 0x2d /* - */) {
+      return false;
+    }
   }
   return true;
 }
+
+const IPV6_TAG = /^IPv6:/i;
 
 /**
  * RFC 5321 mailbox (`email`), ASCII only: `local@domain` where local is a
@@ -147,50 +220,22 @@ function isDomain(s: string): boolean {
  * ```
  */
 export function isEmail(value: string): boolean {
-  const m = EMAIL_LOCAL.exec(value);
-  if (m === null) return false;
-  const domain = value.slice(m[0].length);
-  if (domain.charCodeAt(0) === 0x5b /* [ */) {
-    if (domain.charCodeAt(domain.length - 1) !== 0x5d /* ] */) return false;
-    const lit = domain.slice(1, -1);
+  const end = value.charCodeAt(0) === 0x22 /* " */ ? quotedEnd(value) : dotAtomEnd(value);
+  if (end === -1 || value.charCodeAt(end) !== 0x40 /* @ */) return false;
+  const start = end + 1;
+  if (value.charCodeAt(start) === 0x5b /* [ */) {
+    if (value.charCodeAt(value.length - 1) !== 0x5d /* ] */) return false;
+    const lit = value.slice(start + 1, -1);
     return IPV6_TAG.test(lit) ? isIPv6(lit.slice(5)) : isIPv4(lit);
   }
-  return isDomain(domain);
+  return isDomainFrom(value, start);
 }
 
 // ---------------------------------------------------------------------------
 // uri
 // ---------------------------------------------------------------------------
 
-// Character classes of RFC 3986, as bit flags over ASCII
-const UNRESERVED = 1; // ALPHA DIGIT - . _ ~
-const SUB_DELIM = 2; // ! $ & ' ( ) * + , ; =
-const COLON = 4;
-const AT = 8;
-const SLASH = 16;
-const QUESTION = 32;
-const HEX = 64;
-const DIGIT = 128;
-
-const CLASS = (() => {
-  const t = new Uint8Array(128);
-  const set = (chars: string, flag: number): void => {
-    for (let i = 0; i < chars.length; i++) t[chars.charCodeAt(i)] |= flag;
-  };
-  const alpha = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-  set(alpha + "0123456789-._~", UNRESERVED);
-  set("!$&'()*+,;=", SUB_DELIM);
-  set(":", COLON);
-  set("@", AT);
-  set("/", SLASH);
-  set("?", QUESTION);
-  set("0123456789abcdefABCDEF", HEX);
-  set("0123456789", DIGIT);
-  return t;
-})();
-
 const PCHAR = UNRESERVED | SUB_DELIM | COLON | AT;
-const SCHEME = /^[A-Za-z][A-Za-z0-9+.-]*:/;
 const IPV_FUTURE = /^v[0-9A-Fa-f]+\.[A-Za-z0-9\-._~!$&'()*+,;=:]+$/;
 
 /** True if `s[start, end)` is only chars in `mask` or `%XX` escapes. */
@@ -200,7 +245,7 @@ function scan(s: string, start: number, end: number, mask: number): boolean {
     if (c === 0x25 /* % */) {
       if (i + 2 >= end || !isHex(s, i + 1) || !isHex(s, i + 2)) return false;
       i += 2;
-    } else if (c >= 128 || (CLASS[c] & mask) === 0) {
+    } else if (!is(c, mask)) {
       return false;
     }
   }
@@ -208,8 +253,7 @@ function scan(s: string, start: number, end: number, mask: number): boolean {
 }
 
 function isHex(s: string, i: number): boolean {
-  const c = s.charCodeAt(i);
-  return c < 128 && (CLASS[c] & HEX) !== 0;
+  return is(s.charCodeAt(i), HEX);
 }
 
 /** RFC 3986 authority: `[userinfo@]host[:port]`. */
@@ -235,10 +279,21 @@ function isAuthority(s: string, start: number, end: number): boolean {
   }
   // port = *DIGIT after the ':'
   for (let i = hostEnd + 1; i < end; i++) {
-    const c = s.charCodeAt(i);
-    if (c >= 128 || (CLASS[c] & DIGIT) === 0) return false;
+    if (!is(s.charCodeAt(i), DIGIT)) return false;
   }
   return true;
+}
+
+/** Index of the `:` ending a `scheme` (ALPHA *(ALPHA / DIGIT / + - .)), or -1. */
+function schemeEnd(s: string): number {
+  const c0 = s.charCodeAt(0);
+  if (!is(c0, ALNUM) || is(c0, DIGIT)) return -1;
+  for (let i = 1; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c === 0x3a /* : */) return i;
+    if (!is(c, SCHEME_TAIL)) return -1;
+  }
+  return -1;
 }
 
 /**
@@ -253,8 +308,8 @@ function isAuthority(s: string, start: number, end: number): boolean {
  * ```
  */
 export function isUri(value: string): boolean {
-  const m = SCHEME.exec(value);
-  if (m === null) return false;
+  const colon = schemeEnd(value);
+  if (colon === -1) return false;
   const len = value.length;
   const hash = value.indexOf("#");
   const end = hash === -1 ? len : hash;
@@ -262,7 +317,7 @@ export function isUri(value: string): boolean {
   const q = value.indexOf("?");
   const pathEnd = q === -1 || q > end ? end : q;
   if (pathEnd !== end && !scan(value, pathEnd + 1, end, PCHAR | SLASH | QUESTION)) return false;
-  let pathStart = m[0].length;
+  let pathStart = colon + 1;
   if (value.startsWith("//", pathStart)) {
     const authStart = pathStart + 2;
     const slash = value.indexOf("/", authStart);

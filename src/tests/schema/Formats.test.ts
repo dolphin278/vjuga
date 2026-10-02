@@ -113,6 +113,13 @@ test("isEmail — domain literals and limits", () => {
   assert.equal(isEmail("a@" + "b.".repeat(126) + "cc"), false); // 254 chars
   assert.equal(isEmail("a@" + "b.".repeat(125) + "cc"), true); // 252 chars
   assert.equal(isEmail("no-at-sign"), false);
+  assert.equal(isEmail('"a\tb"@iana.org'), false); // control char in quoted text
+  assert.equal(isEmail('"é"@iana.org'), false);
+  assert.equal(isEmail('"unclosed'), false);
+  assert.equal(isEmail('"a"'), false); // no @ after the quoted string
+  assert.equal(isEmail("a@"), false);
+  assert.equal(isEmail("a@b-"), false);
+  assert.equal(isEmail("a@-b"), false);
 });
 
 test("isUri — authority, ports, IP literals, query and fragment", () => {

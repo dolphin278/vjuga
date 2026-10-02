@@ -3,8 +3,8 @@
  *
  * When to use: a schema is known at init time and you want typed parse +
  * validation in one step (`parse` → `Result<T, SchemaError>`, never throws) or
- * a serializer that emits exactly the schema's keys. For ad-hoc JSON use
- * `@dolphin278/vjuga/JSON`. Not a speed win for stringify (see below).
+ * a serializer that emits only declared keys (`unknown` / `not` values as-is).
+ * For ad-hoc JSON use `@dolphin278/vjuga/JSON`. Not a speed win for stringify.
  *
  * Performance (Node 26, M1 Pro, output consumed with `Buffer.byteLength`):
  *   stringify is ~1.2–2.5x slower than native (2 fields 97 vs 79 ns; 5 fields
@@ -16,9 +16,10 @@
  *   stringify: pre-computed key fragments; all-required objects inline into a
  *   single expression. Unions dispatch by typeof when variant types are
  *   disjoint, else by each variant's validator; no match throws `TypeError`.
- *   Non-finite numbers emit `null` like native. parse: native `JSON.parse` +
- *   generated validation; own `__proto__` keys (also `\u`-escaped spellings)
- *   are stripped. `constructor` is ordinary data and kept.
+ *   Non-finite numbers emit `null`; static `allOf` shapes merge at compile
+ *   time, others resolve per call (slower). parse: native `JSON.parse` +
+ *   generated validation; own `__proto__` keys (also `\u`-escaped
+ *   spellings) are stripped. `constructor` is kept.
  *
  * @example Compile once at init, call on hot path
  * ```ts
@@ -44,7 +45,7 @@ import { parse as jsonParse, escapeJsonString } from "../JSON.js";
 import type { Schema, Infer } from "./Schema.js";
 import type { SchemaError } from "./Validate.js";
 import { emitStandardRefs, emitValidation, validate } from "./Validate.js";
-import { findDiscriminant } from "./Schema.js";
+import { allOf, findDiscriminant, object, optional, propertyMayBeAbsent } from "./Schema.js";
 import { unreachable } from "../FunctionUtils.js";
 import {
   type CodeBuffer,
@@ -98,11 +99,18 @@ function stripProto(root: unknown): void {
  * The compiled function assumes input matches the schema (validate at
  * boundaries, not inside serializers). Use `validate()` separately if the
  * input is untrusted.
+ *
+ * Objects emit only their declared keys, even with `additionalProperties:
+ * true`. An `allOf` emits the keys of every variant (a `record` variant: all
+ * own keys), a `conditional` those of the branch its `if` selects; `unknown`
+ * and `not` declare nothing, so their values are emitted as-is.
  */
 export function stringify<S extends Schema>(schema: S): (value: Infer<S>) => string {
   const buf = createBuffer();
   emitRef(buf, "_esc", escapeJsonString);
   emitRef(buf, "_num", numberToJson);
+  emitRef(buf, "_js", JSON.stringify);
+  emitRef(buf, "_ix", stringifyCombinator);
 
   emit(buf, "return function stringify(v) {");
   buf.indent++;
@@ -146,9 +154,291 @@ function walkStringify(buf: CodeBuffer, schema: Schema, accessor: string): strin
       return `(${accessor} === undefined ? "null" : ${walkStringify(buf, schema.meta.inner, accessor)})`;
     case "nullable":
       return `(${accessor} === null ? "null" : ${walkStringify(buf, schema.meta.inner, accessor)})`;
+    case "unknown":
+    case "not":
+      // Nothing is declared about the value — it is serialized as-is
+      // (undefined outside an object field emits null, like optional(T))
+      return `(${accessor} === undefined ? "null" : _js(${accessor}))`;
+    case "allOf": {
+      const merged = mergeAllOf(schema);
+      if (merged !== null) return walkStringify(buf, merged, accessor);
+      return `_ix(${emitRef(buf, freshVar(buf), schema)}, ${accessor})`;
+    }
+    case "conditional":
+      // The applicable shapes depend on the value: resolved per call
+      return `_ix(${emitRef(buf, freshVar(buf), schema)}, ${accessor})`;
     default:
       unreachable(schema);
   }
+}
+
+// ---------------------------------------------------------------------------
+// allOf / conditional: shapes resolved against the value
+// ---------------------------------------------------------------------------
+
+/**
+ * Compile-time shape of an allOf whose shapes do not depend on the value
+ * (nested allOf flattened, `unknown` / `not` dropped, `optional` unwrapped):
+ * the single shape, or one object declaring every object variant's keys, each
+ * the allOf of its declarations. Null when a conditional, union, nullable or
+ * a mix of kinds is involved — those are resolved per call (`_ix`).
+ */
+function mergeAllOf(schema: Schema & { readonly kind: "allOf" }): Schema | null {
+  const shapes: Schema[] = [];
+  const guarded: (Schema & { readonly kind: "conditional" })[] = [];
+  if (!collectStaticShapes(schema, shapes, guarded)) return null;
+  // A conditional on a bare type guard (what untyped JSON Schema keyword
+  // groups lower to) is decided once another variant fixes the type
+  while (guarded.length > 0) {
+    const known = shapeType(shapes);
+    const cond = guarded.pop()!;
+    const guard = guardType(cond.meta.if);
+    if (known === null || guard === null) return null;
+    const branch = guard === known ? cond.meta.then : cond.meta.else;
+    if (!collectStaticShapes(branch, shapes, guarded)) return null;
+  }
+  if (shapes.length === 0) return null;
+  let merged: Schema;
+  if (shapes.length === 1) merged = shapes[0];
+  else {
+    const decls: Record<string, Schema[]> = Object.create(null);
+    const keys: string[] = [];
+    for (let i = 0; i < shapes.length; i++) {
+      const shape = shapes[i];
+      if (shape.kind !== "object") return null;
+      for (const k of Object.keys(shape.meta.properties)) {
+        if (decls[k] === undefined) {
+          decls[k] = [];
+          keys.push(k);
+        }
+        decls[k].push(shape.meta.properties[k]);
+      }
+    }
+    const props: Record<string, Schema> = {};
+    for (let i = 0; i < keys.length; i++) {
+      const list = decls[keys[i]];
+      // defineProperty keeps a "__proto__" key as data
+      Object.defineProperty(props, keys[i], {
+        value: list.length === 1 ? list[0] : allOf(...list),
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+    }
+    merged = object(props, { additionalProperties: true });
+  }
+  // Undefined outside an object field still emits null, like optional(T)
+  return propertyMayBeAbsent(schema) ? optional(merged) : merged;
+}
+
+function collectStaticShapes(
+  schema: Schema,
+  out: Schema[],
+  guarded: (Schema & { readonly kind: "conditional" })[],
+): boolean {
+  switch (schema.kind) {
+    case "allOf": {
+      const variants = schema.meta.variants as readonly Schema[];
+      for (let i = 0; i < variants.length; i++) {
+        if (!collectStaticShapes(variants[i], out, guarded)) return false;
+      }
+      return true;
+    }
+    case "optional":
+      return collectStaticShapes(schema.meta.inner, out, guarded);
+    case "unknown":
+    case "not":
+      return true;
+    case "conditional":
+      guarded.push(schema);
+      return true;
+    case "union":
+    case "nullable":
+      return false;
+    default:
+      out.push(schema);
+      return true;
+  }
+}
+
+/** "object" / "array" when a collected shape fixes the value's type. */
+function shapeType(shapes: readonly Schema[]): "object" | "array" | null {
+  for (let i = 0; i < shapes.length; i++) {
+    const kind = shapes[i].kind;
+    if (kind === "object" || kind === "record") return "object";
+    if (kind === "array" || kind === "tuple") return "array";
+  }
+  return null;
+}
+
+/**
+ * The JSON type a schema accepts every value of and nothing else, if any.
+ * (No "array": `array(unknown())` rejects an element that is undefined, which
+ * a tuple with an optional slot accepts.)
+ */
+function guardType(guard: Schema): string | null {
+  switch (guard.kind) {
+    case "object":
+      return guard.meta.additionalProperties === true &&
+        Object.keys(guard.meta.properties).length === 0
+        ? "object"
+        : null;
+    case "string":
+      return guard.meta === undefined ? "string" : null;
+    case "number":
+      return guard.meta === undefined ? "number" : null;
+    default:
+      return null;
+  }
+}
+
+/** Compiled `stringify` of a plain shape, by identity. */
+const shapeStringifiers = new WeakMap<Schema, (v: unknown) => string>();
+// Cast: Infer<> over the base `Schema` union is too deep for tsc
+const validateAny = validate as unknown as (s: Schema) => (x: unknown) => Result<unknown, unknown>;
+const stringifyAny = stringify as unknown as (s: Schema) => (v: unknown) => string;
+
+/** Compiled acceptance check of a schema, by identity. */
+const acceptors = new WeakMap<Schema, (v: unknown) => boolean>();
+
+function accepts(schema: Schema, v: unknown): boolean {
+  let check = acceptors.get(schema);
+  if (check === undefined) {
+    const validator = validateAny(schema);
+    check = (x) => validator(x)[0];
+    acceptors.set(schema, check);
+  }
+  return check(v);
+}
+
+function shapeStringify(schema: Schema, v: unknown): string {
+  let str = shapeStringifiers.get(schema);
+  if (str === undefined) {
+    str = stringifyAny(schema);
+    shapeStringifiers.set(schema, str);
+  }
+  return str(v);
+}
+
+/**
+ * Push the shapes that describe `v` under `schema`: allOf contributes every
+ * variant, a conditional the branch its `if` selects, a union the first
+ * variant that accepts `v` (like the union serializer). `unknown` / `not`
+ * declare nothing and contribute no shape.
+ */
+function collectShapes(schema: Schema, v: unknown, out: Schema[]): void {
+  switch (schema.kind) {
+    case "allOf": {
+      const variants = schema.meta.variants as readonly Schema[];
+      for (let i = 0; i < variants.length; i++) collectShapes(variants[i], v, out);
+      return;
+    }
+    case "conditional":
+      collectShapes(accepts(schema.meta.if, v) ? schema.meta.then : schema.meta.else, v, out);
+      return;
+    case "union": {
+      const variants = schema.meta.variants as readonly Schema[];
+      for (let i = 0; i < variants.length; i++) {
+        if (accepts(variants[i], v)) {
+          collectShapes(variants[i], v, out);
+          return;
+        }
+      }
+      throw new TypeError("value does not match any union variant");
+    }
+    case "optional":
+      if (v !== undefined) collectShapes(schema.meta.inner, v, out);
+      return;
+    case "nullable":
+      if (v !== null) collectShapes(schema.meta.inner, v, out);
+      return;
+    case "unknown":
+    case "not":
+      return;
+    default:
+      out.push(schema);
+  }
+}
+
+/** `stringify` of an allOf / conditional node (`_ix` in generated code). */
+function stringifyCombinator(schema: Schema, v: unknown): string {
+  return stringifyShapes([schema], v);
+}
+
+/**
+ * Serialize `v`, valid for every schema in `schemas`, emitting exactly the
+ * keys the applicable shapes declare: the union of their object properties,
+ * or every own key when a record applies. A single shape uses its compiled
+ * serializer; with no shape (only `unknown` / `not`) the value is emitted
+ * as-is.
+ */
+function stringifyShapes(schemas: readonly Schema[], v: unknown): string {
+  if (v === undefined) return "null";
+  if (typeof v !== "object" || v === null) {
+    // Primitive output depends only on the value, not on the shapes
+    if (typeof v === "string") return escapeJsonString(v);
+    return typeof v === "number" ? numberToJson(v) : String(v);
+  }
+  const shapes: Schema[] = [];
+  for (let i = 0; i < schemas.length; i++) collectShapes(schemas[i], v, shapes);
+  if (shapes.length === 1) return shapeStringify(shapes[0], v);
+  if (shapes.length === 0) return JSON.stringify(v);
+  return Array.isArray(v) ? stringifyArrayShapes(shapes, v) : stringifyObjectShapes(shapes, v);
+}
+
+function stringifyArrayShapes(shapes: readonly Schema[], a: readonly unknown[]): string {
+  let s = "[";
+  for (let i = 0; i < a.length; i++) {
+    const per: Schema[] = [];
+    for (let j = 0; j < shapes.length; j++) {
+      const shape = shapes[j];
+      if (shape.kind === "array") per.push(shape.meta.items);
+      else if (shape.kind === "tuple" && i < shape.meta.items.length) {
+        per.push(shape.meta.items[i]);
+      }
+    }
+    s += (i === 0 ? "" : ",") + stringifyShapes(per, a[i]);
+  }
+  return s + "]";
+}
+
+function stringifyObjectShapes(shapes: readonly Schema[], o: object): string {
+  const keys: string[] = [];
+  const seen = new Set<string>();
+  let open = false;
+  for (let j = 0; j < shapes.length; j++) {
+    const shape = shapes[j];
+    if (shape.kind === "record") open = true;
+    else if (shape.kind === "object") {
+      for (const k of Object.keys(shape.meta.properties)) {
+        if (!seen.has(k)) {
+          seen.add(k);
+          keys.push(k);
+        }
+      }
+    }
+  }
+  if (open) {
+    // A record applies: every own enumerable key belongs to the value
+    for (const k in o) if (Object.hasOwn(o, k) && !seen.has(k)) keys.push(k);
+  }
+  let s = "{";
+  for (let i = 0; i < keys.length; i++) {
+    const k = keys[i];
+    // Own reads only: `toString` must not pick up Object.prototype's member
+    const x = Object.hasOwn(o, k) ? (o as Record<string, unknown>)[k] : undefined;
+    if (x === undefined) continue;
+    const per: Schema[] = [];
+    for (let j = 0; j < shapes.length; j++) {
+      const shape = shapes[j];
+      if (shape.kind === "record") per.push(shape.meta.values);
+      else if (shape.kind === "object" && Object.hasOwn(shape.meta.properties, k)) {
+        per.push(shape.meta.properties[k]);
+      }
+    }
+    s += (s === "{" ? "" : ",") + escapeJsonString(k) + ":" + stringifyShapes(per, x);
+  }
+  return s + "}";
 }
 
 function walkStringifyObject(
@@ -159,7 +449,7 @@ function walkStringifyObject(
   const keys = Object.keys(props);
   if (keys.length === 0) return `"{}"`;
 
-  const hasOptional = keys.some((k) => props[k].kind === "optional");
+  const hasOptional = keys.some((k) => propertyMayBeAbsent(props[k]));
 
   // All-required path: return a pure expression — no helper function needed.
   // This is critical for inlining into array loops: the expression is spliced
@@ -194,6 +484,9 @@ function walkStringifyObject(
         expr: walkStringify(buf, child.meta.inner, childAccessor),
         optional: true,
       });
+    } else if (propertyMayBeAbsent(child)) {
+      // allOf / conditional accepting undefined: omit the key when absent
+      childExprs.push({ key, expr: walkStringify(buf, child, childAccessor), optional: true });
     } else {
       childExprs.push({ key, expr: walkStringify(buf, child, childAccessor), optional: false });
     }
@@ -390,6 +683,12 @@ function typeTags(schema: Schema): Tag[] {
       return [...typeTags(schema.meta.inner), "undefined"];
     case "nullable":
       return [...typeTags(schema.meta.inner), "null"];
+    case "unknown":
+    case "allOf":
+    case "not":
+    case "conditional":
+      // Conservative: may hold any JSON type, so dispatch by full validator
+      return ["string", "number", "boolean", "null", "array", "object"];
     default:
       unreachable(schema);
   }

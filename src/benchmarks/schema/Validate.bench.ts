@@ -117,6 +117,26 @@ bench("Schema.validate — discriminated union (circle)", () =>
 bench("Schema.validate — discriminated union (rect)", () =>
   compiledShape({ type: "rect", w: 3, h: 4 }));
 
+// Formats — RegExp tester (uuid) vs predicate testers (date, email, uri)
+const uuidValidator = validate(S.string({ format: "uuid" }));
+const dateValidator = validate(S.string({ format: "date" }));
+const dateTimeValidator = validate(S.string({ format: "date-time" }));
+const emailValidator = validate(S.string({ format: "email" }));
+const uriValidator = validate(S.string({ format: "uri" }));
+
+bench("Schema.validate — format uuid", () => uuidValidator("550e8400-e29b-41d4-a716-446655440000"));
+bench("Schema.validate — format date", () => dateValidator("2024-02-29"));
+bench("Schema.validate — format date-time", () => dateTimeValidator("2024-02-29T12:30:00.123Z"));
+bench("Schema.validate — format email", () => emailValidator("alice.smith@example.com"));
+bench("Schema.validate — format uri", () => uriValidator("https://example.com/a/b?q=1#frag"));
+
+// allErrors — collect-all variant of the same user schema
+const allErrorsValidator = validate(userSchema, { allErrors: true });
+const manyBadUser = { id: "x", name: 1, email: 2, active: "no", tags: [1, 2], extra: 0 };
+
+bench("Schema.validate allErrors — valid user (5 fields)", () => allErrorsValidator(validUser));
+bench("Schema.validate allErrors — 7 errors", () => allErrorsValidator(manyBadUser));
+
 await run();
 
 export {};

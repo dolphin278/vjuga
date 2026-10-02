@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import * as S from "../../../schema/Schema.js";
 import { validate, type SchemaError } from "../../../schema/Validate.js";
+import { formatTester } from "../../../schema/Formats.js";
+import { deepStrictEqual } from "node:assert/strict";
 import type { Result } from "../../../Result.js";
 import * as Arb from "../../../Arbitrary.js";
 import * as Prop from "../../../Property.js";
@@ -225,11 +227,6 @@ test("number validator rejects non-finite numbers", () => {
 // semantics. Objects use OWN properties only; "extra key" means an own
 // enumerable string key (Object.keys) not declared in the schema; equality for
 // literal/enum is SameValueZero.
-const REF_FORMATS: Record<string, RegExp> = {
-  email: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
-  uuid: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
-};
-
 function sameValueZero(a: unknown, b: unknown): boolean {
   return a === b || (a !== a && b !== b);
 }
@@ -258,9 +255,10 @@ function refValidate(s: S.Schema, v: unknown): boolean {
       if (m.minLength !== undefined && v.length < m.minLength) return false;
       if (m.maxLength !== undefined && v.length > m.maxLength) return false;
       if (m.pattern !== undefined && !new RegExp(m.pattern).test(v)) return false;
-      if (m.format !== undefined && Object.hasOwn(REF_FORMATS, m.format)) {
-        if (!REF_FORMATS[m.format].test(v)) return false;
-      }
+      // Format grammars are checked against the test suite elsewhere; here
+      // the oracle only pins how the emitter wires them in (unknown = skip).
+      const tester = m.format === undefined ? undefined : formatTester(m.format);
+      if (tester !== undefined && !tester.test(v)) return false;
       return true;
     }
     case "number":
@@ -300,12 +298,22 @@ function refValidate(s: S.Schema, v: unknown): boolean {
     }
     case "record":
       return isPlainObjectLike(v) && Object.keys(v).every((k) => refValidate(s.meta.values, v[k]));
-    case "union":
-      return (s.meta.variants as S.Schema[]).some((variant) => refValidate(variant, v));
+    case "union": {
+      const matches = (s.meta.variants as S.Schema[]).filter((variant) => refValidate(variant, v));
+      return s.meta.exclusive === true ? matches.length === 1 : matches.length > 0;
+    }
     case "optional":
       return v === undefined || refValidate(s.meta.inner, v);
     case "nullable":
       return v === null || refValidate(s.meta.inner, v);
+    case "unknown":
+      return v !== undefined;
+    case "allOf":
+      return (s.meta.variants as S.Schema[]).every((variant) => refValidate(variant, v));
+    case "not":
+      return v !== undefined && !refValidate(s.meta.inner, v);
+    case "conditional":
+      return refValidate(s.meta.if, v) ? refValidate(s.meta.then, v) : refValidate(s.meta.else, v);
   }
 }
 
@@ -360,7 +368,7 @@ const ENUM_POOL: readonly (string | number)[] = [
   -Infinity,
 ];
 const PATTERNS = ["^a", "b$", '"', "^\\d+$", "\\n"];
-const FORMATS = ["email", "uuid", "date", "constructor"];
+const FORMATS = ["email", "uuid", "date", "date-time", "hostname", "constructor"];
 const VALUE_POOL: readonly unknown[] = [
   undefined,
   null,
@@ -384,6 +392,8 @@ const VALUE_POOL: readonly unknown[] = [
   '"',
   "a@b.co",
   "550e8400-e29b-41d4-a716-446655440000",
+  "2024-02-29",
+  "2024-02-29T12:00:00Z",
   "constructor",
   true,
   false,
@@ -403,7 +413,7 @@ function genNumericMeta(pick: Arb.GenPick): S.NumberConstraints | undefined {
 
 function genSchema(pick: Arb.GenPick, depth: number): S.Schema {
   const leafOnly = depth <= 0;
-  switch (choose(pick, leafOnly ? 7 : 15)) {
+  switch (choose(pick, leafOnly ? 7 : 20)) {
     case 0: {
       if (choose(pick, 2) === 0) return S.string();
       const m: Record<string, unknown> = {};
@@ -472,8 +482,35 @@ function genSchema(pick: Arb.GenPick, depth: number): S.Schema {
     }
     case 13:
       return S.optional(genSchema(pick, depth - 1));
-    default:
+    case 14:
       return S.nullable(genSchema(pick, depth - 1));
+    case 15: {
+      if (choose(pick, 3) === 0) {
+        // Tagged oneOf: shared literal key "t" (switch fast path when distinct)
+        const n = 2 + choose(pick, 2);
+        return S.oneOf(
+          ...Array.from({ length: n }, () =>
+            S.object(
+              { t: S.literal(oneOfValues(pick, LITERALS)), a: genSchema(pick, depth - 1) },
+              { additionalProperties: choose(pick, 3) === 0 },
+            ),
+          ),
+        );
+      }
+      return S.oneOf(...Array.from({ length: choose(pick, 4) }, () => genSchema(pick, depth - 1)));
+    }
+    case 16:
+      return S.allOf(...Array.from({ length: choose(pick, 4) }, () => genSchema(pick, depth - 1)));
+    case 17:
+      return S.not(genSchema(pick, depth - 1));
+    case 18:
+      return S.conditional(
+        genSchema(pick, depth - 1),
+        choose(pick, 4) === 0 ? undefined : genSchema(pick, depth - 1),
+        choose(pick, 4) === 0 ? undefined : genSchema(pick, depth - 1),
+      );
+    default:
+      return S.unknown();
   }
 }
 
@@ -544,6 +581,14 @@ function genValue(pick: Arb.GenPick, s: S.Schema, depth: number): unknown {
     case "optional":
     case "nullable":
       return choose(pick, 4) === 0 ? undefined : genValue(pick, s.meta.inner, depth);
+    case "allOf": {
+      const vs = s.meta.variants as S.Schema[];
+      return vs.length === 0
+        ? oneOfValues(pick, VALUE_POOL)
+        : genValue(pick, vs[choose(pick, vs.length)], depth);
+    }
+    case "conditional":
+      return genValue(pick, choose(pick, 2) === 0 ? s.meta.then : s.meta.if, depth);
     default:
       return oneOfValues(pick, VALUE_POOL);
   }
@@ -567,6 +612,34 @@ test("compiled validator agrees with the reference interpreter", () => {
         if (got[0] !== refValidate(schema, value)) return false;
         if (!got[0] && typeof got[1].path !== "string") return false;
         if (got[0] && !Object.is(got[1], value)) return false;
+      }
+      return true;
+    },
+    { numRuns: NUM_RUNS },
+  );
+});
+
+test("allErrors mode: same verdict as first-error mode, errors[0] is its error", () => {
+  Prop.assert(
+    schemaWithValues,
+    ({ schema, values }) => {
+      // Cast: Infer<> over the base `Schema` union is "excessively deep" for tsc
+      const s = schema as S.StringSchema;
+      const first = validate(s) as (x: unknown) => Result<unknown, SchemaError>;
+      const all = validate(s, { allErrors: true }) as (
+        x: unknown,
+      ) => Result<unknown, SchemaError[]>;
+      for (const value of values) {
+        const a = first(value);
+        const b = all(value);
+        if (a[0] !== b[0]) return false;
+        if (a[0]) {
+          if (!Object.is(b[1], value)) return false;
+          continue;
+        }
+        const errors = b[1] as SchemaError[];
+        if (!Array.isArray(errors) || errors.length === 0) return false;
+        deepStrictEqual(errors[0], a[1]);
       }
       return true;
     },

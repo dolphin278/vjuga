@@ -8,6 +8,15 @@ import * as Prop from "../../Property.js";
 // JSON value generator — recursive via letrec
 // ---------------------------------------------------------------------------
 
+// Node 26.10 (V8) JSON.parse bug, pure native: after parsing an object whose
+// key is a single backslash, every later object key written as one escape
+// sequence (newline, quote, \u0041, ...) in a one-key object comes back as a
+// single backslash on subsequent parses. Repro (JS source):
+//   JSON.parse('{"\\\\":1}'); Object.keys(JSON.parse('{"\\n":1}')); // ["\\"]
+// Bun is not affected. Keep that key out of generated objects so these
+// properties test vjuga rather than the engine bug.
+const objectKey = Arb.filter(Arb.string({ minLength: 1, maxLength: 4 }), (k) => k !== "\\");
+
 const { jsonValue } = Arb.letrec((tie) => ({
   jsonValue: Arb.oneOf(
     Arb.map(Arb.integer(-1000, 1000), (n) => n as unknown),
@@ -15,10 +24,7 @@ const { jsonValue } = Arb.letrec((tie) => ({
     Arb.map(Arb.boolean(), (b) => b as unknown),
     Arb.constant(null as unknown),
     Arb.map(Arb.array(tie("jsonValue"), { maxLength: 3 }), (a) => a as unknown),
-    Arb.map(
-      Arb.dictionary(Arb.string({ minLength: 1, maxLength: 4 }), tie("jsonValue"), { maxSize: 3 }),
-      (d) => d as unknown,
-    ),
+    Arb.map(Arb.dictionary(objectKey, tie("jsonValue"), { maxSize: 3 }), (d) => d as unknown),
   ),
 }));
 

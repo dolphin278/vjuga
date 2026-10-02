@@ -228,3 +228,36 @@ test("random schemas round-trip through schema/JSON and agree with native JSON",
     { numRuns: NUM_RUNS },
   );
 });
+
+// allOf(s, s) resolves its shapes per value (no single compiled shape): it
+// must serialize every valid value exactly as the compiled `s` does.
+const dupCache = new Map<
+  number,
+  { schema: S.Schema; a: (v: unknown) => string; b: (v: unknown) => string }
+>();
+
+test("stringify of allOf(s, s) decodes to the same JSON as stringify of s", () => {
+  Prop.assert(
+    Arb.tuple(Arb.integer(0, 0x7fffffff), Arb.string({ maxLength: 12 })),
+    ([n, s]) => {
+      const seed = G.hashSeed(n + ":" + s);
+      const schemaSeed = seed % SCHEMA_SEEDS;
+      let c = dupCache.get(schemaSeed);
+      if (c === undefined) {
+        const { schema } = G.genSchema(G.rng(schemaSeed ^ 0x51ed27), G.DEFAULT_CFG);
+        c = { schema, a: jsonStringify(schema), b: jsonStringify(S.allOf(schema, schema)) };
+        dupCache.set(schemaSeed, c);
+      }
+      const value = G.genValue(G.rng(seed), c.schema);
+      const want = c.a(value);
+      const got = c.b(value);
+      assert.deepStrictEqual(
+        JSON.parse(got),
+        JSON.parse(want),
+        G.describeCase(seed, c.schema, value, got),
+      );
+      return true;
+    },
+    { numRuns: NUM_RUNS },
+  );
+});

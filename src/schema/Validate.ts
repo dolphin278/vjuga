@@ -1,41 +1,40 @@
 /**
  * Validate — code-generated schema validators via `new Function`.
  *
- * `validate(schema)` compiles a schema into a single optimized function that
- * validates `unknown` values and returns `Result<T, SchemaError>`. Checks are
- * inlined — no closure chains, no per-field calls, no allocations on success.
+ * `validate(schema)` compiles a schema into one optimized function returning
+ * `Result<T, SchemaError>` (first error). Checks are inlined — no closure
+ * chains, no per-field calls, no allocations on success. `{ allErrors: true }`
+ * compiles a separate collect-all variant returning `Result<T, SchemaError[]>`.
  *
  * When to use: hot-path validation of external input (HTTP bodies, queue
- * payloads, config files). Compile once at module/init scope (~0.1ms); never
- * call `validate(schema)` per request.
+ * payloads, config files); `allErrors` for hand-edited input (YAML, forms)
+ * where every problem should surface in one run. Compile once at init scope.
  *
- * Internal design:
- *   `emitValidation` walks the schema tree and emits inline checks into a
- *   `CodeBuffer`, compiled via `new Function`. Each property / element is read
- *   once into a local; every schema-derived constant is emitted via
- *   `jsLiteral`, so untrusted schemas (`fromJsonSchema`) cannot inject code.
- *   `schema/JSON.parse` reuses the same emitter.
+ * Internal design: `emitValidation` walks the schema and emits inline checks
+ * into a `CodeBuffer`; every schema-derived constant goes through `jsLiteral`,
+ * so untrusted schemas cannot inject code. `schema/JSON.parse` reuses it.
  *
- * Semantics: objects are checked against OWN properties only, and reject
- * undeclared own enumerable keys unless built with `additionalProperties:
- * true`. Unions accept a value iff some variant fully validates it; tagged
- * unions dispatch via `switch`. Recursive (cyclic) schemas are unsupported.
+ * Semantics: OWN properties only; undeclared own keys fail unless
+ * `additionalProperties: true`. Unions need some variant to fully validate,
+ * `oneOf` exactly one; tagged unions dispatch via `switch`. `unknown` and
+ * `not` reject `undefined`. Formats: RFC 3339 `date-time` / `date` / `time`,
+ * `email`, `uri`, `uuid`, `ipv4`, `ipv6`, legacy `iso-datetime` (see
+ * `schema/Formats`); other names are annotation-only. allErrors: one error
+ * per failed type check (no descent), every failed constraint and extra key,
+ * a single error per untagged union / `oneOf` / `not` (a `conditional`'s
+ * chosen branch and a tagged union's variant collect normally);
+ * `errors[0]` is always the first-error result. Cyclic schemas unsupported.
  *
  * @example Compile once, validate many
  * ```ts
  * import * as S from "@dolphin278/vjuga/schema/Schema";
  * import { validate } from "@dolphin278/vjuga/schema/Validate";
- * const checkUser = validate(S.object({ id: S.integer(), name: S.string() }));
+ * const User = S.object({ id: S.integer(), born: S.string({ format: "date" }) });
+ * const checkUser = validate(User);
  * const [ok, value] = checkUser(input);
  * if (!ok) console.error(value.path, value.expected, value.received);
- * ```
- *
- * @example Discriminated union — `switch` on the shared literal key
- * ```ts
- * const checkEvent = validate(S.union(
- *   S.object({ type: S.literal("click"), x: S.number(), y: S.number() }),
- *   S.object({ type: S.literal("key"), code: S.string() }),
- * ));
+ * const [ok2, errors] = validate(User, { allErrors: true })({ id: "x", born: "?" });
+ * // errors: [{ path: "id", ... }, { path: "born", ... }]
  * ```
  */
 
@@ -44,6 +43,7 @@ import { ok, err } from "../Result.js";
 import type { Schema, Infer } from "./Schema.js";
 import { unreachable } from "../FunctionUtils.js";
 import { findDiscriminant } from "./Schema.js";
+import { formatTester, isKnownFormat } from "./Formats.js";
 import {
   type CodeBuffer,
   createBuffer,
@@ -122,6 +122,12 @@ export function emitStandardRefs(buf: CodeBuffer, okFn: unknown, errFn: unknown)
  * undeclared own keys unless built with `{ additionalProperties: true }`;
  * there is no "strip unknown keys" mode.
  *
+ * With `{ allErrors: true }` the validator returns `Result<Infer<S>,
+ * SchemaError[]>` listing every failure in check order (see the module docs
+ * for what is reported); `errors[0]` equals what the default validator
+ * returns, and success still allocates nothing. The default mode's generated
+ * code is unaffected by the option's existence.
+ *
  * Throws `SyntaxError` for an invalid `pattern` regex and `TypeError` if a
  * schema constraint/literal is not a primitive (malformed hand-built schema).
  *
@@ -130,22 +136,132 @@ export function emitStandardRefs(buf: CodeBuffer, okFn: unknown, errFn: unknown)
  * const check = validate(S.object({ id: S.integer() }));
  * check({ id: 1 });           // [true, { id: 1 }]
  * check({ id: 1, extra: 0 }); // [false, { path: "extra", ... }]
+ * const all = validate(S.object({ a: S.string(), b: S.number() }), { allErrors: true });
+ * all({ a: 1, b: "x", c: 0 }); // [false, [{ path: "a" }, { path: "b" }, { path: "c" }]] (abridged)
  * ```
  */
-export function validate<S extends Schema>(
+export function validate<S extends Schema, O extends ValidateOptions = {}>(
   schema: S,
-): (value: unknown) => Result<Infer<S>, SchemaError> {
+  options?: O,
+): (value: unknown) => Result<Infer<S>, ValidateError<O>> {
   const buf = createBuffer();
   emitStandardRefs(buf, ok, err);
 
   emit(buf, "return function validate(v) {");
   buf.indent++;
-  emitValidation(buf, schema, "v", '""');
-  emit(buf, "return _ok(v);");
+  if (options?.allErrors === true) {
+    // Collect mode: failures push onto a lazily allocated array and skip the
+    // rest of the failing value's checks (see CollectState).
+    (buf as CollectBuffer).collect = { label: "", nest: true };
+    emit(buf, "var _es = null;");
+    emitChild(buf, schema, "v", '""');
+    emit(buf, "return _es === null ? _ok(v) : _err(_es);");
+  } else {
+    emitValidation(buf, schema, "v", '""');
+    emit(buf, "return _ok(v);");
+  }
   buf.indent--;
   emit(buf, "}");
 
-  return compileFunction<(value: unknown) => Result<Infer<S>, SchemaError>>(buf);
+  return compileFunction<(value: unknown) => Result<Infer<S>, ValidateError<O>>>(buf);
+}
+
+/** Options for `validate`. */
+export interface ValidateOptions {
+  /**
+   * Collect every failure instead of stopping at the first: the validator
+   * returns `Result<T, SchemaError[]>`. Default `false` (first error only, the
+   * fastest path).
+   */
+  readonly allErrors?: boolean;
+}
+
+/**
+ * Error type of a validator compiled with options `O`: `SchemaError[]` when
+ * `O` has `allErrors: true`, `SchemaError | SchemaError[]` when that is only
+ * known at run time (`allErrors: boolean`), else `SchemaError`.
+ */
+export type ValidateError<O extends ValidateOptions> = O extends { readonly allErrors: true }
+  ? SchemaError[]
+  : O extends { readonly allErrors?: false | undefined }
+    ? SchemaError
+    : SchemaError | SchemaError[];
+
+// ---------------------------------------------------------------------------
+// Collect-all mode
+// ---------------------------------------------------------------------------
+
+/**
+ * Emission state of `validate(schema, { allErrors: true })`. Absent on every
+ * other buffer (default `validate`, boolean sub-validators, JSON / TOON
+ * parse), which therefore emit first-error code unchanged.
+ *
+ * A failure pushes its SchemaError onto `_es` and `break`s `label` — the
+ * block of the value being checked — so a value whose type check failed is
+ * never descended into (soft constraint failures record and continue).
+ * `nest` is true where child values (properties, elements, record values)
+ * get their own block and so report independently; inside the fallback
+ * variant of an untagged union or `oneOf` it is false, so the whole
+ * combinator reports a single error.
+ */
+interface CollectState {
+  label: string;
+  nest: boolean;
+}
+
+type CollectBuffer = CodeBuffer & { collect?: CollectState };
+
+function collectOf(buf: CodeBuffer): CollectState | undefined {
+  return (buf as CollectBuffer).collect;
+}
+
+/**
+ * Statement reporting a failure: `return _err(...)` in first-error mode,
+ * push + `break` in collect mode. `label` is a JS expression.
+ */
+function failStmt(
+  buf: CodeBuffer,
+  pathExpr: string,
+  label: string,
+  received: string,
+  soft = false,
+): string {
+  const e = `_me(${pathExpr}, ${label}, ${received})`;
+  const c = collectOf(buf);
+  if (c === undefined) return `return _err(${e});`;
+  // Soft (collect + nest): record and keep checking the same value
+  if (soft && c.nest) return `(_es || (_es = [])).push(${e});`;
+  return `{ (_es || (_es = [])).push(${e}); break ${c.label}; }`;
+}
+
+/** Validate a child value; in collect (nest) mode inside its own labeled block. */
+function emitChild(buf: CodeBuffer, schema: Schema, accessor: string, pathExpr: string): void {
+  const c = collectOf(buf);
+  if (c === undefined || !c.nest) {
+    emitValidation(buf, schema, accessor, pathExpr);
+    return;
+  }
+  const outer = c.label;
+  c.label = "c" + buf.varCounter++;
+  emit(buf, `${c.label}: {`);
+  buf.indent++;
+  emitValidation(buf, schema, accessor, pathExpr);
+  buf.indent--;
+  emit(buf, "}");
+  c.label = outer;
+}
+
+/** Emit `schema` so that it reports at most one error (combinator branches). */
+function emitSingle(buf: CodeBuffer, schema: Schema, accessor: string, pathExpr: string): void {
+  const c = collectOf(buf);
+  if (c === undefined) {
+    emitValidation(buf, schema, accessor, pathExpr);
+    return;
+  }
+  const nest = c.nest;
+  c.nest = false;
+  emitValidation(buf, schema, accessor, pathExpr);
+  c.nest = nest;
 }
 
 // ---------------------------------------------------------------------------
@@ -155,8 +271,8 @@ export function validate<S extends Schema>(
 /**
  * Emit a validation check for any schema kind into the code buffer.
  *
- * Handles all 14 schema kinds with recursive descent into objects, arrays,
- * tuples, records, and unions. Used by both `validate()` and `JSON.parse()`.
+ * Handles all 18 schema kinds with recursive descent into objects, arrays,
+ * tuples, records, unions and the combinator kinds. Used by both `validate()` and `JSON.parse()`.
  * The buffer must have `emitStandardRefs` registered.
  *
  * `accessor` should be a variable name (it is referenced several times).
@@ -245,6 +361,40 @@ export function emitValidation(
       buf.indent--;
       emit(buf, "}");
       break;
+    case "unknown":
+      emitFail(buf, `${accessor} === undefined`, pathExpr, "any value", accessor);
+      break;
+    case "allOf": {
+      // Sequential inline checks: the first failing variant reports its error
+      const variants = schema.meta.variants as readonly Schema[];
+      for (let i = 0; i < variants.length; i++) {
+        emitValidation(buf, variants[i], accessor, pathExpr);
+      }
+      break;
+    }
+    case "not": {
+      const inner = booleanCheck(buf, schema.meta.inner, accessor);
+      emitFail(
+        buf,
+        `${accessor} === undefined || ${inner}`,
+        pathExpr,
+        "not(" + schema.meta.inner.kind + ")",
+        accessor,
+      );
+      break;
+    }
+    case "conditional":
+      emit(buf, `if (${booleanCheck(buf, schema.meta.if, accessor)}) {`);
+      buf.indent++;
+      // The branch is already chosen by `if`: it collects like any value
+      emitValidation(buf, schema.meta.then, accessor, pathExpr);
+      buf.indent--;
+      emit(buf, "} else {");
+      buf.indent++;
+      emitValidation(buf, schema.meta.else, accessor, pathExpr);
+      buf.indent--;
+      emit(buf, "}");
+      break;
     default:
       unreachable(schema);
   }
@@ -258,22 +408,28 @@ function emitFail(
   label: string,
   received: string,
 ): void {
-  emit(buf, `if (${cond}) return _err(_me(${pathExpr}, ${jsLiteral(label)}, ${received}));`);
+  emit(buf, `if (${cond}) ${failStmt(buf, pathExpr, jsLiteral(label), received)}`);
+}
+
+/**
+ * `emitFail` for a constraint checked after the value's type passed (lengths,
+ * bounds, pattern, format, item counts). Collect mode records it without
+ * leaving the value, so sibling constraints and elements still report;
+ * first-error code is identical to `emitFail`.
+ */
+function emitSoftFail(
+  buf: CodeBuffer,
+  cond: string,
+  pathExpr: string,
+  label: string,
+  received: string,
+): void {
+  emit(buf, `if (${cond}) ${failStmt(buf, pathExpr, jsLiteral(label), received, true)}`);
 }
 
 // ---------------------------------------------------------------------------
 // Per-kind validation emitters
 // ---------------------------------------------------------------------------
-
-// Pre-computed format validation regexes — compiled once at module load,
-// captured via emitRef per compiled validator that needs them. Looked up with
-// Object.hasOwn so names like "constructor" never resolve to prototype members.
-const FORMAT_PATTERNS: Readonly<Record<string, RegExp>> = {
-  email: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
-  uri: /^[a-zA-Z][a-zA-Z0-9+\-.]*:\/\/\S+$/,
-  uuid: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
-  "iso-datetime": /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/,
-};
 
 type StringMeta =
   | {
@@ -294,17 +450,17 @@ function emitStringCheck(
   if (meta === undefined) return;
   if (meta.minLength !== undefined) {
     const n = jsLiteral(meta.minLength);
-    emitFail(buf, `${accessor}.length < ${n}`, pathExpr, `string(minLength=${n})`, accessor);
+    emitSoftFail(buf, `${accessor}.length < ${n}`, pathExpr, `string(minLength=${n})`, accessor);
   }
   if (meta.maxLength !== undefined) {
     const n = jsLiteral(meta.maxLength);
-    emitFail(buf, `${accessor}.length > ${n}`, pathExpr, `string(maxLength=${n})`, accessor);
+    emitSoftFail(buf, `${accessor}.length > ${n}`, pathExpr, `string(maxLength=${n})`, accessor);
   }
   if (meta.pattern !== undefined) {
     const ref = freshVar(buf);
     emitRef(buf, ref, new RegExp(meta.pattern));
     // The pattern text only ever appears inside the jsLiteral-escaped label
-    emitFail(
+    emitSoftFail(
       buf,
       `!${ref}.test(${accessor})`,
       pathExpr,
@@ -312,11 +468,20 @@ function emitStringCheck(
       accessor,
     );
   }
-  // Unknown formats are annotation-only (JSON Schema 2020-12 default) and ignored
-  if (meta.format !== undefined && Object.hasOwn(FORMAT_PATTERNS, meta.format)) {
+  // Unknown formats are annotation-only (JSON Schema 2020-12 default) and ignored.
+  // Testers (schema/Formats) are created once at module load and captured per
+  // compiled validator; RegExp and wrapped predicates share the `.test` shape.
+  const tester = meta.format === undefined ? undefined : formatTester(meta.format);
+  if (tester !== undefined) {
     const ref = freshVar(buf);
-    emitRef(buf, ref, FORMAT_PATTERNS[meta.format]);
-    emitFail(buf, `!${ref}.test(${accessor})`, pathExpr, `string(format=${meta.format})`, accessor);
+    emitRef(buf, ref, tester);
+    emitSoftFail(
+      buf,
+      `!${ref}.test(${accessor})`,
+      pathExpr,
+      `string(format=${meta.format})`,
+      accessor,
+    );
   }
 }
 
@@ -324,8 +489,7 @@ function emitStringCheck(
 function stringHasRegex(meta: StringMeta): boolean {
   return (
     meta !== undefined &&
-    (meta.pattern !== undefined ||
-      (meta.format !== undefined && Object.hasOwn(FORMAT_PATTERNS, meta.format)))
+    (meta.pattern !== undefined || (meta.format !== undefined && isKnownFormat(meta.format)))
   );
 }
 
@@ -365,33 +529,33 @@ function emitNumericConstraints(
   if (meta === undefined) return;
   if (meta.minimum !== undefined) {
     const n = jsLiteral(meta.minimum);
-    emitFail(buf, `${accessor} < ${n}`, pathExpr, `${label}(>=${n})`, accessor);
+    emitSoftFail(buf, `${accessor} < ${n}`, pathExpr, `${label}(>=${n})`, accessor);
   }
   if (meta.maximum !== undefined) {
     const n = jsLiteral(meta.maximum);
-    emitFail(buf, `${accessor} > ${n}`, pathExpr, `${label}(<=${n})`, accessor);
+    emitSoftFail(buf, `${accessor} > ${n}`, pathExpr, `${label}(<=${n})`, accessor);
   }
   if (meta.exclusiveMinimum !== undefined) {
     const n = jsLiteral(meta.exclusiveMinimum);
-    emitFail(buf, `${accessor} <= ${n}`, pathExpr, `${label}(>${n})`, accessor);
+    emitSoftFail(buf, `${accessor} <= ${n}`, pathExpr, `${label}(>${n})`, accessor);
   }
   if (meta.exclusiveMaximum !== undefined) {
     const n = jsLiteral(meta.exclusiveMaximum);
-    emitFail(buf, `${accessor} >= ${n}`, pathExpr, `${label}(<${n})`, accessor);
+    emitSoftFail(buf, `${accessor} >= ${n}`, pathExpr, `${label}(<${n})`, accessor);
   }
   if (meta.multipleOf !== undefined) {
     const m = meta.multipleOf;
     const n = jsLiteral(m);
     if (Number.isInteger(m)) {
       // Integer multipleOf: exact modulo is safe
-      emitFail(buf, `${accessor} % ${n} !== 0`, pathExpr, `${label}(%${n})`, accessor);
+      emitSoftFail(buf, `${accessor} % ${n} !== 0`, pathExpr, `${label}(%${n})`, accessor);
     } else {
       // Non-integer multipleOf: floating-point % is unreliable (0.3 % 0.1 !== 0).
       // Check that the quotient is an integer up to a relative tolerance.
       const q = freshVar(buf);
       const d = freshVar(buf);
       emit(buf, `var ${q} = ${accessor} / ${n}, ${d} = ${q} - Math.round(${q});`);
-      emitFail(
+      emitSoftFail(
         buf,
         `${d} !== 0 && Math.abs(${d}) > Math.abs(${q}) * ${MULTIPLE_OF_RTOL}`,
         pathExpr,
@@ -418,7 +582,7 @@ function emitEnumCheck(
     values.length <= ENUM_INLINE_MAX
       ? values.map((v) => neExpr(accessor, v)).join(" && ")
       : `!${emitRef(buf, freshVar(buf), new Set(values))}.has(${accessor})`;
-  emit(buf, `if (${cond}) return _err(_me(${pathExpr}, ${labelRef}, ${accessor}));`);
+  emit(buf, `if (${cond}) ${failStmt(buf, pathExpr, labelRef, accessor)}`);
 }
 
 /** Emit the non-null, non-array object type check shared by object-like kinds. */
@@ -484,7 +648,14 @@ function acceptsUndefined(schema: Schema): boolean {
       return schema.meta.value === undefined;
     case "union":
       return (schema.meta.variants as readonly Schema[]).some(acceptsUndefined);
+    case "allOf":
+      return (schema.meta.variants as readonly Schema[]).every(acceptsUndefined);
+    case "conditional":
+      // Conservative (either branch): over-approximating only costs the
+      // extra-key fast path, under-approximating would let an extra key pass.
+      return acceptsUndefined(schema.meta.then) || acceptsUndefined(schema.meta.else);
     default:
+      // unknown / not reject undefined; leaf kinds never accept it
       return false;
   }
 }
@@ -512,9 +683,13 @@ function emitProperties(
     if (key === skip) continue;
     const child = properties[key];
     const local = emitOwnRead(buf, accessor, key, plainFlag);
-    emitValidation(buf, child, local, childPath(pathExpr, key));
-    if (acceptsUndefined(child)) present += ` + (${local} !== undefined ? 1 : 0)`;
-    else fixed++;
+    emitChild(buf, child, local, childPath(pathExpr, key));
+    // Collect mode keeps going past a missing required key, so a static count
+    // could hide an extra key; count every key by presence there instead.
+    const c = collectOf(buf);
+    if (acceptsUndefined(child) || (c !== undefined && c.nest)) {
+      present += ` + (${local} !== undefined ? 1 : 0)`;
+    } else fixed++;
   }
   return String(fixed) + present;
 }
@@ -551,11 +726,21 @@ function emitExtraKeyCheck(
   emit(buf, `if (${count} !== ${presentExpr}) {`);
   buf.indent++;
   const set = emitRef(buf, freshVar(buf), new Set(keys));
-  emit(buf, `${k} = _xk(${accessor}, ${set});`);
-  emit(
-    buf,
-    `if (${k} !== undefined) return _err(_me(${dynamicChildPath(pathExpr, k)}, "no additional properties", ${accessor}[${k}]));`,
-  );
+  const keyPath = dynamicChildPath(pathExpr, k);
+  const c = collectOf(buf);
+  if (c !== undefined && c.nest) {
+    // Collect mode: report every undeclared own key (same order as `_xk`)
+    emit(
+      buf,
+      `for (${k} in ${accessor}) if (!${set}.has(${k}) && _hasOwn(${accessor}, ${k})) (_es || (_es = [])).push(_me(${keyPath}, "no additional properties", ${accessor}[${k}]));`,
+    );
+  } else {
+    emit(buf, `${k} = _xk(${accessor}, ${set});`);
+    emit(
+      buf,
+      `if (${k} !== undefined) ${failStmt(buf, keyPath, '"no additional properties"', `${accessor}[${k}]`)}`,
+    );
+  }
   buf.indent--;
   emit(buf, "}");
 }
@@ -586,11 +771,11 @@ function emitArrayValidation(
   const { minItems, maxItems } = schema.meta;
   if (minItems !== undefined) {
     const n = jsLiteral(minItems);
-    emitFail(buf, `${accessor}.length < ${n}`, pathExpr, `array(minItems=${n})`, accessor);
+    emitSoftFail(buf, `${accessor}.length < ${n}`, pathExpr, `array(minItems=${n})`, accessor);
   }
   if (maxItems !== undefined) {
     const n = jsLiteral(maxItems);
-    emitFail(buf, `${accessor}.length > ${n}`, pathExpr, `array(maxItems=${n})`, accessor);
+    emitSoftFail(buf, `${accessor}.length > ${n}`, pathExpr, `array(maxItems=${n})`, accessor);
   }
   const idx = freshVar(buf);
   const len = freshVar(buf);
@@ -598,7 +783,7 @@ function emitArrayValidation(
   buf.indent++;
   const elem = freshVar(buf);
   emit(buf, `var ${elem} = ${accessor}[${idx}];`);
-  emitValidation(buf, schema.meta.items, elem, dynamicChildPath(pathExpr, idx));
+  emitChild(buf, schema.meta.items, elem, dynamicChildPath(pathExpr, idx));
   buf.indent--;
   emit(buf, "}");
 }
@@ -620,7 +805,7 @@ function emitTupleValidation(
   for (let i = 0; i < items.length; i++) {
     const elem = freshVar(buf);
     emit(buf, `var ${elem} = ${accessor}[${i}];`);
-    emitValidation(buf, items[i], elem, childPath(pathExpr, String(i)));
+    emitChild(buf, items[i], elem, childPath(pathExpr, String(i)));
   }
 }
 
@@ -638,7 +823,7 @@ function emitRecordValidation(
   emit(buf, `if (!_hasOwn(${accessor}, ${key})) continue;`);
   const elem = freshVar(buf);
   emit(buf, `var ${elem} = ${accessor}[${key}];`);
-  emitValidation(buf, schema.meta.values, elem, dynamicChildPath(pathExpr, key));
+  emitChild(buf, schema.meta.values, elem, dynamicChildPath(pathExpr, key));
   buf.indent--;
   emit(buf, "}");
 }
@@ -659,9 +844,15 @@ function emitUnionValidation(
 ): void {
   const variants = schema.meta.variants as readonly Schema[];
 
+  // Distinct literal tags make a discriminated union exactly-one by construction
   const discriminant = findDiscriminant(variants);
   if (discriminant !== null) {
     emitDiscriminatedValidation(buf, variants, discriminant, accessor, pathExpr);
+    return;
+  }
+
+  if (schema.meta.exclusive === true) {
+    emitExclusiveValidation(buf, variants, accessor, pathExpr);
     return;
   }
 
@@ -679,14 +870,69 @@ function emitUnionValidation(
     }
   }
   if (last >= 0) {
-    emitValidation(buf, variants[last], accessor, pathExpr);
+    emitSingle(buf, variants[last], accessor, pathExpr);
   } else {
     // Empty union matches nothing
-    emit(buf, `return _err(_me(${pathExpr}, "never", ${accessor}));`);
+    emit(buf, failStmt(buf, pathExpr, '"never"', accessor));
   }
   buf.indent--;
   emit(buf, "}");
 }
+
+/**
+ * oneOf (non-discriminated): count matching variants. Zero matches reports
+ * the last variant's own error; two or more report `oneOf(exactly one,
+ * matched N)`.
+ */
+function emitExclusiveValidation(
+  buf: CodeBuffer,
+  variants: readonly Schema[],
+  accessor: string,
+  pathExpr: string,
+): void {
+  if (variants.length === 0) {
+    emit(buf, failStmt(buf, pathExpr, '"never"', accessor));
+    return;
+  }
+  const count = freshVar(buf);
+  emit(buf, `var ${count} = 0;`);
+  for (let i = 0; i < variants.length; i++) {
+    emit(buf, `if (${booleanCheck(buf, variants[i], accessor)}) ${count}++;`);
+  }
+  if (booleanBuffers.has(buf)) {
+    // Boolean sub-validator: the error is discarded, so re-running the last
+    // variant for it would only double the work at every nesting level
+    emit(buf, `if (${count} !== 1) ${failStmt(buf, pathExpr, '"oneOf"', accessor)}`);
+    return;
+  }
+  emit(buf, `if (${count} === 0) {`);
+  buf.indent++;
+  emitSingle(buf, variants[variants.length - 1], accessor, pathExpr);
+  buf.indent--;
+  emit(buf, `}`);
+  const label = `"oneOf(exactly one, matched " + ${count} + ")"`;
+  emit(buf, `if (${count} > 1) ${failStmt(buf, pathExpr, label, accessor)}`);
+}
+
+/**
+ * JS expression true IFF `schema` accepts the value: the inline `exactCheck`
+ * when one exists, otherwise a call to a compiled boolean sub-validator.
+ */
+function booleanCheck(buf: CodeBuffer, schema: Schema, accessor: string): string {
+  const check = exactCheck(schema, accessor);
+  if (check !== null) return check;
+  return `${emitRef(buf, freshVar(buf), compileBooleanValidator(schema))}(${accessor})`;
+}
+
+/**
+ * Boolean sub-validators by schema identity. A node shared by several parents
+ * (a `$ref` target, a reused hand-built schema) compiles once, which keeps
+ * combinator-heavy schemas from recompiling the same subtree at every use.
+ */
+const booleanValidators = new WeakMap<Schema, (v: unknown) => boolean>();
+
+/** Buffers being emitted by `compileBooleanValidator` (errors are discarded). */
+const booleanBuffers = new WeakSet<CodeBuffer>();
 
 const returnTrue = (): boolean => true;
 const returnFalse = (): boolean => false;
@@ -699,7 +945,10 @@ const noError = (): undefined => undefined;
  * compile their own boolean sub-validators the same way.
  */
 function compileBooleanValidator(schema: Schema): (v: unknown) => boolean {
+  const cached = booleanValidators.get(schema);
+  if (cached !== undefined) return cached;
   const buf = createBuffer();
+  booleanBuffers.add(buf);
   emitStandardRefs(buf, returnTrue, returnFalse);
   emitRef(buf, "_me", noError);
   emit(buf, "return function variant(v) {");
@@ -708,7 +957,9 @@ function compileBooleanValidator(schema: Schema): (v: unknown) => boolean {
   emit(buf, "return _ok(v);");
   buf.indent--;
   emit(buf, "}");
-  return compileFunction<(v: unknown) => boolean>(buf);
+  const fn = compileFunction<(v: unknown) => boolean>(buf);
+  booleanValidators.set(schema, fn);
+  return fn;
 }
 
 function emitDiscriminatedValidation(
@@ -762,7 +1013,7 @@ function emitDiscriminatedValidation(
   }
   const discLabelRef = emitRef(buf, freshVar(buf), "one of: " + tagLabels.join(", "));
   const discPathExpr = childPath(pathExpr, discriminant);
-  emit(buf, `default: return _err(_me(${discPathExpr}, ${discLabelRef}, ${tag}));`);
+  emit(buf, `default: ${failStmt(buf, discPathExpr, discLabelRef, tag)}`);
   buf.indent--;
   emit(buf, "}");
 }
@@ -812,15 +1063,44 @@ function exactCheck(schema: Schema, accessor: string): string | null {
     }
     case "union": {
       const variants = schema.meta.variants as readonly Schema[];
-      const checks: string[] = [];
-      for (let i = 0; i < variants.length; i++) {
-        const c = exactCheck(variants[i], accessor);
-        if (c === null) return null;
-        checks.push(c);
+      const checks = exactChecks(variants, accessor);
+      if (checks === null) return null;
+      if (checks.length === 0) return "false";
+      if (schema.meta.exclusive === true) {
+        return `((${checks.map((c) => `(${c} ? 1 : 0)`).join(" + ")}) === 1)`;
       }
-      return checks.length > 0 ? `(${checks.join(" || ")})` : "false";
+      return `(${checks.join(" || ")})`;
+    }
+    case "allOf": {
+      const checks = exactChecks(schema.meta.variants as readonly Schema[], accessor);
+      if (checks === null) return null;
+      return checks.length > 0 ? `(${checks.join(" && ")})` : "true";
+    }
+    case "unknown":
+      return `(${accessor} !== undefined)`;
+    case "not": {
+      const inner = exactCheck(schema.meta.inner, accessor);
+      return inner === null ? null : `(${accessor} !== undefined && !${inner})`;
+    }
+    case "conditional": {
+      const checks = exactChecks(
+        [schema.meta.if, schema.meta.then, schema.meta.else] as readonly Schema[],
+        accessor,
+      );
+      return checks === null ? null : `(${checks[0]} ? ${checks[1]} : ${checks[2]})`;
     }
     default:
       return null;
   }
+}
+
+/** `exactCheck` of every schema, or null if any of them has none. */
+function exactChecks(schemas: readonly Schema[], accessor: string): string[] | null {
+  const checks: string[] = [];
+  for (let i = 0; i < schemas.length; i++) {
+    const c = exactCheck(schemas[i], accessor);
+    if (c === null) return null;
+    checks.push(c);
+  }
+  return checks;
 }

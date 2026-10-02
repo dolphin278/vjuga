@@ -17,10 +17,11 @@
  *   output (accepted on input). Keys are quoted only when needed to parse.
  *   Every shape `stringify` accepts round-trips through `parse`. Shapes TOON
  *   cannot encode unambiguously throw `TypeError("TOON: unsupported ...")` at
- *   compile time: `optional(compound)` outside an object field, and unions
- *   mixing compound variants unless they are discriminated object unions.
- *   Unions of primitives decode the token's type (quoted → string), then pick
- *   the first variant that validates. Parsing is strict (`strict` is a no-op):
+ *   compile time: `optional(compound)` outside an object field, unions
+ *   mixing compound variants unless they are discriminated object unions,
+ *   and `unknown` / `allOf` / `not` / `conditional`. Unions of primitives
+ *   decode the token's type (quoted → string), then pick the first variant
+ *   that validates (`oneOf`: exactly one must). Parsing is strict (`strict` is a no-op):
  *   exact item/row counts, JSON-grammar numbers, an empty cell means "absent".
  *   `__proto__` keys are dropped on parse; non-finite numbers emit `null`.
  *
@@ -385,7 +386,11 @@ function unwrap(schema: Schema): Unwrapped {
       s = s.meta.inner;
     } else if (s.kind === "union" && s.meta.variants.length === 1) {
       s = s.meta.variants[0];
-    } else if (s.kind === "union" && nonNullVariants(s.meta.variants).length === 1) {
+    } else if (
+      s.kind === "union" &&
+      s.meta.exclusive !== true &&
+      nonNullVariants(s.meta.variants).length === 1
+    ) {
       // union(T, null) ≡ nullable(T)
       nul = true;
       s = nonNullVariants(s.meta.variants)[0];
@@ -450,6 +455,11 @@ function assertSupported(schema: Schema, field: boolean): void {
       }
       for (const v of core.meta.variants as Schema[]) assertSupported(v, false);
       return;
+    case "unknown":
+    case "allOf":
+    case "not":
+    case "conditional":
+      throw unsupported(`${core.kind} schemas have no TOON layout`);
     default:
       // Primitive kinds were accepted by isPrimitive; anything else is invalid.
       return unreachable(core as never);
@@ -880,9 +890,14 @@ function emitCell(g: Gen, schema: Schema, raw: string, path: string, out: string
     default: {
       // Union of primitives: decode the token's own type, then the first
       // variant whose validator accepts it wins.
-      const variants = (core as Schema & { readonly kind: "union" }).meta.variants as Schema[];
+      const union = core as Schema & { readonly kind: "union" };
+      const variants = union.meta.variants as Schema[];
       emit(buf, `${out} = _dec(${raw});`);
-      const checks = variants.map((v) => `!${emitRef(buf, freshVar(buf), validate(v))}(${out})[0]`);
+      // oneOf needs the whole-union validator (exactly one variant matches)
+      const checks =
+        union.meta.exclusive === true
+          ? [`!${emitRef(buf, freshVar(buf), validate(union))}(${out})[0]`]
+          : variants.map((v) => `!${emitRef(buf, freshVar(buf), validate(v))}(${out})[0]`);
       emit(buf, `if (${checks.join(" && ") || "true"}) ${fail("union")}`);
       break;
     }

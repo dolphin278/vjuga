@@ -10,8 +10,8 @@ import * as Prop from "../../Property.js";
 
 // Node 26.10 (V8) JSON.parse bug, pure native: after parsing an object whose
 // key is a single backslash, every later object key written as one escape
-// sequence (newline, quote, \u0041, ...) comes back as a single backslash for
-// the rest of the process. Repro (JS source):
+// sequence (newline, quote, \u0041, ...) in a one-key object comes back as a
+// single backslash on subsequent parses. Repro (JS source):
 //   JSON.parse('{"\\\\":1}'); Object.keys(JSON.parse('{"\\n":1}')); // ["\\"]
 // Bun is not affected. Keep that key out of generated objects so these
 // properties test vjuga rather than the engine bug.

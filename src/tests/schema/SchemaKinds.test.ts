@@ -339,6 +339,59 @@ test("JSON.stringify allOf merges object shapes key by key", () => {
   const proto = S.allOf(S.object({ toString: S.optional(S.string()) }), S.object({ k: S.null_() }));
   assert.equal(str(proto)({ k: null }), '{"k":null}');
   assert.equal(str(proto)({ k: null, toString: "t" }), '{"toString":"t","k":null}');
+  // Same through per-call resolution (the conditional's guard is not bare)
+  const kGuard = S.object({ k: S.null_() }, { additionalProperties: true });
+  const dynamic = S.allOf(
+    S.object({ toString: S.optional(S.string()) }, { additionalProperties: true }),
+    S.conditional(kGuard, kGuard, S.unknown()),
+  );
+  assert.equal(str(dynamic)({ k: null }), '{"k":null}');
+  assert.equal(str(dynamic)({ k: null, toString: "t", z: 1 }), '{"toString":"t","k":null}');
+});
+
+test("JSON.stringify allOf: type-guard conditionals resolve at compile time", () => {
+  const anyObj = S.object({}, { additionalProperties: true });
+  const a = S.object({ a: S.string() }, { additionalProperties: true });
+  const b = S.object({ b: S.number() }, { additionalProperties: true });
+  const v = { a: "x", b: 1, c: 2 };
+  // Decided statically: the object variant rules out a string / number guard
+  // and satisfies a bare object guard
+  const cases: [S.Schema, string][] = [
+    [S.allOf(a, S.conditional(S.string(), S.unknown(), b)), '{"a":"x","b":1}'],
+    [S.allOf(a, S.conditional(S.number(), S.unknown(), b)), '{"a":"x","b":1}'],
+    [S.allOf(a, S.conditional(anyObj, b, S.unknown())), '{"a":"x","b":1}'],
+    // Not a bare type guard / branch depends on the value: resolved per call
+    [S.allOf(a, S.conditional(S.string({ minLength: 1 }), S.unknown(), b)), '{"a":"x","b":1}'],
+    [S.allOf(a, S.conditional(S.number({ minimum: 0 }), S.unknown(), b)), '{"a":"x","b":1}'],
+    [
+      S.allOf(a, S.conditional(S.object({ a: S.string() }, { additionalProperties: true }), b)),
+      '{"a":"x","b":1}',
+    ],
+    [S.allOf(a, S.conditional(anyObj, S.union(b, S.string()), S.unknown())), '{"a":"x","b":1}'],
+    [S.allOf(a, S.nullable(b)), '{"a":"x","b":1}'],
+  ];
+  for (const [schema, want] of cases) assert.equal(str(schema)(v), want);
+  // No variant fixes the type: per call
+  assert.equal(str(S.allOf(S.string(), S.conditional(anyObj, b, S.unknown())))("s"), '"s"');
+  // An array variant rules out an object guard
+  const arr = S.allOf(
+    S.array(S.object({ x: S.number() }, { additionalProperties: true })),
+    S.conditional(
+      anyObj,
+      S.unknown(),
+      S.array(S.object({ y: S.number() }, { additionalProperties: true })),
+    ),
+  );
+  assert.equal(str(arr)([{ x: 1, y: 2, z: 3 }]), '[{"x":1,"y":2}]');
+  // A "__proto__" property survives the merge as data
+  const proto = S.fromJsonSchema(
+    JSON.parse('{"type":"object","properties":{"__proto__":{"type":"string"}}}'),
+  )[1] as S.Schema;
+  const merged = S.allOf(proto, S.object({ k: S.null_() }, { additionalProperties: true }));
+  assert.equal(
+    str(merged)(JSON.parse('{"__proto__":"p","k":null,"z":0}')),
+    '{"__proto__":"p","k":null}',
+  );
 });
 
 test("JSON.stringify allOf with a record emits every own key", () => {
@@ -388,7 +441,7 @@ test("JSON.stringify conditional / union / optional / nullable inside allOf", ()
   assert.equal(str(s)({ t: "a", x: 1, y: 2 }), '{"t":"a","x":1}');
   assert.equal(str(s)({ t: "b", x: 1, y: 2 }), '{"t":"b","y":2}');
   assert.equal(str(s)("plain"), '"plain"');
-  assert.throws(() => str(s)(7), /does not match any union variant/);
+  assert.throws(() => str(s)({ t: 7 }), /does not match any union variant/);
   const opt = S.allOf(S.optional(S.nullable(S.object({ a: S.number() }))), S.unknown());
   assert.equal(str(opt)(undefined), "null");
   assert.equal(str(opt)(null), "null");

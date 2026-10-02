@@ -45,7 +45,7 @@ import { parse as jsonParse, escapeJsonString } from "../JSON.js";
 import type { Schema, Infer } from "./Schema.js";
 import type { SchemaError } from "./Validate.js";
 import { emitStandardRefs, emitValidation, validate } from "./Validate.js";
-import { findDiscriminant, propertyMayBeAbsent } from "./Schema.js";
+import { allOf, findDiscriminant, object, optional, propertyMayBeAbsent } from "./Schema.js";
 import { unreachable } from "../FunctionUtils.js";
 import {
   type CodeBuffer,
@@ -159,7 +159,11 @@ function walkStringify(buf: CodeBuffer, schema: Schema, accessor: string): strin
       // Nothing is declared about the value — it is serialized as-is
       // (undefined outside an object field emits null, like optional(T))
       return `(${accessor} === undefined ? "null" : _js(${accessor}))`;
-    case "allOf":
+    case "allOf": {
+      const merged = mergeAllOf(schema);
+      if (merged !== null) return walkStringify(buf, merged, accessor);
+      return `_ix(${emitRef(buf, freshVar(buf), schema)}, ${accessor})`;
+    }
     case "conditional":
       // The applicable shapes depend on the value: resolved per call
       return `_ix(${emitRef(buf, freshVar(buf), schema)}, ${accessor})`;
@@ -171,6 +175,122 @@ function walkStringify(buf: CodeBuffer, schema: Schema, accessor: string): strin
 // ---------------------------------------------------------------------------
 // allOf / conditional: shapes resolved against the value
 // ---------------------------------------------------------------------------
+
+/**
+ * Compile-time shape of an allOf whose shapes do not depend on the value
+ * (nested allOf flattened, `unknown` / `not` dropped, `optional` unwrapped):
+ * the single shape, or one object declaring every object variant's keys, each
+ * the allOf of its declarations. Null when a conditional, union, nullable or
+ * a mix of kinds is involved — those are resolved per call (`_ix`).
+ */
+function mergeAllOf(schema: Schema & { readonly kind: "allOf" }): Schema | null {
+  const shapes: Schema[] = [];
+  const guarded: (Schema & { readonly kind: "conditional" })[] = [];
+  if (!collectStaticShapes(schema, shapes, guarded)) return null;
+  // A conditional on a bare type guard (what untyped JSON Schema keyword
+  // groups lower to) is decided once another variant fixes the type
+  while (guarded.length > 0) {
+    const known = shapeType(shapes);
+    const cond = guarded.pop()!;
+    const guard = guardType(cond.meta.if);
+    if (known === null || guard === null) return null;
+    const branch = guard === known ? cond.meta.then : cond.meta.else;
+    if (!collectStaticShapes(branch, shapes, guarded)) return null;
+  }
+  if (shapes.length === 0) return null;
+  let merged: Schema;
+  if (shapes.length === 1) merged = shapes[0];
+  else {
+    const decls: Record<string, Schema[]> = Object.create(null);
+    const keys: string[] = [];
+    for (let i = 0; i < shapes.length; i++) {
+      const shape = shapes[i];
+      if (shape.kind !== "object") return null;
+      for (const k of Object.keys(shape.meta.properties)) {
+        if (decls[k] === undefined) {
+          decls[k] = [];
+          keys.push(k);
+        }
+        decls[k].push(shape.meta.properties[k]);
+      }
+    }
+    const props: Record<string, Schema> = {};
+    for (let i = 0; i < keys.length; i++) {
+      const list = decls[keys[i]];
+      // defineProperty keeps a "__proto__" key as data
+      Object.defineProperty(props, keys[i], {
+        value: list.length === 1 ? list[0] : allOf(...list),
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+    }
+    merged = object(props, { additionalProperties: true });
+  }
+  // Undefined outside an object field still emits null, like optional(T)
+  return propertyMayBeAbsent(schema) ? optional(merged) : merged;
+}
+
+function collectStaticShapes(
+  schema: Schema,
+  out: Schema[],
+  guarded: (Schema & { readonly kind: "conditional" })[],
+): boolean {
+  switch (schema.kind) {
+    case "allOf": {
+      const variants = schema.meta.variants as readonly Schema[];
+      for (let i = 0; i < variants.length; i++) {
+        if (!collectStaticShapes(variants[i], out, guarded)) return false;
+      }
+      return true;
+    }
+    case "optional":
+      return collectStaticShapes(schema.meta.inner, out, guarded);
+    case "unknown":
+    case "not":
+      return true;
+    case "conditional":
+      guarded.push(schema);
+      return true;
+    case "union":
+    case "nullable":
+      return false;
+    default:
+      out.push(schema);
+      return true;
+  }
+}
+
+/** "object" / "array" when a collected shape fixes the value's type. */
+function shapeType(shapes: readonly Schema[]): "object" | "array" | null {
+  for (let i = 0; i < shapes.length; i++) {
+    const kind = shapes[i].kind;
+    if (kind === "object" || kind === "record") return "object";
+    if (kind === "array" || kind === "tuple") return "array";
+  }
+  return null;
+}
+
+/**
+ * The JSON type a schema accepts every value of and nothing else, if any.
+ * (No "array": `array(unknown())` rejects an element that is undefined, which
+ * a tuple with an optional slot accepts.)
+ */
+function guardType(guard: Schema): string | null {
+  switch (guard.kind) {
+    case "object":
+      return guard.meta.additionalProperties === true &&
+        Object.keys(guard.meta.properties).length === 0
+        ? "object"
+        : null;
+    case "string":
+      return guard.meta === undefined ? "string" : null;
+    case "number":
+      return guard.meta === undefined ? "number" : null;
+    default:
+      return null;
+  }
+}
 
 /** Compiled `stringify` of a plain shape, by identity. */
 const shapeStringifiers = new WeakMap<Schema, (v: unknown) => string>();
@@ -254,14 +374,14 @@ function stringifyCombinator(schema: Schema, v: unknown): string {
  */
 function stringifyShapes(schemas: readonly Schema[], v: unknown): string {
   if (v === undefined) return "null";
-  const shapes: Schema[] = [];
-  for (let i = 0; i < schemas.length; i++) collectShapes(schemas[i], v, shapes);
-  if (shapes.length === 1) return shapeStringify(shapes[0], v);
   if (typeof v !== "object" || v === null) {
-    // Primitive output depends only on the value
+    // Primitive output depends only on the value, not on the shapes
     if (typeof v === "string") return escapeJsonString(v);
     return typeof v === "number" ? numberToJson(v) : String(v);
   }
+  const shapes: Schema[] = [];
+  for (let i = 0; i < schemas.length; i++) collectShapes(schemas[i], v, shapes);
+  if (shapes.length === 1) return shapeStringify(shapes[0], v);
   if (shapes.length === 0) return JSON.stringify(v);
   return Array.isArray(v) ? stringifyArrayShapes(shapes, v) : stringifyObjectShapes(shapes, v);
 }

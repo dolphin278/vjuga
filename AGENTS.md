@@ -67,7 +67,7 @@ Add that paragraph to your app's `AGENTS.md`. In a monorepo, resolve `node_modul
 
 | Goal | Module | Notes |
 |---|---|---|
-| Batch items but return per-item promises | `BatchExecutor` | Dataloader pattern. `make(batchFn, options?)` returns `(item) => Promise<R>`; options `"io"` or `{ schedule?, maxBatchSize?, maxInFlight? }` (chunks queue FIFO beyond `maxInFlight`). Batch fn must return exactly as many results as items; a mismatch or throw rejects every promise in that chunk. |
+| Batch items but return per-item promises | `BatchExecutor` | Dataloader pattern. `make(batchFn, options?)` returns `(item) => Promise<R>`; options `"io"` or `{ schedule?, maxBatchSize?, maxInFlight? }` (items queue FIFO beyond `maxInFlight` and coalesce into chunks of up to `maxBatchSize`). Batch fn must return exactly as many results as items; a mismatch or throw rejects every promise in that chunk. |
 | Batch fire-and-forget (logs, events, analytics) | `BufferizedFunction` | No per-item return. Schedule: `"macrotask"` (default) or `"io"`. |
 | Rate-limit continuous events (scroll, resize) | `TimedFunction` | `throttle(fn, ms)` — leading-edge; re-entrant calls dropped, a throwing `fn` still starts the window. |
 | Wait until activity stops (search input) | `TimedFunction` | `debounce(fn, ms)` — trailing-edge. |
@@ -277,7 +277,7 @@ test("encode/decode roundtrip", () => {
 5. **WorkerPool requires a separate worker file** — the worker module must be a
    standalone `.js`/`.ts` file exporting a `default` function.
 6. **BatchExecutor batch-function contract** — must return exactly as many
-   `PromiseSettledResult` items as it received; a length mismatch rejects that chunk.
+   `PromiseSettledResult` items as it received; a length mismatch rejects that invocation's chunk.
 7. **WeakCache values must be objects** — `string`, `number`, `boolean`, and other
    primitives are rejected by `WeakRef`.
 8. **`Immutable.make` is a type-cast only** — it does not freeze or seal the

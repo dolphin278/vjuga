@@ -30,8 +30,8 @@ interface Model {
   nextId: number;
   /** Calls made since the last tick (not yet collected). */
   buffer: Item[];
-  /** Chunks waiting for a free slot, FIFO. */
-  queue: Item[][];
+  /** Items waiting for a free slot, FIFO (chunked only at dispatch). */
+  queue: Item[];
   /** Invocations started and not yet settled (poisoned ones never count). */
   inflight: ModelInvocation[];
   /** Argument ids of every fn invocation, in start order. */
@@ -59,9 +59,10 @@ interface Real {
 // ---------------------------------------------------------------------------
 
 function dispatch(m: Model): void {
-  const K = m.cfg!.K;
+  const { B, K } = m.cfg!;
   while (m.inflight.length < K && m.queue.length > 0) {
-    const items = m.queue.shift()!;
+    // A free slot takes the next min(B, queued) items, coalescing ticks.
+    const items = m.queue.splice(0, Math.min(B, m.queue.length));
     const inv = m.invocations.length;
     m.invocations.push(items.map((x) => x.id));
     if (items.some((x) => x.poison)) {
@@ -74,12 +75,8 @@ function dispatch(m: Model): void {
 }
 
 function tickModel(m: Model): void {
-  const B = m.cfg!.B;
-  const items = m.buffer;
+  m.queue.push(...m.buffer);
   m.buffer = [];
-  for (let start = 0; start < items.length; start += B) {
-    m.queue.push(items.slice(start, start + B));
-  }
   dispatch(m);
 }
 

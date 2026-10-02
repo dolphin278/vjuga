@@ -219,7 +219,7 @@ test("maxBatchSize: a tick at or below the limit is one chunk", async () => {
   assert.deepEqual(sizes, [[1, 2, 3]]);
 });
 
-test("maxInFlight: queued chunks dispatch FIFO across ticks as invocations settle", async () => {
+test("maxInFlight: queued items dispatch FIFO across ticks as invocations settle", async () => {
   const calls: { args: number[]; d: Deferred<PromiseSettledResult<number>[]> }[] = [];
   const exec = make(
     (args: number[]) => {
@@ -233,25 +233,55 @@ test("maxInFlight: queued chunks dispatch FIFO across ticks as invocations settl
   await setImmediatePromise();
   const tick2 = [exec(4), exec(5)];
   await setImmediatePromise();
-  // Only the first chunk is in flight; [3] (tick 1) and [4,5] (tick 2) queue.
+  // Only the first chunk is in flight; 3 (tick 1) and 4, 5 (tick 2) queue.
   assert.deepEqual(
     calls.map((c) => c.args),
     [[1, 2]],
   );
   calls[0].d.resolve(echo([1, 2]));
   await setImmediatePromise();
+  // Queued items from two ticks coalesce into one full chunk, FIFO.
   assert.deepEqual(
     calls.map((c) => c.args),
-    [[1, 2], [3]],
+    [
+      [1, 2],
+      [3, 4],
+    ],
   );
-  calls[1].d.resolve(echo([3]));
+  calls[1].d.resolve(echo([3, 4]));
   await setImmediatePromise();
   assert.deepEqual(
     calls.map((c) => c.args),
-    [[1, 2], [3], [4, 5]],
+    [[1, 2], [3, 4], [5]],
   );
-  calls[2].d.resolve(echo([4, 5]));
+  calls[2].d.resolve(echo([5]));
   assert.deepEqual(await Promise.all([...tick1, ...tick2]), [1, 2, 3, 4, 5]);
+});
+
+test("maxInFlight: callers spread over many ticks still batch under backpressure", async () => {
+  const sizes: number[] = [];
+  const exec = make(
+    async (args: number[]) => {
+      sizes.push(args.length);
+      await setTimeoutPromise(20);
+      return echo(args);
+    },
+    { schedule: "io", maxBatchSize: 100, maxInFlight: 1 },
+  );
+  const promises: Promise<number>[] = [];
+  for (let i = 0; i < 50; i++) {
+    promises.push(exec(i));
+    await setImmediatePromise();
+  }
+  assert.deepEqual(
+    await Promise.all(promises),
+    Array.from({ length: 50 }, (_, i) => i),
+  );
+  assert.equal(
+    sizes.reduce((a, b) => a + b, 0),
+    50,
+  );
+  assert.ok(sizes.length <= 5, `expected coalesced chunks, got sizes ${String(sizes)}`);
 });
 
 test("failure of one chunk rejects only that chunk's items", async () => {

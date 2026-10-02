@@ -13,16 +13,18 @@
  *     (`setImmediate`, lower latency) — when a tick's items are collected.
  *   - `maxBatchSize`: split a tick's items into chunks of at most this size.
  *   - `maxInFlight`: at most this many concurrent `fn` invocations; further
- *     chunks queue in strict FIFO order across ticks and are dispatched as
- *     invocations settle (not at a tick boundary).
+ *     items queue in strict FIFO order and are dispatched as invocations
+ *     settle, coalescing items from several ticks into chunks of up to
+ *     `maxBatchSize` (so batching survives sustained backpressure).
  *   Both limits default to unbounded (`Infinity`); without limits the original
  *   single-batch-per-tick code path runs unchanged.
  *
  * Contract: `fn` must return exactly as many `PromiseSettledResult` items as it
  * received. On a length mismatch, or if `fn` throws or rejects, every promise of
- * that invocation (one chunk) rejects with the error; other chunks are
- * unaffected. The returned function never throws synchronously. An invocation
- * that never settles holds its `maxInFlight` slot forever.
+ * that invocation (one chunk, possibly spanning ticks) rejects with the error;
+ * other chunks are unaffected. The returned function never throws
+ * synchronously. An invocation that never settles holds its `maxInFlight` slot
+ * forever.
  *
  * @example
  * ```ts
@@ -75,7 +77,7 @@ interface Request<T, R> {
  * @example
  * ```ts
  * import { make } from "@dolphin278/vjuga/BatchExecutor";
- * // At most 2 concurrent calls of 50 ids each; extra chunks wait FIFO.
+ * // At most 2 concurrent calls of up to 50 ids each; extra ids wait FIFO.
  * const load = make(
  *   async (ids: number[]) => ids.map((id) => ({ status: "fulfilled" as const, value: id * 2 })),
  *   { schedule: "io", maxBatchSize: 50, maxInFlight: 2 },
@@ -190,11 +192,14 @@ async function runChunk<T, R>(
 }
 
 /**
- * Limited path: each tick's requests are split into chunks of at most
- * `maxBatchSize` and appended to one FIFO queue; at most `maxInFlight` chunks
- * run at once. A slot is released synchronously in the settlement callback of
- * its chunk, so "queue non-empty implies inFlight === maxInFlight" holds and a
- * later tick can never overtake queued chunks.
+ * Limited path: requests are appended to one FIFO queue at each tick; while
+ * fewer than `maxInFlight` invocations run, the next `min(maxBatchSize,
+ * queued)` requests are dispatched as one chunk. Without backpressure this
+ * splits each tick into `maxBatchSize` chunks; under backpressure requests
+ * queued from several ticks coalesce into full chunks. A slot is released
+ * synchronously in the settlement callback of its chunk, so "queue non-empty
+ * implies inFlight === maxInFlight" holds and later requests never overtake
+ * queued ones.
  */
 function makeLimited<T, R>(
   fn: Fn1<T[], Promise<PromiseSettledResult<R>[]>>,
@@ -202,7 +207,11 @@ function makeLimited<T, R>(
   maxBatchSize: number,
   maxInFlight: number,
 ): (arg: T) => Promise<R> {
+  // Each tick's request array is queued whole; `head` is the offset of the
+  // first undispatched request in the front array, `queued` the total count.
   const pending: Queue.Queue<Request<T, R>[]> = Queue.make();
+  let head = 0;
+  let queued = 0;
   let inFlight = 0;
 
   const release = (): void => {
@@ -210,21 +219,40 @@ function makeLimited<T, R>(
     pump();
   };
 
+  /** Dequeues the next `n` requests (n <= queued), spanning ticks if needed. */
+  const take = (n: number): Request<T, R>[] => {
+    queued -= n;
+    let front = Queue.peekFront(pending)!;
+    if (front.length - head >= n) {
+      const chunk = head === 0 && n === front.length ? front : front.slice(head, head + n);
+      head += n;
+      if (head === front.length) {
+        Queue.shift(pending);
+        head = 0;
+      }
+      return chunk;
+    }
+    const chunk = Array<Request<T, R>>(n);
+    for (let k = 0; k < n; head = 0) {
+      front = Queue.peekFront(pending)!;
+      const end = front.length - head <= n - k ? front.length : head + n - k;
+      while (head < end) chunk[k++] = front[head++];
+      if (head === front.length) Queue.shift(pending);
+      else break;
+    }
+    return chunk;
+  };
+
   const pump = (): void => {
-    while (inFlight < maxInFlight && Queue.size(pending) > 0) {
+    while (inFlight < maxInFlight && queued > 0) {
       inFlight++;
-      void runChunk(fn, Queue.shift(pending)!).then(release);
+      void runChunk(fn, take(queued < maxBatchSize ? queued : maxBatchSize)).then(release);
     }
   };
 
   const worker = makeBufferizedFn((args: Request<T, R>[]): void => {
-    if (args.length <= maxBatchSize) {
-      Queue.push(pending, args);
-    } else {
-      for (let start = 0; start < args.length; start += maxBatchSize) {
-        Queue.push(pending, args.slice(start, start + maxBatchSize));
-      }
-    }
+    Queue.push(pending, args);
+    queued += args.length;
     pump();
   }, schedule);
 

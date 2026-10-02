@@ -670,8 +670,9 @@ export interface FromJsonSchemaOptions {
  * (`patternProperties`, `propertyNames`, `contains`, `uniqueItems: true`,
  * `min/maxProperties`, `dependent*`, `unevaluated*`, `$dynamicRef`,
  * `prefixItems` unless `items: false`, `additionalProperties` as a schema
- * beside `properties`, object/array `const`/`enum`), malformed keyword values
- * and invalid `pattern` regexes. Unknown `format` names are annotation-only
+ * beside `properties`, object/array `const`/`enum`), malformed keyword values,
+ * invalid `pattern` regexes, and results too big to compile safely (over
+ * 50,000 nodes once every `$ref` use is expanded, or nested deeper than 256). Unknown `format` names are annotation-only
  * unless `options.formats` is `"strict"`, which returns `Err` for them.
  *
  * Divergences from JSON Schema kept for speed: string lengths count UTF-16
@@ -710,7 +711,9 @@ export function fromJsonSchema(
         if (uri !== null) registerResources(ctx, refs[keys[i]], uri);
       }
     }
-    return ok(lower(ctx, root, DEFAULT_BASE, false));
+    const schema = lower(ctx, root, DEFAULT_BASE, false);
+    const limit = checkExpansion(schema);
+    return limit === null ? ok(schema) : err(limit);
   } catch (e) {
     if (e instanceof LowerFail) return err(e.message);
     throw e;
@@ -720,8 +723,66 @@ export function fromJsonSchema(
 /** Base URI for documents without an absolute `$id` (custom hierarchical scheme). */
 const DEFAULT_BASE = "vjuga://root/";
 
-/** Nesting cap — keeps lowering (and later codegen) far from the call-stack limit. */
+/** JSON nesting cap (path tokens) — bounds the recursion of lowering itself. */
 const MAX_DEPTH = 512;
+
+/**
+ * Size caps on the lowered Schema, measured as the tree every consumer
+ * expands: `validate`, `JSON.parse` / `stringify`, TOON and `toJsonSchema`
+ * inline a node at every use, so a node shared through `$ref` counts once per
+ * use. Without them a few KB of `$ref` chain (`d_i` → two refs to `d_i-1`)
+ * expand to gigabytes of generated code. The depth cap keeps generated code
+ * (one or two JS blocks per level in `allErrors` mode) far from parser and
+ * call-stack limits.
+ */
+const MAX_EXPANDED_NODES = 50_000;
+const MAX_SCHEMA_DEPTH = 256;
+
+/**
+ * Err message if `root`, expanded as a tree, has more than
+ * `MAX_EXPANDED_NODES` nodes or is nested deeper than `MAX_SCHEMA_DEPTH`;
+ * null when it fits. Linear in the number of distinct nodes (memoized DAG walk).
+ */
+function checkExpansion(root: Schema): string | null {
+  // node → [expanded size, depth]; lowering never builds cycles
+  const memo = new Map<Schema, readonly [number, number]>();
+  const stack: Schema[] = [root];
+  const children: Schema[] = [];
+  while (stack.length > 0) {
+    const s = stack[stack.length - 1];
+    if (memo.has(s)) {
+      stack.pop();
+      continue;
+    }
+    children.length = 0;
+    collectSchemaChildren(s, children);
+    let pending = false;
+    let size = 1;
+    let depth = 0;
+    for (let i = 0; i < children.length; i++) {
+      const m = memo.get(children[i]);
+      if (m === undefined) {
+        stack.push(children[i]);
+        pending = true;
+      } else {
+        // Saturates instead of overflowing: only the comparison matters
+        size = Math.min(size + m[0], MAX_EXPANDED_NODES + 1);
+        if (m[1] > depth) depth = m[1];
+      }
+    }
+    if (pending) continue;
+    stack.pop();
+    memo.set(s, [size, depth + 1]);
+  }
+  const [size, depth] = memo.get(root)!;
+  if (size > MAX_EXPANDED_NODES) {
+    return "JSON Schema expands to more than " + MAX_EXPANDED_NODES + " nodes ($ref fan-out)";
+  }
+  if (depth > MAX_SCHEMA_DEPTH) {
+    return "JSON Schema lowers to a schema nested deeper than " + MAX_SCHEMA_DEPTH;
+  }
+  return null;
+}
 
 interface Resource {
   readonly node: unknown;

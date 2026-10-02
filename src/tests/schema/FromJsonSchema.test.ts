@@ -7,6 +7,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as S from "../../schema/Schema.js";
+import * as SJ from "../../schema/JSON.js";
 import { validate as validateTyped, type SchemaError } from "../../schema/Validate.js";
 import type { Result } from "../../Result.js";
 
@@ -423,6 +424,58 @@ test("nesting deeper than the cap is Err, not a stack overflow", () => {
   let js: Record<string, unknown> = { type: "string" };
   for (let i = 0; i < 600; i++) js = { not: js };
   assert.match(lowerErr(js), /nested deeper than 512/);
+});
+
+test("$ref fan-out beyond the expansion budget is Err", () => {
+  // d_i has two properties that both $ref d_{i-1}: 1.9 KB of JSON whose tree
+  // expansion (what every code generator inlines) is ~3·2^20 nodes
+  const chain = (n: number): Record<string, unknown> => {
+    const defs: Record<string, unknown> = { d0: { type: "string" } };
+    for (let i = 1; i <= n; i++) {
+      const ref = { $ref: "#/$defs/d" + (i - 1) };
+      defs["d" + i] = { type: "object", properties: { a: ref, b: ref } };
+    }
+    return { $defs: defs, $ref: "#/$defs/d" + n };
+  };
+  assert.match(lowerErr(chain(20)), /expands to more than 50000 nodes/);
+  const s = lower(chain(10)); // ~3k nodes: fine
+  assert.equal(validate(s)({ a: { a: "x" } })[0], false);
+  // prefixItems without minItems lowers to one tuple per length (n²/2 nodes)
+  const prefixItems = Array.from({ length: 2000 }, () => ({ type: "string" }));
+  assert.match(lowerErr({ prefixItems, items: false }), /expands to more than/);
+  lower({ prefixItems: prefixItems.slice(0, 50), items: false });
+});
+
+test("lowered schema depth is capped where every code generator still works", () => {
+  // Per level, the deepest lowering: untyped keyword groups (allOf of guarded
+  // conditionals) around an array, an optional property or a nullable type
+  const shapes: ((js: unknown) => unknown)[] = [
+    (js) => ({ items: js, minLength: 1, minimum: 0 }),
+    (js) => ({ properties: { a: js }, maxLength: 3 }),
+    (js) => ({ type: ["array", "null"], items: js }),
+    (js) => ({ oneOf: [js, { type: "integer" }], not: { type: "null" } }),
+    (js) => ({ if: { type: "array" }, then: { items: js }, else: { $ref: "#/$defs/x" } }),
+  ];
+  for (const wrap of shapes) {
+    let js: unknown = { type: "string", minLength: 1 };
+    let last: S.Schema | null = null;
+    for (let i = 0; i < 520; i++) {
+      js = wrap(js);
+      const r = S.fromJsonSchema({ $defs: { x: { type: "integer" } }, ...(js as object) });
+      if (!r[0]) {
+        assert.match(r[1], /nested deeper than (256|512)/);
+        break;
+      }
+      last = r[1];
+    }
+    assert.ok(last !== null);
+    // None of these may hit an engine stack / parser limit
+    validate(last);
+    validateTyped(last as S.StringSchema, { allErrors: true });
+    SJ.parse(last as S.StringSchema);
+    SJ.stringify(last as S.StringSchema);
+    S.toJsonSchema(last);
+  }
 });
 
 test("invalid scalar schema nodes are Err", () => {

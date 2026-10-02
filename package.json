@@ -67,6 +67,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "ajv-formats": "3.0.1",
     "bloomfilter": "^1.1.0",
     "fast-json-stringify": "^6.3.0",
     "fastbitset": "^0.5.2",

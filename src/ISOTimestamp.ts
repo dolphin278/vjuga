@@ -4,45 +4,39 @@
  * Wraps a plain string with a compile-time brand so that ISO timestamps cannot
  * be confused with arbitrary strings. Covers the datetime profile that
  * `Date.toISOString()` and JSON APIs produce: `YYYY-MM-DDTHH:mm:ss.sssZ` with
- * optional seconds, optional 1–3 digit fractional seconds, and either `Z` or
- * `±HH:MM` timezone offset. Durations, intervals, and week dates are out of
- * scope.
+ * optional seconds, optional fractional seconds of any length (Postgres,
+ * Python `isoformat()`, Go `RFC3339Nano`), uppercase `T`/`Z` and either `Z`
+ * or `±HH:MM`. Durations, intervals and week dates are out of scope.
  *
  * When to use: any API boundary or data layer that serializes timestamps as
  * strings. Prefer `Date` internally for arithmetic; use this type at the edges
- * where strings cross trust boundaries.
+ * where strings cross trust boundaries. `ISODate` covers date-only values.
  *
- * Design tradeoffs: validation is multi-gate — a structural regex, a calendar
- * check (day-of-month, leap years, hour <= 23) and `Date.parse()`. The regex
- * alone would accept `2024-99-99T00:00:00Z`; `Date.parse()` alone accepts
- * non-ISO formats like `"Tuesday"` and silently rolls `2023-02-29` and
- * `T24:00:00` over. `now()` bypasses `Date.toISOString()`
- * entirely using Hinnant's civil-from-days algorithm with pre-built pad
- * tables, yielding ~40% faster throughput (189 ns vs 312 ns).
+ * Design tradeoffs: validation is one allocation-free char-code scan with
+ * explicit field ranges and a real calendar check (`Date.parse` alone accepts
+ * `"Tuesday"` and silently rolls `2023-02-29` and `T24:00` over). `toDate`
+ * truncates fractions beyond milliseconds. `now()` bypasses `toISOString()`
+ * using Hinnant's civil-from-days algorithm with pre-built pad tables (~40%
+ * faster). `isRfc3339DateTime` / `isRfc3339Time` are separate, stricter
+ * predicates for JSON Schema `date-time` / `time` (RFC 3339 section 5.6).
  *
  * @example
  * ```ts
  * import { isoTimestamp, fromDate, toDate, now } from "@dolphin278/vjuga/ISOTimestamp";
- * const ts = isoTimestamp("2024-01-15T10:30:00.000Z"); // branded
- * const date = toDate(ts);                              // Date object
- * const back = fromDate(date);                          // ISOTimestamp
- * const current = now();                                // current time
+ * const ts = isoTimestamp("2024-01-15T10:30:00.123456Z"); // branded
+ * const date = toDate(ts);                 // Date (…00.123Z, truncated)
+ * const back = fromDate(date);             // ISOTimestamp
+ * const current = now();                   // current time
  * ```
  */
 
 import type { Branded } from "./FunctionUtils.js";
 import { type Result, ok, err } from "./Result.js";
 import { ValidationError, type Validator } from "./schema/ValidationError.js";
+import { daysInMonth } from "./ISODate.js";
 
 /** Branded string guaranteed to be a valid ISO 8601 datetime. */
 export type ISOTimestamp = Branded<string, "ISOTimestamp">;
-
-/**
- * Structural regex for the ISO 8601 datetime profile.
- * Requires date + T + hours:minutes, with optional :seconds and optional
- * .fractional (1–3 digits), terminated by Z or ±HH:MM offset.
- */
-const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$/;
 
 // ---------------------------------------------------------------------------
 // Pre-built pad lookup tables for zero-cost number→string formatting.
@@ -65,27 +59,133 @@ const PAD4: readonly string[] = /* @__PURE__ */ (() => {
   return t;
 })();
 
-const DAYS_IN_MONTH: readonly number[] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+/** Two ASCII digits at `i` as a number, or -1 (also past the end of `s`). */
+function num2(s: string, i: number): number {
+  const a = s.charCodeAt(i) - 48;
+  const b = s.charCodeAt(i + 1) - 48;
+  return a >= 0 && a <= 9 && b >= 0 && b <= 9 ? a * 10 + b : -1;
+}
+
+/** RFC 3339 full-date (`YYYY-MM-DD`, real calendar) at index 0..9 of `s`. */
+function fullDate(s: string): boolean {
+  if (s.charCodeAt(4) !== 45 || s.charCodeAt(7) !== 45) return false;
+  const hi = num2(s, 0);
+  const lo = num2(s, 2);
+  const day = num2(s, 8);
+  return hi >= 0 && lo >= 0 && day >= 1 && day <= daysInMonth(hi * 100 + lo, num2(s, 5));
+}
+
+/** Index after a run of ASCII digits starting at `i`. */
+function skipDigits(s: string, i: number): number {
+  let c = s.charCodeAt(i);
+  while (c >= 48 && c <= 57) c = s.charCodeAt(++i);
+  return i;
+}
 
 /**
- * Three gates: structure (regex), calendar (day-of-month incl. leap years, hour
- * 0-23 — V8's `Date.parse` silently rolls `02-30` and `T24:00` over), range
- * (`Date.parse` rejects month 13, minute 60, bad offsets).
+ * Offset at `p` running to the end of `s`: `Z` (uppercase only unless `lower`)
+ * or `±HH:MM` with HH <= 23, MM <= 59. Returns the signed offset in minutes,
+ * or NaN when malformed.
+ */
+function offsetMinutes(s: string, p: number, lower: boolean): number {
+  const c = s.charCodeAt(p);
+  if (c === 90 || (lower && c === 122)) return p + 1 === s.length ? 0 : NaN;
+  if ((c !== 43 && c !== 45) || p + 6 !== s.length || s.charCodeAt(p + 3) !== 58) return NaN;
+  const oh = num2(s, p + 1);
+  const om = num2(s, p + 4);
+  if (oh < 0 || oh > 23 || om < 0 || om > 59) return NaN;
+  return c === 45 ? -(oh * 60 + om) : oh * 60 + om;
+}
+
+/**
+ * The documented ISO 8601 profile: date + `T` + `HH:mm`, optional `:ss` with
+ * optional `.fraction` (>= 1 digit), then `Z` or `±HH:MM`. Ranges: hour 0–23,
+ * minute/second 0–59, offset hour 0–23 / minute 0–59, real calendar day.
  */
 function isValid(value: string): boolean {
-  if (!ISO_RE.test(value)) return false;
-  const c = (i: number): number => value.charCodeAt(i) - 48;
-  const hour = c(11) * 10 + c(12);
-  if (hour > 23) return false;
-  const month = c(5) * 10 + c(6);
-  const day = c(8) * 10 + c(9);
-  if (month < 1 || month > 12 || day < 1) return false;
-  let max = DAYS_IN_MONTH[month - 1];
-  if (month === 2) {
-    const y = c(0) * 1000 + c(1) * 100 + c(2) * 10 + c(3);
-    if (y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0)) max = 29;
+  if (value.length < 17 || value.charCodeAt(10) !== 84 || value.charCodeAt(13) !== 58) return false;
+  if (!fullDate(value)) return false;
+  const hour = num2(value, 11);
+  const minute = num2(value, 14);
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return false;
+  let p = 16;
+  if (value.charCodeAt(p) === 58) {
+    const sec = num2(value, 17);
+    if (sec < 0 || sec > 59) return false;
+    p = 19;
+    if (value.charCodeAt(p) === 46) {
+      p = skipDigits(value, 20);
+      if (p === 20) return false;
+    }
   }
-  return day <= max && !isNaN(Date.parse(value));
+  const off = offsetMinutes(value, p, false);
+  return off === off; // NaN marks a malformed offset
+}
+
+/**
+ * RFC 3339 `partial-time` + `time-offset` starting at index `i` and running
+ * to the end of `s` (JSON Schema `time` semantics). A leap second (`:60`) is
+ * accepted only when the instant is 23:59 UTC, on any date.
+ */
+function rfcTimeAt(s: string, i: number): boolean {
+  if (s.charCodeAt(i + 2) !== 58 || s.charCodeAt(i + 5) !== 58) return false;
+  const hour = num2(s, i);
+  const minute = num2(s, i + 3);
+  const sec = num2(s, i + 6);
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59 || sec < 0 || sec > 60) return false;
+  let p = i + 8;
+  if (s.charCodeAt(p) === 46) {
+    p = skipDigits(s, p + 1);
+    if (p === i + 9) return false;
+  }
+  const off = offsetMinutes(s, p, true);
+  if (off !== off) return false;
+  if (sec < 60) return true;
+  // Leap second: the UTC minute-of-day must be 23:59.
+  return (((hour * 60 + minute - off) % 1440) + 1440) % 1440 === 1439;
+}
+
+/**
+ * Allocation-free predicate for RFC 3339 section 5.6 `date-time`, with the
+ * JSON Schema 2020-12 `format: "date-time"` semantics: seconds required, any
+ * number (>= 1) of fraction digits, `Z` or `±hh:mm` offset (hh <= 23,
+ * mm <= 59), case-insensitive `T` and `Z`, real calendar date, leap second
+ * `:60` only at 23:59 UTC. Stricter than `isoTimestamp` in requiring seconds,
+ * looser in accepting lowercase and leap seconds.
+ *
+ * Deliberately stricter than ajv-formats' full mode: rejects a space
+ * separator, offsets without a colon or minutes (`+0130`, `+01`), and
+ * `24:59:60+01:00`-style out-of-range fields; accepts fractions such as
+ * `59.999999999999999` that ajv rounds up to 60.
+ *
+ * @example
+ * ```ts
+ * import { isRfc3339DateTime } from "@dolphin278/vjuga/ISOTimestamp";
+ * isRfc3339DateTime("1963-06-19t08:30:06.283185z"); // true
+ * isRfc3339DateTime("1985-04-12T23:20Z");           // false (no seconds)
+ * ```
+ */
+export function isRfc3339DateTime(value: string): boolean {
+  const t = value.charCodeAt(10);
+  return value.length >= 20 && (t === 84 || t === 116) && fullDate(value) && rfcTimeAt(value, 11);
+}
+
+/**
+ * Allocation-free predicate for RFC 3339 `full-time` (`partial-time` +
+ * `time-offset`), i.e. JSON Schema 2020-12 `format: "time"`: `HH:MM:SS`, any
+ * number (>= 1) of fraction digits, required `Z`/`z` or `±hh:mm` offset, leap
+ * second `:60` only when the time is 23:59 UTC. Same ajv-formats divergences
+ * as `isRfc3339DateTime`.
+ *
+ * @example
+ * ```ts
+ * import { isRfc3339Time } from "@dolphin278/vjuga/ISOTimestamp";
+ * isRfc3339Time("15:59:60-08:00"); // true (23:59:60 UTC)
+ * isRfc3339Time("12:00:00");       // false (no offset)
+ * ```
+ */
+export function isRfc3339Time(value: string): boolean {
+  return value.length >= 9 && rfcTimeAt(value, 0);
 }
 
 /**
@@ -102,8 +202,20 @@ export function fromDate(date: Date): ISOTimestamp {
   return date.toISOString() as ISOTimestamp;
 }
 
-/** Converts an ISOTimestamp back to a Date object. */
+/**
+ * Converts an ISOTimestamp back to a Date object. A Date has millisecond
+ * resolution, so fraction digits beyond the third are truncated, never
+ * rounded: `…:59.9999Z` stays in the same second (and day) rather than rolling
+ * over. The input is normalised before parsing, so the result does not depend
+ * on how an engine treats non-standard fraction lengths.
+ */
 export function toDate(ts: ISOTimestamp): Date {
+  // Only 4-digit-year forms with seconds carry a fraction at index 19
+  // (expanded years from fromDate have ':' there).
+  if (ts.charCodeAt(19) === 46) {
+    const end = skipDigits(ts, 20);
+    if (end > 23) return new Date(ts.slice(0, 23) + ts.slice(end));
+  }
   return new Date(ts);
 }
 

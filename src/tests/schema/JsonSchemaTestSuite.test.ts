@@ -8,7 +8,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import * as S from "../../schema/Schema.js";
 import { validate } from "../../schema/Validate.js";
@@ -26,9 +26,23 @@ interface Group {
 
 const DIR = fileURLToPath(new URL("./fixtures/json-schema-test-suite/", import.meta.url));
 
+/**
+ * The suite's `remotes/draft2020-12/` documents, served by its harness at
+ * `http://localhost:1234/draft2020-12/`: supplied to every group as
+ * `options.refs`, keyed by that URL.
+ */
+const REMOTE_BASE = "http://localhost:1234/draft2020-12/";
+const REMOTES: Record<string, S.JsonSchemaObject> = {};
+for (const rel of readdirSync(DIR + "remotes/draft2020-12", { recursive: true }) as string[]) {
+  if (!rel.endsWith(".json")) continue;
+  const doc = readFileSync(DIR + "remotes/draft2020-12/" + rel, "utf8");
+  REMOTES[REMOTE_BASE + rel.split("\\").join("/")] = JSON.parse(doc) as S.JsonSchemaObject;
+}
+
 /** file → minimum number of groups that must convert (Ok) and pass. */
 const MIN_SUPPORTED: Readonly<Record<string, number>> = {
   ref: 29,
+  refRemote: 15,
   defs: 0, // only group $refs the remote 2020-12 metaschema
   oneOf: 11,
   allOf: 12,
@@ -77,7 +91,7 @@ for (const file of Object.keys(MIN_SUPPORTED)) {
     const groups = JSON.parse(readFileSync(DIR + file + ".json", "utf8")) as Group[];
     let supported = 0;
     for (const group of groups) {
-      const r = S.fromJsonSchema(group.schema);
+      const r = S.fromJsonSchema(group.schema, { refs: REMOTES });
       if (!r[0]) {
         assert.equal(typeof r[1], "string");
         continue;

@@ -290,8 +290,10 @@ function genCombinator(r: Rng, inner: () => S.Schema): S.Schema {
       // A single variant is trivially exactly-one. union(optional(T)) is not
       // treated as an absent-able field by serializers — hoist the optional
       // out, so the shape (and the TOON verdict already recorded for it) stays.
+      // An absent-able allOf / conditional cannot be hoisted: leave it unwrapped.
       const x = inner();
-      return x.kind === "optional" ? S.optional(S.oneOf(x.meta.inner)) : S.oneOf(x);
+      if (x.kind === "optional") return S.optional(S.oneOf(x.meta.inner));
+      return S.propertyMayBeAbsent(x) ? x : S.oneOf(x);
     }
   }
 }

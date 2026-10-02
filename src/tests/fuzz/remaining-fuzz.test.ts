@@ -1,7 +1,7 @@
 /**
  * Fuzz tests for all remaining modules without fuzz coverage:
  * Result, TaggedUnion, BatchExecutor, BufferizedFunction,
- * TimedFunction, PromiseUtils, PRNG, FunctionUtils, UUID,
+ * TimedFunction, PromiseUtils (props, propsMap, pool), PRNG, FunctionUtils, UUID,
  * ISOTimestamp, UnixTimestamp
  */
 import { test } from "node:test";
@@ -466,6 +466,112 @@ test("PromiseUtils: props rejects when any promise rejects (property)", async ()
       } catch {
         return true;
       }
+    },
+    { numRuns: 1_000_000, timeoutMs: 180_000 },
+  );
+});
+
+type PoolKind = "ok" | "rej" | "throw" | "sync";
+
+test("PromiseUtils: pool matches reference model — order, settledness, concurrency bound, abort (property)", async () => {
+  const PU = await import("../../PromiseUtils.js");
+
+  const spec = Arb.tuple(
+    Arb.array(
+      Arb.tuple(Arb.constantFrom<PoolKind>("ok", "ok", "rej", "throw", "sync"), Arb.integer(0, 4)),
+      { minLength: 0, maxLength: 12 },
+    ),
+    Arb.constantFrom(1, 2, 3, 5, Infinity),
+    // Index of the fn call that aborts (from inside fn); -1 = never.
+    Arb.integer(-1, 12),
+    // Abort from outside fn, in a microtask after the k-th async completion
+    // (other slots may still be busy); -1 = never.
+    Arb.integer(-1, 6),
+    // Signal already aborted before pool is called.
+    Arb.constantFrom(false, false, false, true),
+  );
+
+  await Prop.assertAsync(
+    spec,
+    async ([items, limit, abortAt, extAbortAfter, preAborted]) => {
+      const n = items.length;
+      const ctrl = new AbortController();
+      const started: number[] = [];
+      let active = 0;
+      let maxActive = 0;
+      let completions = 0;
+      // Number of calls started when the signal fired (n = never aborted).
+      let startedAtAbort = n;
+      if (preAborted) {
+        ctrl.abort("pre");
+        startedAtAbort = 0;
+      } else {
+        ctrl.signal.addEventListener("abort", () => {
+          startedAtAbort = started.length;
+        });
+      }
+
+      const results = await PU.pool(
+        items,
+        limit,
+        ([kind, hops], i, signal) => {
+          assert.equal(signal, ctrl.signal);
+          started.push(i);
+          if (i === abortAt) ctrl.abort("inner");
+          if (kind === "throw") throw `t${i}`;
+          if (kind === "sync") return i * 7;
+          active++;
+          maxActive = Math.max(maxActive, active);
+          return (async () => {
+            for (let h = 0; h <= hops; h++) await Promise.resolve(); // >= 1 hop: overlaps
+            active--;
+            if (completions++ === extAbortAfter) queueMicrotask(() => ctrl.abort("ext"));
+            if (kind === "rej") throw `e${i}`;
+            return i * 7;
+          })();
+        },
+        { signal: ctrl.signal },
+      );
+
+      // Reference model: nothing starts once the signal has fired.
+      const lastStarted = Math.min(startedAtAbort, n) - 1;
+      if (abortAt >= 0 && abortAt < n && !preAborted) {
+        assert.ok(lastStarted <= abortAt, "inner abort stops later starts");
+      }
+      assert.deepEqual(
+        started,
+        Array.from({ length: lastStarted + 1 }, (_, i) => i),
+        "starts in input order, none after abort",
+      );
+      assert.equal(results.length, n);
+      for (let i = 0; i < n; i++) {
+        const kind = items[i]![0];
+        const expected: PromiseSettledResult<number> =
+          i > lastStarted
+            ? { status: "rejected", reason: ctrl.signal.reason }
+            : kind === "rej"
+              ? { status: "rejected", reason: `e${i}` }
+              : kind === "throw"
+                ? { status: "rejected", reason: `t${i}` }
+                : { status: "fulfilled", value: i * 7 };
+        assert.deepEqual(results[i], expected, `result ${i}`);
+      }
+      assert.equal(active, 0, "every started call settled before pool resolved");
+
+      // Concurrency: never above limit. The initial synchronous fill starts
+      // items until `limit` slot-holding (non-throw) calls are running, so all
+      // async ones among them overlap: a lower bound on the observed maximum.
+      assert.ok(maxActive <= limit, `maxActive ${maxActive} > limit ${limit}`);
+      let slots = 0;
+      let initialAsync = 0;
+      for (let i = 0; i <= lastStarted && slots < limit; i++) {
+        const kind = items[i]![0];
+        if (kind === "throw") continue;
+        slots++;
+        if (kind !== "sync") initialAsync++;
+      }
+      assert.ok(maxActive >= initialAsync, `maxActive ${maxActive} < ${initialAsync}`);
+      return true;
     },
     { numRuns: 1_000_000, timeoutMs: 180_000 },
   );

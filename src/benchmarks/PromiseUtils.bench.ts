@@ -3,7 +3,7 @@ declare const process: { memoryUsage(): { heapUsed: number } };
 
 import { bench, run } from "mitata";
 import { reportOptimizationStatus } from "./_v8.js";
-import { props, propsMap } from "../PromiseUtils.js";
+import { pool, props, propsMap } from "../PromiseUtils.js";
 
 const gc = (): void => {
   if (typeof Bun !== "undefined") Bun.gc(true);
@@ -96,6 +96,21 @@ bench("propsMap vs props: 5 fields (comparison)", async () => {
     ["e", Promise.resolve(5)],
   ]);
   return propsMap(map);
+});
+
+const poolItems = Array.from({ length: 1000 }, (_, i) => i);
+const asyncDouble = async (x: number): Promise<number> => x * 2;
+
+bench("pool: 1000 async items, limit 8", async () => {
+  return pool(poolItems, 8, asyncDouble);
+});
+
+bench("pool: 1000 async items, limit Infinity", async () => {
+  return pool(poolItems, Infinity, asyncDouble);
+});
+
+bench("Promise.allSettled baseline: 1000 async items (unbounded)", async () => {
+  return Promise.allSettled(poolItems.map(asyncDouble));
 });
 
 await run();

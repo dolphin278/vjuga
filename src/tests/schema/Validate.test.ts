@@ -1221,7 +1221,7 @@ test("hoisting — each property is read exactly once", () => {
 // ---------------------------------------------------------------------------
 
 test("string format — prototype member names are unknown formats, never lookups", () => {
-  for (const format of ["constructor", "toString", "__proto__", "hasOwnProperty", "date"]) {
+  for (const format of ["constructor", "toString", "__proto__", "hasOwnProperty", "hostname"]) {
     const v = validate(S.string({ format: format as "email" }));
     assertOk(v("hello"));
     assertErr(v(1));
@@ -1297,4 +1297,42 @@ test("multipleOf — relative tolerance for fractional divisors", () => {
   const neg = validate(S.number({ multipleOf: -0.5 }));
   assertOk(neg(1.5));
   assertErr(neg(1.25));
+});
+
+// ---------------------------------------------------------------------------
+// Standard formats (JSON Schema 2020-12 names)
+// ---------------------------------------------------------------------------
+
+test("string format: date / date-time / time / ipv4 / ipv6 are enforced", () => {
+  const cases: [S.StringConstraints["format"], string, string][] = [
+    ["date", "2024-02-29", "tomorrow"],
+    ["date", "2024-02-29", "2023-02-29"],
+    ["date-time", "2024-02-29T12:00:00Z", "2024-02-29 12:00:00Z"],
+    ["time", "12:00:00+01:00", "12:00"],
+    ["ipv4", "10.0.0.1", "10.0.0.256"],
+    ["ipv6", "::ffff:10.0.0.1", "1::2::3"],
+    ["email", '"joe bloggs"@example.com', "te..st@example.com"],
+    ["uri", "mailto:joe@example.com", "https://example.com/a b"],
+  ];
+  for (const [format, good, bad] of cases) {
+    const v = validate(S.string({ format }));
+    assertOk(v(good));
+    const e = assertErr(v(bad));
+    assert.equal(e.expected, `string(format=${format})`);
+    assert.equal(e.received, bad);
+  }
+});
+
+test("string format: enforced inside unions, oneOf, not, conditional and allOf", () => {
+  const date = S.string({ format: "date" });
+  assertErr(validate(S.union(date, S.number()))("tomorrow"));
+  assertOk(validate(S.union(date, S.number()))("2024-01-01"));
+  assertErr(validate(S.union(S.number(), date))("tomorrow"));
+  assertOk(validate(S.not(date))("tomorrow"));
+  assertErr(validate(S.not(date))("2024-01-01"));
+  assertErr(validate(S.oneOf(date, S.number()))("tomorrow"));
+  assertErr(validate(S.allOf(date, S.string()))("tomorrow"));
+  assertErr(validate(S.conditional(S.string(), date))("tomorrow"));
+  assertErr(validate(S.union(S.nullable(date), S.number()))("tomorrow"));
+  assertErr(validate(S.object({ d: S.optional(date) }))({ d: "tomorrow" }));
 });

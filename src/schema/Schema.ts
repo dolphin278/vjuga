@@ -41,6 +41,7 @@
 
 import { type Result, ok, err } from "../Result.js";
 import { unreachable } from "../FunctionUtils.js";
+import { type FormatName, isKnownFormat } from "./Formats.js";
 
 // ---------------------------------------------------------------------------
 // Schema node base
@@ -64,7 +65,13 @@ export interface StringConstraints {
   readonly maxLength?: number;
   /** Regex source string (not a RegExp — must be serializable). */
   readonly pattern?: string;
-  readonly format?: "email" | "uri" | "uuid" | "iso-datetime";
+  /**
+   * Enforced format (see `schema/Formats`): RFC 3339 `date-time` / `date` /
+   * `time`, `email`, `uri`, `uuid`, `ipv4`, `ipv6`, and the legacy loose
+   * `iso-datetime` prefix check. `fromJsonSchema` may also store other names
+   * here; those are annotation-only.
+   */
+  readonly format?: FormatName;
 }
 
 export interface NumberConstraints {
@@ -633,6 +640,13 @@ export interface FromJsonSchemaOptions {
    * registered too.
    */
   readonly refs?: Readonly<Record<string, JsonSchemaObject | boolean>>;
+  /**
+   * `"annotate"` (default): a `format` name `schema/Formats` does not know is
+   * kept but annotation-only, as JSON Schema 2020-12 specifies. `"strict"`:
+   * any unknown `format` name, on any node, returns `Err` — so no format in
+   * the input can go unchecked.
+   */
+  readonly formats?: "annotate" | "strict";
 }
 
 /**
@@ -655,7 +669,8 @@ export interface FromJsonSchemaOptions {
  * `min/maxProperties`, `dependent*`, `unevaluated*`, `$dynamicRef`,
  * `prefixItems` unless `items: false`, `additionalProperties` as a schema
  * beside `properties`, object/array `const`/`enum`), malformed keyword values
- * and invalid `pattern` regexes. Unknown `format` names are annotation-only.
+ * and invalid `pattern` regexes. Unknown `format` names are annotation-only
+ * unless `options.formats` is `"strict"`, which returns `Err` for them.
  *
  * Divergences from JSON Schema kept for speed: string lengths count UTF-16
  * code units, `integer` means a safe integer, `pattern` compiles without the
@@ -678,6 +693,7 @@ export function fromJsonSchema(
   const ctx: LowerCtx = {
     registry: new Map(),
     rawRefs: options?.refs,
+    strictFormats: options?.formats === "strict",
     memo: new Map(),
     active: new Set(),
     path: [],
@@ -721,6 +737,8 @@ interface LowerCtx {
   readonly active: Set<object>;
   /** JSON-pointer tokens of the current position, for error messages. */
   readonly path: string[];
+  /** `formats: "strict"` — unknown `format` names fail instead of annotating. */
+  readonly strictFormats: boolean;
 }
 
 /** Internal failure carrier; converted to `Err` by `fromJsonSchema`. */
@@ -975,6 +993,12 @@ function lowerNode(ctx: LowerCtx, js: Record<string, unknown>, base: string): Sc
   }
   const unique = own(js, "uniqueItems");
   if (unique !== undefined && unique !== false) fail(ctx, "uniqueItems is not supported");
+  if (ctx.strictFormats) {
+    const format = own(js, "format");
+    if (typeof format === "string" && !isKnownFormat(format)) {
+      fail(ctx, "unknown format " + JSON.stringify(format) + ' (formats: "strict")');
+    }
+  }
 
   const parts: Schema[] = [];
   if (Object.hasOwn(js, "$ref")) parts.push(lowerRef(ctx, js.$ref, base));
@@ -1270,6 +1294,7 @@ function lowerString(ctx: LowerCtx, js: Record<string, unknown>): Schema {
   }
   if (Object.hasOwn(js, "format")) {
     if (typeof js.format !== "string") fail(ctx, "format must be a string");
+    // Unknown names are stored as annotations (Validate skips them)
     c.format = js.format;
     hasConstraints = true;
   }

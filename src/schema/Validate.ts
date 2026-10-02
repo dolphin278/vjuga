@@ -46,6 +46,7 @@ import { ok, err } from "../Result.js";
 import type { Schema, Infer } from "./Schema.js";
 import { unreachable } from "../FunctionUtils.js";
 import { findDiscriminant } from "./Schema.js";
+import { formatTester, isKnownFormat } from "./Formats.js";
 import {
   type CodeBuffer,
   createBuffer,
@@ -300,16 +301,6 @@ function emitFail(
 // Per-kind validation emitters
 // ---------------------------------------------------------------------------
 
-// Pre-computed format validation regexes — compiled once at module load,
-// captured via emitRef per compiled validator that needs them. Looked up with
-// Object.hasOwn so names like "constructor" never resolve to prototype members.
-const FORMAT_PATTERNS: Readonly<Record<string, RegExp>> = {
-  email: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
-  uri: /^[a-zA-Z][a-zA-Z0-9+\-.]*:\/\/\S+$/,
-  uuid: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
-  "iso-datetime": /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/,
-};
-
 type StringMeta =
   | {
       readonly minLength?: number;
@@ -347,10 +338,13 @@ function emitStringCheck(
       accessor,
     );
   }
-  // Unknown formats are annotation-only (JSON Schema 2020-12 default) and ignored
-  if (meta.format !== undefined && Object.hasOwn(FORMAT_PATTERNS, meta.format)) {
+  // Unknown formats are annotation-only (JSON Schema 2020-12 default) and ignored.
+  // Testers (schema/Formats) are created once at module load and captured per
+  // compiled validator; RegExp and wrapped predicates share the `.test` shape.
+  const tester = meta.format === undefined ? undefined : formatTester(meta.format);
+  if (tester !== undefined) {
     const ref = freshVar(buf);
-    emitRef(buf, ref, FORMAT_PATTERNS[meta.format]);
+    emitRef(buf, ref, tester);
     emitFail(buf, `!${ref}.test(${accessor})`, pathExpr, `string(format=${meta.format})`, accessor);
   }
 }
@@ -360,7 +354,7 @@ function stringHasRegex(meta: StringMeta): boolean {
   return (
     meta !== undefined &&
     (meta.pattern !== undefined ||
-      (meta.format !== undefined && Object.hasOwn(FORMAT_PATTERNS, meta.format)))
+      (meta.format !== undefined && isKnownFormat(meta.format)))
   );
 }
 

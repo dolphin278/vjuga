@@ -99,6 +99,53 @@ for (const file of Object.keys(MIN_SUPPORTED)) {
   });
 }
 
+/**
+ * optional/format: every group must lower (default and `formats: "strict"`)
+ * and agree with every case — no exceptions. date / date-time / time are
+ * vendored once under src/tests/fixtures (they also drive the ISODate tests).
+ */
+const FORMAT_FILES: Readonly<Record<string, string>> = {
+  email: DIR + "optional/format/email.json",
+  uri: DIR + "optional/format/uri.json",
+  uuid: DIR + "optional/format/uuid.json",
+  ipv4: DIR + "optional/format/ipv4.json",
+  ipv6: DIR + "optional/format/ipv6.json",
+  date: fileURLToPath(new URL("../fixtures/json-schema-test-suite/date.json", import.meta.url)),
+  "date-time": fileURLToPath(
+    new URL("../fixtures/json-schema-test-suite/date-time.json", import.meta.url),
+  ),
+  time: fileURLToPath(new URL("../fixtures/json-schema-test-suite/time.json", import.meta.url)),
+};
+
+for (const name of Object.keys(FORMAT_FILES)) {
+  test(`JSON-Schema-Test-Suite optional/format/${name}.json: exact agreement`, () => {
+    const groups = JSON.parse(readFileSync(FORMAT_FILES[name], "utf8")) as Group[];
+    for (const group of groups) {
+      for (const formats of ["annotate", "strict"] as const) {
+        const r = S.fromJsonSchema(group.schema, { formats });
+        assert.ok(r[0], `${name}/${group.description}: ${String(r[1])}`);
+        const check = validate(r[1] as S.StringSchema) as (
+          v: unknown,
+        ) => readonly [boolean, unknown];
+        for (const c of group.tests) {
+          assert.equal(check(c.data)[0], c.valid, `${name}/${group.description}/${c.description}`);
+        }
+      }
+    }
+  });
+}
+
+test("JSON-Schema-Test-Suite optional/format/unknown.json: annotation-only, Err in strict", () => {
+  const groups = JSON.parse(readFileSync(DIR + "optional/format/unknown.json", "utf8")) as Group[];
+  for (const group of groups) {
+    const r = S.fromJsonSchema(group.schema);
+    assert.ok(r[0]);
+    const check = validate(r[1] as S.StringSchema) as (v: unknown) => readonly [boolean, unknown];
+    for (const c of group.tests) assert.equal(check(c.data)[0], c.valid, c.description);
+    assert.equal(S.fromJsonSchema(group.schema, { formats: "strict" })[0], false);
+  }
+});
+
 test("JSON-Schema-Test-Suite summary", () => {
   console.log("JSON-Schema-Test-Suite supported groups — " + summary.join(", "));
   assert.equal(summary.length, Object.keys(MIN_SUPPORTED).length);

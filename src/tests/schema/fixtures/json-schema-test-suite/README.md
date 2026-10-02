@@ -12,3 +12,9 @@ They are distributed under the upstream MIT license, reproduced in
 `schema/Schema.fromJsonSchema` + `schema/Validate`: a group must either be
 rejected (`Err`) or agree with every `valid` verdict. To update, copy the same
 file names from a newer upstream commit and bump the hash above.
+
+`optional/format/` holds `email.json`, `uri.json`, `uuid.json`, `ipv4.json`,
+`ipv6.json` and `unknown.json` from `tests/draft2020-12/optional/format/` at
+the same commit; every case must agree (no exceptions). The suite's
+`date.json`, `date-time.json` and `time.json` are vendored once, in
+`src/tests/fixtures/json-schema-test-suite/`, and reused from there.

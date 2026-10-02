@@ -434,3 +434,53 @@ test("invalid scalar schema nodes are Err", () => {
 test("an exotic non-URI-resolvable options.refs key does not break the document", () => {
   verdicts({ type: "string" }, ["x"], [1], { refs: { "http://[x": { type: "number" } } });
 });
+
+// ---------------------------------------------------------------------------
+// format: standard names enforced, strict mode
+// ---------------------------------------------------------------------------
+
+test("format — standard 2020-12 names lower to enforced string formats", () => {
+  verdicts({ type: "string", format: "date" }, ["2024-02-29"], ["tomorrow", "2023-02-29"]);
+  verdicts({ type: "string", format: "date-time" }, ["2024-02-29T12:00:00Z"], ["2024-02-29"]);
+  verdicts({ format: "time" }, ["12:00:00Z", 5, null], ["noon"]);
+  verdicts(
+    { type: "object", properties: { at: { type: "string", format: "date" } }, required: ["at"] },
+    [{ at: "2024-01-01" }],
+    [{ at: "tomorrow" }, {}],
+  );
+});
+
+test("format — unknown names: annotation-only by default, Err in strict mode", () => {
+  verdicts({ type: "string", format: "hostname" }, ["not a host!"], [1]);
+  verdicts({ type: "string", format: "hostname" }, ["x"], [], { formats: "annotate" });
+  assert.match(
+    lowerErr({ type: "string", format: "hostname" }, { formats: "strict" }),
+    /^unknown format "hostname" \(formats: "strict"\)$/,
+  );
+  // Nested, untyped, on a non-string type, and prototype names
+  assert.match(
+    lowerErr({ properties: { a: { format: "x-custom" } } }, { formats: "strict" }),
+    /unknown format "x-custom".*\(at #\/properties\/a\)/,
+  );
+  assert.match(lowerErr({ type: "integer", format: "int32" }, { formats: "strict" }), /int32/);
+  assert.match(lowerErr({ format: "constructor" }, { formats: "strict" }), /constructor/);
+  // Known names (legacy iso-datetime included) pass strict mode
+  for (const format of [
+    "date",
+    "date-time",
+    "time",
+    "email",
+    "uri",
+    "uuid",
+    "ipv4",
+    "ipv6",
+    "iso-datetime",
+  ]) {
+    lower({ type: "string", format }, { formats: "strict" });
+  }
+  // A non-string format value is still the type error, not the strict one
+  assert.match(
+    lowerErr({ type: "string", format: 1 }, { formats: "strict" }),
+    /format must be a string/,
+  );
+});

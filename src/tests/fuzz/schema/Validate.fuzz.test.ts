@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import * as S from "../../../schema/Schema.js";
 import { validate, type SchemaError } from "../../../schema/Validate.js";
+import { formatTester } from "../../../schema/Formats.js";
 import type { Result } from "../../../Result.js";
 import * as Arb from "../../../Arbitrary.js";
 import * as Prop from "../../../Property.js";
@@ -225,11 +226,6 @@ test("number validator rejects non-finite numbers", () => {
 // semantics. Objects use OWN properties only; "extra key" means an own
 // enumerable string key (Object.keys) not declared in the schema; equality for
 // literal/enum is SameValueZero.
-const REF_FORMATS: Record<string, RegExp> = {
-  email: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
-  uuid: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
-};
-
 function sameValueZero(a: unknown, b: unknown): boolean {
   return a === b || (a !== a && b !== b);
 }
@@ -258,9 +254,10 @@ function refValidate(s: S.Schema, v: unknown): boolean {
       if (m.minLength !== undefined && v.length < m.minLength) return false;
       if (m.maxLength !== undefined && v.length > m.maxLength) return false;
       if (m.pattern !== undefined && !new RegExp(m.pattern).test(v)) return false;
-      if (m.format !== undefined && Object.hasOwn(REF_FORMATS, m.format)) {
-        if (!REF_FORMATS[m.format].test(v)) return false;
-      }
+      // Format grammars are checked against the test suite elsewhere; here
+      // the oracle only pins how the emitter wires them in (unknown = skip).
+      const tester = m.format === undefined ? undefined : formatTester(m.format);
+      if (tester !== undefined && !tester.test(v)) return false;
       return true;
     }
     case "number":
@@ -370,7 +367,7 @@ const ENUM_POOL: readonly (string | number)[] = [
   -Infinity,
 ];
 const PATTERNS = ["^a", "b$", '"', "^\\d+$", "\\n"];
-const FORMATS = ["email", "uuid", "date", "constructor"];
+const FORMATS = ["email", "uuid", "date", "date-time", "hostname", "constructor"];
 const VALUE_POOL: readonly unknown[] = [
   undefined,
   null,
@@ -394,6 +391,8 @@ const VALUE_POOL: readonly unknown[] = [
   '"',
   "a@b.co",
   "550e8400-e29b-41d4-a716-446655440000",
+  "2024-02-29",
+  "2024-02-29T12:00:00Z",
   "constructor",
   true,
   false,

@@ -17,6 +17,14 @@ function makeEchoExecutor() {
   });
 }
 
+// Helper: same echo executor on the low-latency "io" schedule (setImmediate),
+// so per-item overhead is not hidden behind the ~1ms setTimeout floor.
+function makeEchoExecutorIO() {
+  return BatchExecutor.make<number, number>(async (args) => {
+    return args.map((v) => ({ status: "fulfilled" as const, value: v }));
+  }, "io");
+}
+
 // --- Warm-up ---
 {
   const exec = makeEchoExecutor();
@@ -70,6 +78,45 @@ bench("BatchExecutor: multiple sequential batches (10 batches of 10)", async () 
     for (let i = 0; i < 10; i++) promises.push(exec(i));
     await Promise.all(promises);
   }
+});
+
+bench("BatchExecutor io: single item batch (1 call, awaited)", async () => {
+  const exec = makeEchoExecutorIO();
+  return exec(42);
+});
+
+bench("BatchExecutor io: huge batch (2000 concurrent calls)", async () => {
+  const exec = makeEchoExecutorIO();
+  const promises: Promise<number>[] = [];
+  for (let i = 0; i < 2000; i++) promises.push(exec(i));
+  return Promise.all(promises);
+});
+
+bench("BatchExecutor io: multiple sequential batches (10 batches of 10)", async () => {
+  const exec = makeEchoExecutorIO();
+  for (let batch = 0; batch < 10; batch++) {
+    const promises: Promise<number>[] = [];
+    for (let i = 0; i < 10; i++) promises.push(exec(i));
+    await Promise.all(promises);
+  }
+});
+
+bench("BatchExecutor io limited: 2000 calls, maxBatchSize 100, maxInFlight 4", async () => {
+  const exec = BatchExecutor.make<number, number>(
+    async (args) => args.map((v) => ({ status: "fulfilled" as const, value: v })),
+    { schedule: "io", maxBatchSize: 100, maxInFlight: 4 },
+  );
+  const promises: Promise<number>[] = [];
+  for (let i = 0; i < 2000; i++) promises.push(exec(i));
+  return Promise.all(promises);
+});
+
+bench("BatchExecutor io limited: single item (maxInFlight 1)", async () => {
+  const exec = BatchExecutor.make<number, number>(
+    async (args) => args.map((v) => ({ status: "fulfilled" as const, value: v })),
+    { schedule: "io", maxInFlight: 1 },
+  );
+  return exec(42);
 });
 
 bench("BatchExecutor: batch with rejection handling", async () => {

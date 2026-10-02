@@ -67,11 +67,12 @@ Add that paragraph to your app's `AGENTS.md`. In a monorepo, resolve `node_modul
 
 | Goal | Module | Notes |
 |---|---|---|
-| Batch items but return per-item promises | `BatchExecutor` | Dataloader pattern. `make(batchFn)` returns `(item) => Promise<R>`. Batch fn must return exactly as many results as items; a mismatch or throw rejects every promise in that batch. No in-flight limit. |
+| Batch items but return per-item promises | `BatchExecutor` | Dataloader pattern. `make(batchFn, options?)` returns `(item) => Promise<R>`; options `"io"` or `{ schedule?, maxBatchSize?, maxInFlight? }` (items queue FIFO beyond `maxInFlight` and coalesce into chunks of up to `maxBatchSize`). Batch fn must return exactly as many results as items; a mismatch or throw rejects every promise in that chunk. |
 | Batch fire-and-forget (logs, events, analytics) | `BufferizedFunction` | No per-item return. Schedule: `"macrotask"` (default) or `"io"`. |
 | Rate-limit continuous events (scroll, resize) | `TimedFunction` | `throttle(fn, ms)` — leading-edge; re-entrant calls dropped, a throwing `fn` still starts the window. |
 | Wait until activity stops (search input) | `TimedFunction` | `debounce(fn, ms)` — trailing-edge. |
 | Resolve named promises in parallel | `PromiseUtils` | `props({ a: p1, b: p2 })` → `{ a, b }` (own enumerable string+symbol keys; null-prototype result). |
+| Run N async tasks, at most K at a time | `PromiseUtils` | `pool(items, limit, fn, { signal? })` → `PromiseSettledResult[]` in input order; abort stops new starts. Async I/O limiter (use `WorkerPool` for CPU-bound threads). |
 | Offload CPU-bound work to threads | `WorkerPool` | `make({ filename, maxThreads? })`, `run(pool, data)`. `filename` is a cwd-relative path or URL; worker gets `workerData.userData`. Also `activeCount`, `pendingCount`, `drain`, `destroy`; `run` opts `priority`, `signal`, `transferList`. Equal priorities run FIFO. Worker must be a separate file exporting a `default` function. |
 
 ### Type safety / branded types
@@ -278,7 +279,7 @@ test("encode/decode roundtrip", () => {
 5. **WorkerPool requires a separate worker file** — the worker module must be a
    standalone `.js`/`.ts` file exporting a `default` function.
 6. **BatchExecutor batch-function contract** — must return exactly as many
-   `PromiseSettledResult` items as it received; a length mismatch throws at runtime.
+   `PromiseSettledResult` items as it received; a length mismatch rejects that invocation's chunk.
 7. **WeakCache values must be objects** — `string`, `number`, `boolean`, and other
    primitives are rejected by `WeakRef`.
 8. **`Immutable.make` is a type-cast only** — it does not freeze or seal the

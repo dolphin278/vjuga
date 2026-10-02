@@ -2,6 +2,7 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as ISOTimestamp from "../ISOTimestamp.js";
 import { ValidationError } from "../schema/ValidationError.js";
+import { suiteCases } from "./fixtures/json-schema-test-suite/cases.js";
 
 // --- isoTimestamp (throwing constructor) ---
 
@@ -56,8 +57,49 @@ test("isoTimestamp() rejects empty string", () => {
   assert.throws(() => ISOTimestamp.isoTimestamp(""), RangeError);
 });
 
-test("isoTimestamp() rejects 4-digit fractional seconds", () => {
-  assert.throws(() => ISOTimestamp.isoTimestamp("2024-01-15T10:30:00.1234Z"), RangeError);
+test("isoTimestamp() accepts any number of fractional digits", () => {
+  for (const s of [
+    "2024-01-15T10:30:00.1234Z",
+    "2026-10-01T12:00:00.123456Z",
+    "2026-10-01T12:00:00.123456789+05:30",
+    "2026-10-01T12:00:00.000000000000000000001-08:00",
+  ]) {
+    assert.equal(ISOTimestamp.isoTimestamp(s), s);
+    assert.equal(ISOTimestamp.validator()(s)[0], true);
+  }
+});
+
+test("isoTimestamp() rejects malformed fractions and field ranges", () => {
+  for (const s of [
+    "2024-01-15T10:30:00.Z",
+    "2024-01-15T10:30.123Z",
+    "2024-01-15T10:30:00.12a4Z",
+    "2024-01-15T10:30:00,123Z",
+    "2024-01-15T10:60:00Z",
+    "2024-01-15T10:30:60Z",
+    "2024-01-15T10:30:00+24:00",
+    "2024-01-15T10:30:00+00:60",
+    "2024-01-15T10:30:00+0530",
+    "2024-01-15T10:30:00+05",
+    "2024-01-15T10:30:00+05:30Z",
+    "2024-01-15T10:30:00Zx",
+    "2024-01-15t10:30:00Z",
+    "2024-01-15T10:30:00z",
+    "2024-01-15T1a:30:00Z",
+    "2024-01-15T10:3a:00Z",
+    "2024-01-15T10:30:0aZ",
+    "2024-01-15T10-30:00Z",
+    "2024-01-15T10:30:00#05:30",
+    "2024-01-15T10:30:00+0a:30",
+    "2024-01-15T10:30:00+05:3a",
+    "2024-01-15T10:30:00+05-30",
+    "2024/01/15T10:30:00Z",
+    "2024-01/15T10:30:00Z",
+    "2a24-01-15T10:30:00Z",
+    "20a4-01-15T10:30:00Z",
+  ]) {
+    assert.throws(() => ISOTimestamp.isoTimestamp(s), RangeError, s);
+  }
 });
 
 test("isoTimestamp() rejects missing timezone", () => {
@@ -83,6 +125,83 @@ test("fromDate/toDate roundtrip preserves time", () => {
   const ts = ISOTimestamp.fromDate(original);
   const back = ISOTimestamp.toDate(ts);
   assert.equal(back.getTime(), original.getTime());
+});
+
+test("toDate() truncates fractions beyond milliseconds (never rounds)", () => {
+  const t = (s: string): string => ISOTimestamp.toDate(ISOTimestamp.isoTimestamp(s)).toISOString();
+  assert.equal(t("2024-01-15T10:30:00.123456Z"), "2024-01-15T10:30:00.123Z");
+  assert.equal(t("2024-12-31T23:59:59.9999999Z"), "2024-12-31T23:59:59.999Z");
+  assert.equal(t("2024-01-15T10:30:00.1239+01:00"), "2024-01-15T09:30:00.123Z");
+  assert.equal(t("2024-01-15T10:30:00.12Z"), "2024-01-15T10:30:00.120Z");
+  assert.equal(t("2024-01-15T10:30:00.123Z"), "2024-01-15T10:30:00.123Z");
+  assert.equal(t("2024-01-15T10:30Z"), "2024-01-15T10:30:00.000Z");
+  assert.equal(t("2024-01-15T10:30:00Z"), "2024-01-15T10:30:00.000Z");
+});
+
+test("toDate() handles expanded-year values produced by fromEpochMs", () => {
+  for (const ms of [253402300800000, -62198755200000, 8.64e15, -8.64e15]) {
+    assert.equal(ISOTimestamp.toDate(ISOTimestamp.fromEpochMs(ms)).getTime(), ms);
+  }
+});
+
+// --- RFC 3339 predicates (JSON Schema date-time / time) ---
+
+test("isRfc3339DateTime agrees with JSON-Schema-Test-Suite format date-time.json", () => {
+  const cases = suiteCases("date-time.json");
+  assert.ok(cases.length > 30);
+  for (const c of cases) {
+    assert.equal(
+      ISOTimestamp.isRfc3339DateTime(c.data),
+      c.valid,
+      `${c.description}: ${JSON.stringify(c.data)}`,
+    );
+  }
+});
+
+test("isRfc3339Time agrees with JSON-Schema-Test-Suite format time.json", () => {
+  const cases = suiteCases("time.json");
+  assert.ok(cases.length > 30);
+  for (const c of cases) {
+    assert.equal(
+      ISOTimestamp.isRfc3339Time(c.data),
+      c.valid,
+      `${c.description}: ${JSON.stringify(c.data)}`,
+    );
+  }
+});
+
+test("isRfc3339DateTime / isRfc3339Time edge cases", () => {
+  const dt = ISOTimestamp.isRfc3339DateTime;
+  const tm = ISOTimestamp.isRfc3339Time;
+  assert.equal(dt("2024-01-15T10:30:00Z"), true);
+  assert.equal(dt("2024-01-15t10:30:00.1z"), true);
+  assert.equal(dt("2024-01-15 10:30:00Z"), false);
+  assert.equal(dt("2024-01-15T10:30:00"), false);
+  assert.equal(dt("2024-01-15T10:30:00."), false);
+  assert.equal(dt("2024-02-30T10:30:00Z"), false);
+  assert.equal(dt("2024-01-15T10:30Z"), false);
+  assert.equal(dt("2024-01-15"), false);
+  assert.equal(dt(""), false);
+  assert.equal(dt("1998-12-31T23:59:60.999Z"), true);
+  assert.equal(dt("1998-12-31T23:59:61Z"), false);
+  assert.equal(tm("00:00:60+00:01"), true); // 23:59:60 UTC on the previous day
+  assert.equal(tm("23:59:60-00:00"), true);
+  assert.equal(tm("12:00:00-00:00"), true);
+  assert.equal(tm("12:00:00+23:59"), true);
+  assert.equal(tm("12:00:00+24:00"), false);
+  assert.equal(tm("12:00:00+0a:00"), false);
+  assert.equal(tm("12:00:00+00:0a"), false);
+  assert.equal(tm("12:00:00+00-00"), false);
+  assert.equal(tm("12:00:00+00:00x"), false);
+  assert.equal(tm("12:00:00Zx"), false);
+  assert.equal(tm("12:00:00"), false);
+  assert.equal(tm("1a:00:00Z"), false);
+  assert.equal(tm("12:0a:00Z"), false);
+  assert.equal(tm("12:00:0aZ"), false);
+  assert.equal(tm("12-00:00Z"), false);
+  assert.equal(tm("12:00-00Z"), false);
+  assert.equal(tm("12:00:00.0000000001Z"), true);
+  assert.equal(tm(""), false);
 });
 
 // --- fromEpochMs ---

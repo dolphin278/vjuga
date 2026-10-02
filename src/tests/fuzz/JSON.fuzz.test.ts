@@ -188,3 +188,109 @@ test("safeParse: randomly \\u-escaped __proto__/constructor keys never survive o
     { numRuns: 1_000_000 },
   );
 });
+
+// ---------------------------------------------------------------------------
+// 5a: Err carries the engine diagnostic; 5b: onDangerousKey policies
+// ---------------------------------------------------------------------------
+
+const engineMessage = (s: string): string | undefined => {
+  try {
+    JSON.parse(s);
+    return undefined;
+  } catch (e) {
+    return (e as Error).message;
+  }
+};
+
+test("safeParse Err is 'invalid JSON: ' + the engine message for every policy", () => {
+  Prop.assert(
+    Arb.tuple(
+      Arb.string({ maxLength: 20 }),
+      Arb.constantFrom<VJSON.DangerousKeyPolicy | undefined>(undefined, "strip", "reject", "keep"),
+    ),
+    ([s, policy]) => {
+      const msg = engineMessage(s);
+      const r = VJSON.safeParse(s, policy === undefined ? undefined : { onDangerousKey: policy });
+      if (msg === undefined) {
+        // Valid JSON: only reject may fail, and never with the syntax prefix.
+        if (r[0] === false) assert.ok(!r[1].startsWith("invalid JSON"), r[1]);
+        return;
+      }
+      assert.equal(r[0], false);
+      assert.equal(r[1], "invalid JSON: " + msg);
+      assert.ok(msg.length > 0);
+    },
+    { numRuns: 1_000_000 },
+  );
+});
+
+/** JSON text with keys drawn from dangerous words, optionally \u-escaped, at random depth. */
+const maskArb = Arb.array(Arb.boolean(), { minLength: 1, maxLength: 11 });
+const keyWordArb = Arb.constantFrom(
+  "__proto__",
+  "constructor",
+  "prototype",
+  "a",
+  "proto",
+  "__proto",
+);
+const depthArb = Arb.integer(1, 3);
+const flipArb = Arb.boolean();
+const poisonedTextArb: Arb.Arbitrary<string> = Arb.gen((pick) => {
+  const n = pick(depthArb);
+  let text = JSON.stringify(pick(jsonValue));
+  for (let i = 0; i < n; i++) {
+    const key = escapeWord(pick(keyWordArb), pick(maskArb), pick(maskArb));
+    const sibling = pick(flipArb) ? `,"v":"constructor"` : "";
+    text = pick(flipArb) ? `{"${key}":${text}${sibling}}` : `[{"${key}":${text}}]`;
+  }
+  return text;
+});
+
+const firstDangerousKey = (v: unknown): string | undefined => {
+  const stack: unknown[] = [v];
+  let found: string | undefined;
+  while (stack.length > 0) {
+    const cur = stack.pop();
+    if (cur === null || typeof cur !== "object") continue;
+    if (Array.isArray(cur)) stack.push(...cur);
+    else
+      for (const k of Object.keys(cur)) {
+        if (k === "__proto__" || k === "constructor") found ??= k;
+        stack.push((cur as Record<string, unknown>)[k]);
+      }
+  }
+  return found;
+};
+
+test("safeParse policies: reject iff a dangerous key exists, keep == parse, strip == default", () => {
+  Prop.assert(
+    poisonedTextArb,
+    (text) => {
+      const raw = VJSON.parse(text);
+      assert.notEqual(raw, undefined, text);
+      const dangerous = firstDangerousKey(raw);
+
+      const rejected = VJSON.safeParse(text, { onDangerousKey: "reject" });
+      if (dangerous === undefined) {
+        assert.deepEqual(rejected, [true, raw]);
+      } else {
+        assert.equal(rejected[0], false, text);
+        assert.match(rejected[1] as string, /^dangerous JSON key "(__proto__|constructor)"/);
+      }
+      assert.equal(VJSON.findDangerousKey(raw!) !== undefined, dangerous !== undefined);
+      // Unknown policies fail closed: same verdict as "reject".
+      const unknownPolicy = { onDangerousKey: "rejct" } as unknown as VJSON.SafeParseOptions;
+      assert.deepEqual(VJSON.safeParse(text, unknownPolicy), rejected);
+
+      assert.deepEqual(VJSON.safeParse(text, { onDangerousKey: "keep" }), [true, raw]);
+
+      const stripped = VJSON.safeParse(text);
+      assert.deepEqual(VJSON.safeParse(text, { onDangerousKey: "strip" }), stripped);
+      assert.equal(stripped[0], true);
+      assert.equal(firstDangerousKey(stripped[1]), undefined);
+      assert.equal(({} as Record<string, unknown>).polluted, undefined);
+    },
+    { numRuns: 1_000_000 },
+  );
+});

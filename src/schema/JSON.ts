@@ -16,8 +16,8 @@
  *   stringify: pre-computed key fragments; all-required objects inline into a
  *   single expression. Unions dispatch by typeof when variant types are
  *   disjoint, else by each variant's validator; no match throws `TypeError`.
- *   Non-finite numbers emit `null`; `allOf` / `conditional` resolve their
- *   applicable shapes per call (slower). parse: native `JSON.parse` +
+ *   Non-finite numbers emit `null`; static `allOf` shapes merge at compile
+ *   time, others resolve per call (slower). parse: native `JSON.parse` +
  *   generated validation; own `__proto__` keys (also `\u`-escaped
  *   spellings) are stripped. `constructor` is kept.
  *

@@ -135,20 +135,128 @@ export function emitStandardRefs(buf: CodeBuffer, okFn: unknown, errFn: unknown)
  * check({ id: 1, extra: 0 }); // [false, { path: "extra", ... }]
  * ```
  */
-export function validate<S extends Schema>(
+export function validate<S extends Schema, O extends ValidateOptions = {}>(
   schema: S,
-): (value: unknown) => Result<Infer<S>, SchemaError> {
+  options?: O,
+): (value: unknown) => Result<Infer<S>, ValidateError<O>> {
   const buf = createBuffer();
   emitStandardRefs(buf, ok, err);
 
   emit(buf, "return function validate(v) {");
   buf.indent++;
-  emitValidation(buf, schema, "v", '""');
-  emit(buf, "return _ok(v);");
+  if (options?.allErrors === true) {
+    // Collect mode: failures push onto a lazily allocated array and skip the
+    // rest of the failing value's checks (see CollectState).
+    (buf as CollectBuffer).collect = { label: "", nest: true };
+    emit(buf, "var _es = null;");
+    emitChild(buf, schema, "v", '""');
+    emit(buf, "return _es === null ? _ok(v) : _err(_es);");
+  } else {
+    emitValidation(buf, schema, "v", '""');
+    emit(buf, "return _ok(v);");
+  }
   buf.indent--;
   emit(buf, "}");
 
-  return compileFunction<(value: unknown) => Result<Infer<S>, SchemaError>>(buf);
+  return compileFunction<(value: unknown) => Result<Infer<S>, ValidateError<O>>>(buf);
+}
+
+/** Options for `validate`. */
+export interface ValidateOptions {
+  /**
+   * Collect every failure instead of stopping at the first: the validator
+   * returns `Result<T, SchemaError[]>`. Default `false` (first error only, the
+   * fastest path).
+   */
+  readonly allErrors?: boolean;
+}
+
+/**
+ * Error type of a validator compiled with options `O`: `SchemaError[]` when
+ * `O` has `allErrors: true`, `SchemaError | SchemaError[]` when that is only
+ * known at run time (`allErrors: boolean`), else `SchemaError`.
+ */
+export type ValidateError<O extends ValidateOptions> = O extends { readonly allErrors: true }
+  ? SchemaError[]
+  : O extends { readonly allErrors?: false | undefined }
+    ? SchemaError
+    : SchemaError | SchemaError[];
+
+// ---------------------------------------------------------------------------
+// Collect-all mode
+// ---------------------------------------------------------------------------
+
+/**
+ * Emission state of `validate(schema, { allErrors: true })`. Absent on every
+ * other buffer (default `validate`, boolean sub-validators, JSON / TOON
+ * parse), which therefore emit first-error code unchanged.
+ *
+ * A failure pushes its SchemaError onto `_es` and `break`s `label` — the
+ * block of the value being checked — so a value whose type check failed is
+ * never descended into, and at most one failure is recorded per value.
+ * `nest` is true where child values (properties, elements, record values)
+ * get their own block and so report independently; inside untagged unions,
+ * `oneOf` and `conditional` branches it is false, so the whole combinator
+ * reports a single error.
+ */
+interface CollectState {
+  label: string;
+  nest: boolean;
+}
+
+type CollectBuffer = CodeBuffer & { collect?: CollectState };
+
+function collectOf(buf: CodeBuffer): CollectState | undefined {
+  return (buf as CollectBuffer).collect;
+}
+
+/**
+ * Statement reporting a failure: `return _err(...)` in first-error mode,
+ * push + `break` in collect mode. `label` is a JS expression.
+ */
+function failStmt(
+  buf: CodeBuffer,
+  pathExpr: string,
+  label: string,
+  received: string,
+  soft = false,
+): string {
+  const e = `_me(${pathExpr}, ${label}, ${received})`;
+  const c = collectOf(buf);
+  if (c === undefined) return `return _err(${e});`;
+  // Soft (collect + nest): record and keep checking the same value
+  if (soft && c.nest) return `(_es || (_es = [])).push(${e});`;
+  return `{ (_es || (_es = [])).push(${e}); break ${c.label}; }`;
+}
+
+/** Validate a child value; in collect (nest) mode inside its own labeled block. */
+function emitChild(buf: CodeBuffer, schema: Schema, accessor: string, pathExpr: string): void {
+  const c = collectOf(buf);
+  if (c === undefined || !c.nest) {
+    emitValidation(buf, schema, accessor, pathExpr);
+    return;
+  }
+  const outer = c.label;
+  c.label = "c" + buf.varCounter++;
+  emit(buf, `${c.label}: {`);
+  buf.indent++;
+  emitValidation(buf, schema, accessor, pathExpr);
+  buf.indent--;
+  emit(buf, "}");
+  c.label = outer;
+}
+
+/** Emit `schema` so that it reports at most one error (combinator branches). */
+function emitSingle(buf: CodeBuffer, schema: Schema, accessor: string, pathExpr: string): void {
+  const c = collectOf(buf);
+  if (c === undefined) {
+    emitValidation(buf, schema, accessor, pathExpr);
+    return;
+  }
+  const nest = c.nest;
+  c.nest = false;
+  emitValidation(buf, schema, accessor, pathExpr);
+  c.nest = nest;
 }
 
 // ---------------------------------------------------------------------------
@@ -273,11 +381,11 @@ export function emitValidation(
     case "conditional":
       emit(buf, `if (${booleanCheck(buf, schema.meta.if, accessor)}) {`);
       buf.indent++;
-      emitValidation(buf, schema.meta.then, accessor, pathExpr);
+      emitSingle(buf, schema.meta.then, accessor, pathExpr);
       buf.indent--;
       emit(buf, "} else {");
       buf.indent++;
-      emitValidation(buf, schema.meta.else, accessor, pathExpr);
+      emitSingle(buf, schema.meta.else, accessor, pathExpr);
       buf.indent--;
       emit(buf, "}");
       break;
@@ -294,7 +402,23 @@ function emitFail(
   label: string,
   received: string,
 ): void {
-  emit(buf, `if (${cond}) return _err(_me(${pathExpr}, ${jsLiteral(label)}, ${received}));`);
+  emit(buf, `if (${cond}) ${failStmt(buf, pathExpr, jsLiteral(label), received)}`);
+}
+
+/**
+ * `emitFail` for a constraint checked after the value's type passed (lengths,
+ * bounds, pattern, format, item counts). Collect mode records it without
+ * leaving the value, so sibling constraints and elements still report;
+ * first-error code is identical to `emitFail`.
+ */
+function emitSoftFail(
+  buf: CodeBuffer,
+  cond: string,
+  pathExpr: string,
+  label: string,
+  received: string,
+): void {
+  emit(buf, `if (${cond}) ${failStmt(buf, pathExpr, jsLiteral(label), received, true)}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -320,17 +444,17 @@ function emitStringCheck(
   if (meta === undefined) return;
   if (meta.minLength !== undefined) {
     const n = jsLiteral(meta.minLength);
-    emitFail(buf, `${accessor}.length < ${n}`, pathExpr, `string(minLength=${n})`, accessor);
+    emitSoftFail(buf, `${accessor}.length < ${n}`, pathExpr, `string(minLength=${n})`, accessor);
   }
   if (meta.maxLength !== undefined) {
     const n = jsLiteral(meta.maxLength);
-    emitFail(buf, `${accessor}.length > ${n}`, pathExpr, `string(maxLength=${n})`, accessor);
+    emitSoftFail(buf, `${accessor}.length > ${n}`, pathExpr, `string(maxLength=${n})`, accessor);
   }
   if (meta.pattern !== undefined) {
     const ref = freshVar(buf);
     emitRef(buf, ref, new RegExp(meta.pattern));
     // The pattern text only ever appears inside the jsLiteral-escaped label
-    emitFail(
+    emitSoftFail(
       buf,
       `!${ref}.test(${accessor})`,
       pathExpr,
@@ -345,7 +469,13 @@ function emitStringCheck(
   if (tester !== undefined) {
     const ref = freshVar(buf);
     emitRef(buf, ref, tester);
-    emitFail(buf, `!${ref}.test(${accessor})`, pathExpr, `string(format=${meta.format})`, accessor);
+    emitSoftFail(
+      buf,
+      `!${ref}.test(${accessor})`,
+      pathExpr,
+      `string(format=${meta.format})`,
+      accessor,
+    );
   }
 }
 
@@ -353,8 +483,7 @@ function emitStringCheck(
 function stringHasRegex(meta: StringMeta): boolean {
   return (
     meta !== undefined &&
-    (meta.pattern !== undefined ||
-      (meta.format !== undefined && isKnownFormat(meta.format)))
+    (meta.pattern !== undefined || (meta.format !== undefined && isKnownFormat(meta.format)))
   );
 }
 
@@ -394,33 +523,33 @@ function emitNumericConstraints(
   if (meta === undefined) return;
   if (meta.minimum !== undefined) {
     const n = jsLiteral(meta.minimum);
-    emitFail(buf, `${accessor} < ${n}`, pathExpr, `${label}(>=${n})`, accessor);
+    emitSoftFail(buf, `${accessor} < ${n}`, pathExpr, `${label}(>=${n})`, accessor);
   }
   if (meta.maximum !== undefined) {
     const n = jsLiteral(meta.maximum);
-    emitFail(buf, `${accessor} > ${n}`, pathExpr, `${label}(<=${n})`, accessor);
+    emitSoftFail(buf, `${accessor} > ${n}`, pathExpr, `${label}(<=${n})`, accessor);
   }
   if (meta.exclusiveMinimum !== undefined) {
     const n = jsLiteral(meta.exclusiveMinimum);
-    emitFail(buf, `${accessor} <= ${n}`, pathExpr, `${label}(>${n})`, accessor);
+    emitSoftFail(buf, `${accessor} <= ${n}`, pathExpr, `${label}(>${n})`, accessor);
   }
   if (meta.exclusiveMaximum !== undefined) {
     const n = jsLiteral(meta.exclusiveMaximum);
-    emitFail(buf, `${accessor} >= ${n}`, pathExpr, `${label}(<${n})`, accessor);
+    emitSoftFail(buf, `${accessor} >= ${n}`, pathExpr, `${label}(<${n})`, accessor);
   }
   if (meta.multipleOf !== undefined) {
     const m = meta.multipleOf;
     const n = jsLiteral(m);
     if (Number.isInteger(m)) {
       // Integer multipleOf: exact modulo is safe
-      emitFail(buf, `${accessor} % ${n} !== 0`, pathExpr, `${label}(%${n})`, accessor);
+      emitSoftFail(buf, `${accessor} % ${n} !== 0`, pathExpr, `${label}(%${n})`, accessor);
     } else {
       // Non-integer multipleOf: floating-point % is unreliable (0.3 % 0.1 !== 0).
       // Check that the quotient is an integer up to a relative tolerance.
       const q = freshVar(buf);
       const d = freshVar(buf);
       emit(buf, `var ${q} = ${accessor} / ${n}, ${d} = ${q} - Math.round(${q});`);
-      emitFail(
+      emitSoftFail(
         buf,
         `${d} !== 0 && Math.abs(${d}) > Math.abs(${q}) * ${MULTIPLE_OF_RTOL}`,
         pathExpr,
@@ -447,7 +576,7 @@ function emitEnumCheck(
     values.length <= ENUM_INLINE_MAX
       ? values.map((v) => neExpr(accessor, v)).join(" && ")
       : `!${emitRef(buf, freshVar(buf), new Set(values))}.has(${accessor})`;
-  emit(buf, `if (${cond}) return _err(_me(${pathExpr}, ${labelRef}, ${accessor}));`);
+  emit(buf, `if (${cond}) ${failStmt(buf, pathExpr, labelRef, accessor)}`);
 }
 
 /** Emit the non-null, non-array object type check shared by object-like kinds. */
@@ -548,7 +677,7 @@ function emitProperties(
     if (key === skip) continue;
     const child = properties[key];
     const local = emitOwnRead(buf, accessor, key, plainFlag);
-    emitValidation(buf, child, local, childPath(pathExpr, key));
+    emitChild(buf, child, local, childPath(pathExpr, key));
     if (acceptsUndefined(child)) present += ` + (${local} !== undefined ? 1 : 0)`;
     else fixed++;
   }
@@ -587,11 +716,21 @@ function emitExtraKeyCheck(
   emit(buf, `if (${count} !== ${presentExpr}) {`);
   buf.indent++;
   const set = emitRef(buf, freshVar(buf), new Set(keys));
-  emit(buf, `${k} = _xk(${accessor}, ${set});`);
-  emit(
-    buf,
-    `if (${k} !== undefined) return _err(_me(${dynamicChildPath(pathExpr, k)}, "no additional properties", ${accessor}[${k}]));`,
-  );
+  const keyPath = dynamicChildPath(pathExpr, k);
+  const c = collectOf(buf);
+  if (c !== undefined && c.nest) {
+    // Collect mode: report every undeclared own key (same order as `_xk`)
+    emit(
+      buf,
+      `for (${k} in ${accessor}) if (!${set}.has(${k}) && _hasOwn(${accessor}, ${k})) (_es || (_es = [])).push(_me(${keyPath}, "no additional properties", ${accessor}[${k}]));`,
+    );
+  } else {
+    emit(buf, `${k} = _xk(${accessor}, ${set});`);
+    emit(
+      buf,
+      `if (${k} !== undefined) ${failStmt(buf, keyPath, '"no additional properties"', `${accessor}[${k}]`)}`,
+    );
+  }
   buf.indent--;
   emit(buf, "}");
 }
@@ -622,11 +761,11 @@ function emitArrayValidation(
   const { minItems, maxItems } = schema.meta;
   if (minItems !== undefined) {
     const n = jsLiteral(minItems);
-    emitFail(buf, `${accessor}.length < ${n}`, pathExpr, `array(minItems=${n})`, accessor);
+    emitSoftFail(buf, `${accessor}.length < ${n}`, pathExpr, `array(minItems=${n})`, accessor);
   }
   if (maxItems !== undefined) {
     const n = jsLiteral(maxItems);
-    emitFail(buf, `${accessor}.length > ${n}`, pathExpr, `array(maxItems=${n})`, accessor);
+    emitSoftFail(buf, `${accessor}.length > ${n}`, pathExpr, `array(maxItems=${n})`, accessor);
   }
   const idx = freshVar(buf);
   const len = freshVar(buf);
@@ -634,7 +773,7 @@ function emitArrayValidation(
   buf.indent++;
   const elem = freshVar(buf);
   emit(buf, `var ${elem} = ${accessor}[${idx}];`);
-  emitValidation(buf, schema.meta.items, elem, dynamicChildPath(pathExpr, idx));
+  emitChild(buf, schema.meta.items, elem, dynamicChildPath(pathExpr, idx));
   buf.indent--;
   emit(buf, "}");
 }
@@ -656,7 +795,7 @@ function emitTupleValidation(
   for (let i = 0; i < items.length; i++) {
     const elem = freshVar(buf);
     emit(buf, `var ${elem} = ${accessor}[${i}];`);
-    emitValidation(buf, items[i], elem, childPath(pathExpr, String(i)));
+    emitChild(buf, items[i], elem, childPath(pathExpr, String(i)));
   }
 }
 
@@ -674,7 +813,7 @@ function emitRecordValidation(
   emit(buf, `if (!_hasOwn(${accessor}, ${key})) continue;`);
   const elem = freshVar(buf);
   emit(buf, `var ${elem} = ${accessor}[${key}];`);
-  emitValidation(buf, schema.meta.values, elem, dynamicChildPath(pathExpr, key));
+  emitChild(buf, schema.meta.values, elem, dynamicChildPath(pathExpr, key));
   buf.indent--;
   emit(buf, "}");
 }
@@ -721,10 +860,10 @@ function emitUnionValidation(
     }
   }
   if (last >= 0) {
-    emitValidation(buf, variants[last], accessor, pathExpr);
+    emitSingle(buf, variants[last], accessor, pathExpr);
   } else {
     // Empty union matches nothing
-    emit(buf, `return _err(_me(${pathExpr}, "never", ${accessor}));`);
+    emit(buf, failStmt(buf, pathExpr, '"never"', accessor));
   }
   buf.indent--;
   emit(buf, "}");
@@ -742,7 +881,7 @@ function emitExclusiveValidation(
   pathExpr: string,
 ): void {
   if (variants.length === 0) {
-    emit(buf, `return _err(_me(${pathExpr}, "never", ${accessor}));`);
+    emit(buf, failStmt(buf, pathExpr, '"never"', accessor));
     return;
   }
   const count = freshVar(buf);
@@ -752,13 +891,11 @@ function emitExclusiveValidation(
   }
   emit(buf, `if (${count} === 0) {`);
   buf.indent++;
-  emitValidation(buf, variants[variants.length - 1], accessor, pathExpr);
+  emitSingle(buf, variants[variants.length - 1], accessor, pathExpr);
   buf.indent--;
   emit(buf, `}`);
-  emit(
-    buf,
-    `if (${count} > 1) return _err(_me(${pathExpr}, "oneOf(exactly one, matched " + ${count} + ")", ${accessor}));`,
-  );
+  const label = `"oneOf(exactly one, matched " + ${count} + ")"`;
+  emit(buf, `if (${count} > 1) ${failStmt(buf, pathExpr, label, accessor)}`);
 }
 
 /**
@@ -845,7 +982,7 @@ function emitDiscriminatedValidation(
   }
   const discLabelRef = emitRef(buf, freshVar(buf), "one of: " + tagLabels.join(", "));
   const discPathExpr = childPath(pathExpr, discriminant);
-  emit(buf, `default: return _err(_me(${discPathExpr}, ${discLabelRef}, ${tag}));`);
+  emit(buf, `default: ${failStmt(buf, discPathExpr, discLabelRef, tag)}`);
   buf.indent--;
   emit(buf, "}");
 }

@@ -2,6 +2,7 @@ import { test } from "node:test";
 import * as S from "../../../schema/Schema.js";
 import { validate, type SchemaError } from "../../../schema/Validate.js";
 import { formatTester } from "../../../schema/Formats.js";
+import { deepStrictEqual } from "node:assert/strict";
 import type { Result } from "../../../Result.js";
 import * as Arb from "../../../Arbitrary.js";
 import * as Prop from "../../../Property.js";
@@ -611,6 +612,34 @@ test("compiled validator agrees with the reference interpreter", () => {
         if (got[0] !== refValidate(schema, value)) return false;
         if (!got[0] && typeof got[1].path !== "string") return false;
         if (got[0] && !Object.is(got[1], value)) return false;
+      }
+      return true;
+    },
+    { numRuns: NUM_RUNS },
+  );
+});
+
+test("allErrors mode: same verdict as first-error mode, errors[0] is its error", () => {
+  Prop.assert(
+    schemaWithValues,
+    ({ schema, values }) => {
+      // Cast: Infer<> over the base `Schema` union is "excessively deep" for tsc
+      const s = schema as S.StringSchema;
+      const first = validate(s) as (x: unknown) => Result<unknown, SchemaError>;
+      const all = validate(s, { allErrors: true }) as (
+        x: unknown,
+      ) => Result<unknown, SchemaError[]>;
+      for (const value of values) {
+        const a = first(value);
+        const b = all(value);
+        if (a[0] !== b[0]) return false;
+        if (a[0]) {
+          if (!Object.is(b[1], value)) return false;
+          continue;
+        }
+        const errors = b[1] as SchemaError[];
+        if (!Array.isArray(errors) || errors.length === 0) return false;
+        deepStrictEqual(errors[0], a[1]);
       }
       return true;
     },

@@ -3,6 +3,7 @@ import * as assert from "node:assert/strict";
 import * as S from "../../schema/Schema.js";
 import { validate, type SchemaError } from "../../schema/Validate.js";
 import { jsLiteral, eqExpr, neExpr } from "../../schema/Codegen.js";
+import { parse as jsonParse } from "../../schema/JSON.js";
 import { assertOk, assertErr } from "./_helpers.js";
 
 // ---------------------------------------------------------------------------
@@ -1335,4 +1336,217 @@ test("string format: enforced inside unions, oneOf, not, conditional and allOf",
   assertErr(validate(S.conditional(S.string(), date))("tomorrow"));
   assertErr(validate(S.union(S.nullable(date), S.number()))("tomorrow"));
   assertErr(validate(S.object({ d: S.optional(date) }))({ d: "tomorrow" }));
+});
+
+// ---------------------------------------------------------------------------
+// allErrors — collect every failure
+// ---------------------------------------------------------------------------
+
+function errorsOf(r: readonly [boolean, unknown]): SchemaError[] {
+  assert.equal(r[0], false, "expected Err");
+  assert.ok(Array.isArray(r[1]));
+  return r[1] as SchemaError[];
+}
+
+const paths = (r: readonly [boolean, unknown]): string[] => errorsOf(r).map((e) => e.path);
+
+test("allErrors: N bad fields → N errors with their paths", () => {
+  const s = S.object({
+    id: S.integer({ minimum: 1 }),
+    name: S.string(),
+    born: S.string({ format: "date" }),
+    tags: S.array(S.string()),
+    pos: S.tuple(S.number(), S.number()),
+    meta: S.record(S.boolean()),
+    deep: S.object({ a: S.object({ b: S.literal(1) }) }),
+    opt: S.optional(S.number()),
+  });
+  const v = validate(s, { allErrors: true });
+  const r = v({
+    id: 0,
+    name: 1,
+    born: "tomorrow",
+    tags: ["a", 1, "b", false],
+    pos: [1, "x"],
+    meta: { a: true, b: 1, c: "x" },
+    deep: { a: { b: 2 } },
+    opt: "x",
+  });
+  assert.deepEqual(paths(r), [
+    "id",
+    "name",
+    "born",
+    "tags.1",
+    "tags.3",
+    "pos.1",
+    "meta.b",
+    "meta.c",
+    "deep.a.b",
+    "opt",
+  ]);
+  const errors = errorsOf(r);
+  assert.deepEqual(errors[0], { path: "id", expected: "integer(>=1)", received: 0 });
+  assert.deepEqual(errors[2], {
+    path: "born",
+    expected: "string(format=date)",
+    received: "tomorrow",
+  });
+});
+
+test("allErrors: success returns the input itself; default signature unchanged", () => {
+  const s = S.object({ a: S.string() });
+  const input = { a: "x" };
+  const r = validate(s, { allErrors: true })(input);
+  assert.equal(r[0], true);
+  assert.equal(r[1], input);
+  // allErrors: false is the default first-error mode, byte for byte
+  assert.equal(validate(s, { allErrors: false }).toString(), validate(s).toString());
+  assert.equal(validate(s, {}).toString(), validate(s).toString());
+  const e = assertErr(validate(s, { allErrors: false })({ a: 1 }));
+  assert.equal(e.path, "a");
+});
+
+test("allErrors: a value whose type check failed is not descended into", () => {
+  const v = validate(
+    S.object({ o: S.object({ a: S.string(), b: S.string() }), l: S.array(S.number()) }),
+    {
+      allErrors: true,
+    },
+  );
+  assert.deepEqual(errorsOf(v({ o: 5, l: "x" })), [
+    { path: "o", expected: "object", received: 5 },
+    { path: "l", expected: "array", received: "x" },
+  ]);
+  assert.deepEqual(errorsOf(v(null)), [{ path: "", expected: "object", received: null }]);
+  // Tuple length is part of its type check
+  assert.deepEqual(paths(validate(S.tuple(S.string()), { allErrors: true })([1, 2])), [""]);
+});
+
+test("allErrors: every constraint of one value reports, and elements still do", () => {
+  const str = validate(S.string({ minLength: 5, pattern: "^a", format: "email" }), {
+    allErrors: true,
+  });
+  assert.deepEqual(
+    errorsOf(str("bc")).map((e) => e.expected),
+    ["string(minLength=5)", "string(pattern=^a)", "string(format=email)"],
+  );
+  const num = validate(S.number({ minimum: 10, multipleOf: 3, maximum: 0 }), { allErrors: true });
+  assert.equal(errorsOf(num(5)).length, 3);
+  const frac = validate(S.number({ multipleOf: 0.5, exclusiveMaximum: 0, exclusiveMinimum: 9 }), {
+    allErrors: true,
+  });
+  assert.equal(errorsOf(frac(0.3)).length, 3);
+  const arr = validate(S.array(S.boolean(), { minItems: 4, maxItems: 1 }), { allErrors: true });
+  assert.deepEqual(paths(arr([1, true, 2])), ["", "", "0", "2"]);
+});
+
+test("allErrors: every undeclared key is reported", () => {
+  const v = validate(S.object({ a: S.string(), b: S.optional(S.number()) }), { allErrors: true });
+  assert.deepEqual(errorsOf(v({ a: 1, x: 1, y: 2 })), [
+    { path: "a", expected: "string", received: 1 },
+    { path: "x", expected: "no additional properties", received: 1 },
+    { path: "y", expected: "no additional properties", received: 2 },
+  ]);
+  // Optional set to undefined + inherited enumerables take the slow path but are no extras
+  const proto = { inherited: 1 };
+  const o = Object.assign(Object.create(proto) as object, { a: "x", b: undefined });
+  assert.equal(v(o)[0], true);
+  assert.deepEqual(
+    paths(validate(S.object({ n: S.object({}) }), { allErrors: true })({ n: { z: 1 } })),
+    ["n.z"],
+  );
+});
+
+test("allErrors: untagged unions, oneOf and conditional report a single error", () => {
+  const variant = S.object({ a: S.string(), b: S.string() });
+  const u = validate(S.object({ u: S.union(S.number(), variant) }), { allErrors: true });
+  assert.deepEqual(errorsOf(u({ u: { a: 1, b: 2 } })), [
+    { path: "u.a", expected: "string", received: 1 },
+  ]);
+  const arr = validate(S.union(S.number(), S.array(S.string())), { allErrors: true });
+  assert.deepEqual(paths(arr([1, 2])), ["0"]);
+  const one = validate(
+    S.oneOf(S.string({ minLength: 1 }), S.object({ a: S.string(), b: S.string() })),
+    {
+      allErrors: true,
+    },
+  );
+  assert.deepEqual(paths(one({ a: 1, b: 2 })), ["a"]);
+  const both = validate(S.oneOf(S.string(), S.string({ minLength: 1 })), { allErrors: true });
+  assert.deepEqual(errorsOf(both("x")), [
+    { path: "", expected: "oneOf(exactly one, matched 2)", received: "x" },
+  ]);
+  const cond = validate(
+    S.conditional(S.object({}, { additionalProperties: true }), variant, S.string()),
+    {
+      allErrors: true,
+    },
+  );
+  assert.deepEqual(paths(cond({ a: 1, b: 2, c: 3 })), ["a"]);
+  assert.deepEqual(paths(cond(1)), [""]);
+  const none = validate(S.object({ n: S.union(), o: S.oneOf() }), { allErrors: true });
+  assert.deepEqual(
+    errorsOf(none({ n: 1, o: 2 })).map((e) => e.expected),
+    ["never", "never"],
+  );
+  const notS = validate(S.object({ x: S.not(S.string()), y: S.unknown() }), { allErrors: true });
+  assert.deepEqual(paths(notS({ x: "s" })), ["x", "y"]);
+});
+
+test("allErrors: discriminated unions report the matched variant's errors", () => {
+  const ev = S.union(
+    S.object({ type: S.literal("click"), x: S.number(), y: S.number() }),
+    S.object({ type: S.literal("key"), code: S.string() }),
+  );
+  const v = validate(S.array(ev), { allErrors: true });
+  assert.deepEqual(paths(v([{ type: "click", x: "1", y: "2", z: 0 }, { type: "nope" }, 5])), [
+    "0.x",
+    "0.y",
+    "0.z",
+    "1.type",
+    "2",
+  ]);
+});
+
+test("allErrors: allOf checks every variant at the same value", () => {
+  const v = validate(
+    S.allOf(
+      S.object({ a: S.string() }, { additionalProperties: true }),
+      S.object({ b: S.string() }, { additionalProperties: true }),
+    ),
+    { allErrors: true },
+  );
+  assert.deepEqual(paths(v({ a: 1, b: 2 })), ["a", "b"]);
+  // A failed type check at the allOf's own value stops the remaining variants
+  assert.deepEqual(paths(v(3)), [""]);
+});
+
+test("allErrors: errors[0] equals the first-error result", () => {
+  const s = S.object({
+    a: S.union(S.string(), S.object({ q: S.number() })),
+    b: S.array(S.integer({ maximum: 2 }), { maxItems: 1 }),
+    c: S.enum_("x", "y"),
+  });
+  const first = validate(s);
+  const all = validate(s, { allErrors: true });
+  for (const value of [
+    { a: {}, b: [3], c: "z" },
+    { a: "s", b: [1, 9], c: "x" },
+    { a: "s", b: [], c: "q" },
+  ]) {
+    const e = assertErr(first(value));
+    assert.deepEqual(errorsOf(all(value))[0], e);
+  }
+});
+
+test("allErrors does not leak into schema/JSON parse or boolean sub-validators", () => {
+  const s = S.object({ a: S.union(S.number(), S.object({ b: S.string() })) });
+  validate(s, { allErrors: true });
+  assert.equal(validate(s).toString().includes("_es"), false);
+  assert.equal(jsonParse(s).toString().includes("_es"), false);
+  assert.deepEqual(jsonParse(s)('{"a":{"b":1}}')[1], {
+    path: "a.b",
+    expected: "string",
+    received: 1,
+  });
 });

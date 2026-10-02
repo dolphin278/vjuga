@@ -135,6 +135,12 @@ test("isUri — authority, ports, IP literals, query and fragment", () => {
     "http://h?q/?#f/?",
     "http://h#",
     "http://h/%41%62",
+    // Shapes taken by the regex fast path
+    "http://",
+    "HTTP://H.example:/",
+    "http://h/a@b:c//d",
+    "http://h/p?#",
+    "svn+ssh://h:22/r?a=/b?c#d/?e",
   ]) {
     assert.equal(isUri(ok), true, ok);
   }
@@ -153,6 +159,11 @@ test("isUri — authority, ports, IP literals, query and fragment", () => {
     "http://h#é",
     "http://h##",
     "http://h^/",
+    "http://h:80:90/",
+    "http://h/p#a#b",
+    "http://h/a b",
+    "http://h/\n",
+    "1http://h/",
     "",
     ":",
   ]) {

@@ -1457,7 +1457,7 @@ test("allErrors: every undeclared key is reported", () => {
   );
 });
 
-test("allErrors: untagged unions, oneOf and conditional report a single error", () => {
+test("allErrors: untagged unions and oneOf report a single error; conditional collects", () => {
   const variant = S.object({ a: S.string(), b: S.string() });
   const u = validate(S.object({ u: S.union(S.number(), variant) }), { allErrors: true });
   assert.deepEqual(errorsOf(u({ u: { a: 1, b: 2 } })), [
@@ -1482,7 +1482,8 @@ test("allErrors: untagged unions, oneOf and conditional report a single error", 
       allErrors: true,
     },
   );
-  assert.deepEqual(paths(cond({ a: 1, b: 2, c: 3 })), ["a"]);
+  // The branch is chosen by `if`, so it collects like a plain value
+  assert.deepEqual(paths(cond({ a: 1, b: 2, c: 3 })), ["a", "b", "c"]);
   assert.deepEqual(paths(cond(1)), [""]);
   const none = validate(S.object({ n: S.union(), o: S.oneOf() }), { allErrors: true });
   assert.deepEqual(
@@ -1549,4 +1550,30 @@ test("allErrors does not leak into schema/JSON parse or boolean sub-validators",
     expected: "string",
     received: 1,
   });
+});
+
+test("allErrors: an extra key is reported even when a required key is missing", () => {
+  const v = validate(S.object({ name: S.string() }), { allErrors: true });
+  assert.deepEqual(paths(v({ nmae: "x" })), ["name", "nmae"]);
+  const d = validate(
+    S.union(
+      S.object({ type: S.literal("a"), x: S.number() }),
+      S.object({ type: S.literal("b"), y: S.number() }),
+    ),
+    { allErrors: true },
+  );
+  assert.deepEqual(paths(d({ type: "a", z: 1 })), ["x", "z"]);
+});
+
+test("allErrors: untyped JSON Schema keyword groups report every field", () => {
+  const r = S.fromJsonSchema({
+    properties: { a: { type: "string" }, b: { type: "integer" } },
+    required: ["a", "b"],
+    additionalProperties: false,
+  });
+  assert.ok(r[0]);
+  const v = validate(r[1] as S.StringSchema, { allErrors: true }) as (
+    x: unknown,
+  ) => readonly [boolean, unknown];
+  assert.deepEqual(paths(v({ a: 1, b: "x", c: 0 })), ["a", "b", "c"]);
 });

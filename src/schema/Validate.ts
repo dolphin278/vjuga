@@ -21,7 +21,8 @@
  * `email`, `uri`, `uuid`, `ipv4`, `ipv6`, legacy `iso-datetime` (see
  * `schema/Formats`); other names are annotation-only. allErrors: one error
  * per failed type check (no descent), every failed constraint and extra key,
- * a single error per untagged union / `oneOf` / `not` / `conditional`;
+ * a single error per untagged union / `oneOf` / `not` (a `conditional`'s
+ * chosen branch and a tagged union's variant collect normally);
  * `errors[0]` is always the first-error result. Cyclic schemas unsupported.
  *
  * @example Compile once, validate many
@@ -197,11 +198,11 @@ export type ValidateError<O extends ValidateOptions> = O extends { readonly allE
  *
  * A failure pushes its SchemaError onto `_es` and `break`s `label` — the
  * block of the value being checked — so a value whose type check failed is
- * never descended into, and at most one failure is recorded per value.
+ * never descended into (soft constraint failures record and continue).
  * `nest` is true where child values (properties, elements, record values)
- * get their own block and so report independently; inside untagged unions,
- * `oneOf` and `conditional` branches it is false, so the whole combinator
- * reports a single error.
+ * get their own block and so report independently; inside the fallback
+ * variant of an untagged union or `oneOf` it is false, so the whole
+ * combinator reports a single error.
  */
 interface CollectState {
   label: string;
@@ -385,11 +386,12 @@ export function emitValidation(
     case "conditional":
       emit(buf, `if (${booleanCheck(buf, schema.meta.if, accessor)}) {`);
       buf.indent++;
-      emitSingle(buf, schema.meta.then, accessor, pathExpr);
+      // The branch is already chosen by `if`: it collects like any value
+      emitValidation(buf, schema.meta.then, accessor, pathExpr);
       buf.indent--;
       emit(buf, "} else {");
       buf.indent++;
-      emitSingle(buf, schema.meta.else, accessor, pathExpr);
+      emitValidation(buf, schema.meta.else, accessor, pathExpr);
       buf.indent--;
       emit(buf, "}");
       break;
@@ -682,8 +684,12 @@ function emitProperties(
     const child = properties[key];
     const local = emitOwnRead(buf, accessor, key, plainFlag);
     emitChild(buf, child, local, childPath(pathExpr, key));
-    if (acceptsUndefined(child)) present += ` + (${local} !== undefined ? 1 : 0)`;
-    else fixed++;
+    // Collect mode keeps going past a missing required key, so a static count
+    // could hide an extra key; count every key by presence there instead.
+    const c = collectOf(buf);
+    if (acceptsUndefined(child) || (c !== undefined && c.nest)) {
+      present += ` + (${local} !== undefined ? 1 : 0)`;
+    } else fixed++;
   }
   return String(fixed) + present;
 }

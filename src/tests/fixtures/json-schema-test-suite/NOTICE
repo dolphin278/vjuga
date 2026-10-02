@@ -1,0 +1,9 @@
+date.json, date-time.json and time.json are vendored unmodified from the
+JSON-Schema-Test-Suite:
+
+  https://github.com/json-schema-org/JSON-Schema-Test-Suite
+  commit 5b0ee1613e45fcc2bddac00e07c19cd49b00d8a8
+  path   tests/draft2020-12/optional/format/
+
+Copyright (c) 2012 Julian Berman, MIT License (see LICENSE in this directory).
+They drive src/tests/ISODate.test.ts and src/tests/ISOTimestamp.test.ts.

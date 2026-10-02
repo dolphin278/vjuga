@@ -33,7 +33,7 @@
 import type { Branded } from "./FunctionUtils.js";
 import { type Result, ok, err } from "./Result.js";
 import { ValidationError, type Validator } from "./schema/ValidationError.js";
-import { type ISOTimestamp, fromEpochMs } from "./ISOTimestamp.js";
+import { type ISOTimestamp, fromEpochMs, toDate as isoToDate } from "./ISOTimestamp.js";
 
 /** Branded number guaranteed to be a finite Unix epoch timestamp in seconds. */
 export type UnixTimestamp = Branded<number, "UnixTimestamp">;
@@ -67,7 +67,7 @@ export function now(): UnixTimestamp {
 
 /** Converts an ISOTimestamp to a UnixTimestamp. */
 export function fromISO(ts: ISOTimestamp): UnixTimestamp {
-  return Math.floor(new Date(ts as string).getTime() / 1000) as UnixTimestamp;
+  return Math.floor(isoToDate(ts).getTime() / 1000) as UnixTimestamp;
 }
 
 /** Converts a UnixTimestamp to an ISOTimestamp. */

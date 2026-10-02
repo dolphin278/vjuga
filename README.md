@@ -49,7 +49,7 @@ Queue - FIFO/LIFO with O(1) push/pop/shift/unshift, circular buffer that auto-gr
 Validate compiles schemas to code-generated validators - one pass validation at runtime. JSON stringify/parse generate typed one-pass parse+validate and schema-exact serializers with a prototype-pollution guard. TOON is up to ~50% smaller than JSON for tabular data (token-efficient contexts). Schema composable type definitions with 14 kinds: primitive, array, object, record, union, tuple, nullable, optional, literal, enum, and more.
 
 ### Types
-Branded ISOTimestamp, UnixTimestamp validates and brands at construction time. UUID v4 random and v7 time-ordered.
+Branded ISOTimestamp, ISODate, UnixTimestamp validates and brands at construction time. UUID v4 random and v7 time-ordered.
 
 ### Testing
 Property.check() runs property-based tests - generates random input, shrinks to minimal counterexamples automatically. StatefulTest.assertStateful() for model-based stateful testing with oracle model. CoverageGuided.fuzz() is time-boxed random fuzzing; fuzzAsync() adds V8 coverage feedback.

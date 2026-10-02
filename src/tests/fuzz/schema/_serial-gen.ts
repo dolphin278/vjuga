@@ -246,8 +246,11 @@ export function genSchema(r: Rng, cfg: GenConfig, depth = 0, pos: Pos = "root"):
       schema = genCombinator(r, () =>
         child(pos === "field" ? (r() < 0.5 ? "field" : "inner") : pos),
       );
-      // TOON has no layout for unknown / allOf / not / conditional
-      if (cfg.toon && schema.kind !== "union") unsupported = true;
+      // TOON has no layout for unknown / allOf / not / conditional (a oneOf
+      // may come back wrapped in a hoisted optional)
+      if (cfg.toon && (schema.kind === "optional" ? schema.meta.inner : schema).kind !== "union") {
+        unsupported = true;
+      }
       break;
     default:
       // nullable(optional(T)) as a field would mean "present but undefined"
@@ -285,9 +288,10 @@ function genCombinator(r: Rng, inner: () => S.Schema): S.Schema {
       return S.conditional(S.string(), S.string(), inner());
     default: {
       // A single variant is trivially exactly-one. union(optional(T)) is not
-      // treated as an absent-able field by serializers — unwrap it.
+      // treated as an absent-able field by serializers — hoist the optional
+      // out, so the shape (and the TOON verdict already recorded for it) stays.
       const x = inner();
-      return S.oneOf(x.kind === "optional" ? x.meta.inner : x);
+      return x.kind === "optional" ? S.optional(S.oneOf(x.meta.inner)) : S.oneOf(x);
     }
   }
 }

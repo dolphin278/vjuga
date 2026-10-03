@@ -26,6 +26,13 @@ const { filename } = workerData as { filename: string };
 
 const mod = await import(filename);
 const handler = mod.default as (data: unknown) => unknown;
+// Fail at startup (before READY) so the pool rejects with this error instead
+// of every task failing later with "handler is not a function".
+if (typeof handler !== "function") {
+  throw new TypeError(
+    `WorkerPool: module ${filename} must export a default function, got ${typeof handler}`,
+  );
+}
 
 port.postMessage({ tag: MSG_READY } satisfies OutboundMessage);
 

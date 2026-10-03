@@ -8,7 +8,24 @@ import { pathToFileURL } from "node:url";
 import * as FunctionReference from "../../FunctionReference.js";
 
 // Directory names drawn from characters that are special in URLs.
-const specials = ["%", "?", "#", " ", "&", "+", "=", "é", "a", "Z", "0", "%41", "%zz"];
+// Bun's import() cannot load file URLs containing an encoded "?" (%3F), a
+// runtime limitation unrelated to FunctionReference, so "?" is drawn only on Node.
+const isBun = typeof (globalThis as { Bun?: unknown }).Bun !== "undefined";
+const specials = [
+  "%",
+  ...(isBun ? [] : ["?"]),
+  "#",
+  " ",
+  "&",
+  "+",
+  "=",
+  "é",
+  "a",
+  "Z",
+  "0",
+  "%41",
+  "%zz",
+];
 const dirName = Arb.map(
   Arb.array(Arb.constantFrom(...(specials as [string, ...string[]])), {
     minLength: 1,
@@ -62,4 +79,44 @@ test("missing export always rejects with ReferencedSymbolIsNotAFunction", async 
     },
     { numRuns: 300 },
   );
+});
+
+// G7-2: the fragment selects an export but is not part of the module key.
+const fragment = Arb.constantFrom("none", "bare", "f0", "f1", "f2", "f3", "f4");
+
+test("any mix of fragments into one file shares one module instance; caller URL untouched", async () => {
+  const d = mkdtempSync(join(tmpdir(), "vjuga-funcref-once-"));
+  let n = 0;
+  try {
+    await Prop.assertAsync(
+      Arb.array(fragment, { minLength: 1, maxLength: 8 }),
+      async (picks) => {
+        // Fresh file per run: f0..f4 and default all return the evaluation
+        // count seen when the module ran; a duplicate instance would bump it.
+        const key = `__frOnce${n}`;
+        const file = join(d, `m${n++}.mjs`);
+        let src = `globalThis.${key} = (globalThis.${key} ?? 0) + 1;\n`;
+        src += `const id = globalThis.${key};\n`;
+        for (let i = 0; i < 5; i++) src += `export function f${i}() { return id; }\n`;
+        src += "export default function () { return id; }\n";
+        writeFileSync(file, src);
+        try {
+          for (const pick of picks) {
+            const url = pathToFileURL(file);
+            if (pick !== "none" && pick !== "bare") url.hash = pick;
+            const before = url.href;
+            const fn = await FunctionReference.resolve(pick === "bare" ? `${url.href}#` : url);
+            if (url.href !== before || fn() !== 1) return false;
+          }
+          return (globalThis as Record<string, unknown>)[key] === 1;
+        } finally {
+          // Don't leak per-run counters into a shared (bun) test process.
+          delete (globalThis as Record<string, unknown>)[key];
+        }
+      },
+      { numRuns: 300 },
+    );
+  } finally {
+    rmSync(d, { recursive: true, force: true });
+  }
 });

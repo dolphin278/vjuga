@@ -5,7 +5,9 @@
  * A function reference is a `file:///path/to/module.ts#exportName` URL that can
  * be resolved via native `import()` in any execution context (child processes,
  * worker threads, remote machines). The URL hash fragment selects the named
- * export (percent-decoded); omitting it defaults to the `default` export.
+ * export (percent-decoded); omitting it defaults to the `default` export. The
+ * module is imported without the fragment, so every reference into one file
+ * shares a single module instance (same as a static import of it).
  *
  * String references: a string starting with `file:` is parsed as a URL; any
  * other string is a filesystem path (the part before the last `#`) resolved
@@ -46,7 +48,15 @@ export async function resolve(reference: URL | string): Promise<(...args: unknow
 
   let module: Record<string, unknown>;
   try {
-    module = await (import(reference.href) as Promise<Record<string, unknown>>);
+    // Import WITHOUT the fragment: Node keys its module cache by full URL, so
+    // `#a` and `#b` would otherwise load separate module instances. In a
+    // serialized href the only literal `#` starts the fragment (a bare trailing
+    // `#` included); slicing avoids a second URL parse and leaves the caller's
+    // URL untouched.
+    const href = reference.href;
+    const hashAt = href.indexOf("#");
+    const target = hashAt === -1 ? href : href.slice(0, hashAt);
+    module = await (import(target) as Promise<Record<string, unknown>>);
   } catch (error) {
     // import() always throws Error; the else branch is a safety net
     /* node:coverage ignore next 2 */

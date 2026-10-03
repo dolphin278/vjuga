@@ -100,3 +100,19 @@ test("throttle: throwing fn still starts the window", async () => {
   assert.equal(calls, 2);
   await sleep(TICK);
 });
+
+test("G7-3: ms outside [0, 2^31-1] (or NaN) throws RangeError at construction", () => {
+  const bad = [NaN, -1, -Infinity, Infinity, 2 ** 31, 1e12];
+  for (const ms of bad) {
+    assert.throws(() => throttle(() => {}, ms), RangeError);
+    assert.throws(() => debounce(() => {}, ms), RangeError);
+  }
+});
+
+test("G7-3: boundary delays 0, fractional and 2^31-1 are accepted", () => {
+  // Construction only: calling would arm a timer that keeps the process alive.
+  for (const ms of [0, 0.5, 2 ** 31 - 1]) {
+    assert.equal(typeof throttle(() => {}, ms), "function");
+    assert.equal(typeof debounce(() => {}, ms), "function");
+  }
+});

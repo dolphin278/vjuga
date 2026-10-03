@@ -428,10 +428,9 @@ test("parse unquote escapes", () => {
   assert.equal(assertOk(fn('"a\\tb"')), "a\tb");
 });
 
-test("parse unquote unknown escape passes through", () => {
+test("parse rejects an unknown escape (spec §7.1)", () => {
   const fn = ST.parse(S.string());
-  // Unknown escape like \x should pass through the backslash
-  assert.equal(assertOk(fn('"a\\xb"')), "a\\xb");
+  assert.equal(assertErr(fn('"a\\xb"')).expected, "string");
 });
 
 // ---------------------------------------------------------------------------
@@ -1282,14 +1281,20 @@ test("flexible order: nested objects, discriminated unions, quoted keys", () => 
   const par = ST.parse(schema, { flexibleOrder: true });
   const value = { a: 1, o: { x: "q", y: true }, s: { kind: "circle" as const, r: 3 } };
   assert.deepEqual(assertOk(par("s:\n  r: 3\n  kind: circle\no:\n  y: true\n  x: q\na: 1")), value);
-  // Unneeded key quotes and unknown keys are tolerated
+  // Unneeded key quotes are tolerated
   assert.deepEqual(
-    assertOk(
-      par(
-        '"a": 1\nextra: 9\no:\n  "x": q\n  y: true\n  junk:\n    deep: 1\ns:\n  kind: circle\n  r: 3',
-      ),
-    ),
+    assertOk(par('"a": 1\no:\n  "x": q\n  y: true\ns:\n  kind: circle\n  r: 3')),
     value,
+  );
+  // Undeclared keys are not (G3-6), at any depth
+  assert.deepEqual(assertErr(par("a: 1\nextra: 9\no:\n  x: q\ns:\n  kind: circle\n  r: 3")), {
+    path: "",
+    expected: "declared key",
+    received: "extra: 9",
+  });
+  assert.deepEqual(
+    assertErr(par("a: 1\no:\n  x: q\n  junk:\n    deep: 1\ns:\n  kind: circle\n  r: 3")),
+    { path: "o", expected: "declared key", received: "  junk:" },
   );
   assertErr(par("o:\n  x: q\ns:\n  kind: circle\n  r: 3")); // missing a
   assertErr(par("a: 1\no:\n  y: true\ns:\n  kind: circle\n  r: 3")); // missing o.x
@@ -1380,7 +1385,7 @@ test("keys are quoted only when needed (G9-15)", () => {
   rt(
     S.object({ xs: S.array(S.object({ "c,d": S.integer(), "e|f": S.integer() })) }),
     { xs: [{ "c,d": 1, "e|f": 2 }] },
-    'xs[1]{c,d|"e|f"}:\n  1|2',
+    'xs[1|]{c,d|"e|f"}:\n  1|2',
     { delimiter: "|" },
   );
 });
@@ -1428,21 +1433,64 @@ test("quoted cells with escaped quotes and delimiters split correctly", () => {
   assert.deepEqual(assertOk(par("xs[0]:")), { xs: [] });
 });
 
-test("unquote handles every escape; unknown escapes are kept verbatim", () => {
+test("unquote handles every escape; unknown escapes and malformed quotes are errors (G3-2)", () => {
   const par = ST.parse(S.string());
   assert.equal(assertOk(par('"a\\nb\\rc\\td\\\\e\\"f"')), 'a\nb\rc\td\\e"f');
   assert.equal(assertOk(par('"\\u0041\\u00e9"')), "Aé");
-  assert.equal(assertOk(par('"\\uZZZZ"')), "\\uZZZZ");
-  assert.equal(assertOk(par('"\\q"')), "\\q");
-  assert.equal(assertOk(par('"\\u004"')), "\\u004");
-  assert.equal(assertOk(par('"ab\\"')), "ab\\");
-  assert.equal(assertOk(par('"')), '"');
+  assert.equal(assertOk(par('"\\\\"')), "\\");
   assert.equal(assertOk(par('"x"')), "x");
+  assert.equal(assertOk(par('""')), "");
+  for (const bad of [
+    '"\\uZZZZ"',
+    '"\\q"',
+    '"\\x"',
+    '"\\u004"',
+    '"\\u12"',
+    '"ab\\"', // the closing quote is escaped: unterminated
+    '"\\',
+    '"',
+    '"abc',
+    '"a"b"',
+    '"abc" x',
+    '"a\\n"b"',
+  ]) {
+    assert.deepEqual(assertErr(par(bad)), { path: "", expected: "string", received: bad }, bad);
+  }
+  // Unquoted text containing quotes or backslashes is taken as-is
+  assert.equal(assertOk(par("a\\x")), "a\\x");
+});
+
+test("a malformed quoted token never decodes to another value (G3-2)", () => {
+  // union / nullable / optional: a decoder that signalled "malformed" with
+  // null or undefined would let these accept the broken token.
+  for (const schema of [
+    S.union(S.string(), S.null_()),
+    S.nullable(S.string()),
+    S.object({ a: S.optional(S.union(S.string(), S.integer())) }),
+    S.literal(null),
+    S.enum_("a", 1),
+    S.object({ a: S.literal("x") }),
+  ]) {
+    const par = anyParse(schema);
+    for (const bad of ['"abc', '"\\q"', '"']) {
+      const text = schema.kind === "object" ? "a: " + bad : bad;
+      assertErr(par(text));
+    }
+  }
+  const disc = anyParse(Shape);
+  assert.equal(assertErr(disc('kind: "circle\nr: 1')).expected, "discriminant");
+  // Malformed quoted keys: a record stops at the line, which is then left over
+  const rec = anyParse(S.record(S.integer()));
+  assert.deepEqual(assertOk(rec('"a\\"b": 1')), { 'a"b': 1 });
+  assert.equal(assertErr(rec('"a\\qb": 1')).expected, "end of input");
+  assert.equal(assertErr(rec('"ab: 1')).expected, "end of input");
+  const flex = anyParse(S.object({ a: S.integer() }), { flexibleOrder: true });
+  assert.equal(assertErr(flex('"a\\q": 1')).expected, "key 'a'");
 });
 
 test("number grammar is strict (G9-14)", () => {
   const num = ST.parse(S.number());
-  for (const ok of ["0", "-0", "1.5", "1e5", "1E+5", "-2.5e-3", "1e+21", "05"]) {
+  for (const ok of ["0", "-0", "1.5", "1e5", "1E+5", "-2.5e-3", "1e+21", "0.5", "-0e0", "10"]) {
     assert.equal(assertOk(num(ok)), Number(ok), ok);
   }
   for (const bad of [
@@ -1450,6 +1498,20 @@ test("number grammar is strict (G9-14)", () => {
     "-",
     "1.",
     ".5",
+    // JSON grammar (G3-2): no leading zeros, no bare `.` around the digits
+    "05",
+    "00",
+    "-01",
+    "-.5",
+    "1.e5",
+    "1.E2",
+    "-",
+    "--1",
+    "1e+",
+    "1.5.5",
+    "1e5e5",
+    "-x",
+    "1a",
     "+1",
     "0x10",
     "0b1",
@@ -1585,4 +1647,221 @@ test("indent option applies to nested blocks, rows and list items", () => {
     indent: 1,
     delimiter: "\t",
   });
+});
+
+// ---------------------------------------------------------------------------
+// G3: constraints, number grammar, header counts, flexible keys, options
+// ---------------------------------------------------------------------------
+
+test("parse enforces leaf constraints and item counts like validate (G3-1)", () => {
+  const cases: [S.Schema, string, SchemaError][] = [
+    [
+      S.object({ name: S.string({ minLength: 3 }) }),
+      "name: a",
+      { path: "name", expected: "string(minLength=3)", received: "a" },
+    ],
+    [
+      S.object({ email: S.string({ format: "email" }) }),
+      "email: nope",
+      { path: "email", expected: "string(format=email)", received: "nope" },
+    ],
+    [
+      S.object({ id: S.integer({ minimum: 0 }) }),
+      "id: -5",
+      { path: "id", expected: "integer(>=0)", received: -5 },
+    ],
+    [
+      S.object({ d: S.string({ pattern: "^\\d+$" }) }),
+      'd: "abc"',
+      { path: "d", expected: "string(pattern=^\\d+$)", received: "abc" },
+    ],
+    [
+      S.object({ xs: S.array(S.integer(), { maxItems: 1 }) }),
+      "xs[3]: 1,2,3",
+      { path: "xs", expected: "array(maxItems=1)", received: "3" },
+    ],
+    [
+      S.object({ xs: S.array(S.integer(), { minItems: 2 }) }),
+      "xs[1]: 1",
+      { path: "xs", expected: "array(minItems=2)", received: "1" },
+    ],
+    [
+      S.array(S.object({ n: S.string({ minLength: 3 }) })),
+      "[1]{n}:\n  a",
+      { path: "0.n", expected: "string(minLength=3)", received: "a" },
+    ],
+    [
+      S.record(S.number({ multipleOf: 2 })),
+      "k: 3",
+      { path: "k", expected: "number(%2)", received: 3 },
+    ],
+    [
+      S.tuple(S.optional(S.number({ maximum: 1 })), S.nullable(S.string({ maxLength: 1 }))),
+      "[2]: ,ab",
+      { path: "1", expected: "string(maxLength=1)", received: "ab" },
+    ],
+    [
+      S.array(S.array(S.string(), { minItems: 1 })),
+      "[1]:\n  - [0]:",
+      { path: "0", expected: "array(minItems=1)", received: "0" },
+    ],
+  ];
+  for (const [schema, text, error] of cases) {
+    assert.deepEqual(assertErr(anyParse(schema)(text)), error, text);
+  }
+  // Absent / null values skip the constraints, as in validate
+  const opt = S.object({
+    a: S.optional(S.string({ minLength: 2 })),
+    b: S.nullable(S.integer({ minimum: 5 })),
+  });
+  rt(opt, { b: null });
+  rt(opt, { a: "xy", b: 5 });
+  rt(S.object({ xs: S.array(S.integer(), { minItems: 1, maxItems: 2 }) }), { xs: [1, 2] });
+  rt(S.union(S.string({ minLength: 1 }), S.null_()), "a");
+  assertErr(anyParse(S.union(S.string({ minLength: 2 }), S.null_()))("a"));
+});
+
+test("text outside the number grammar decodes as a string where strings are allowed (G3-2)", () => {
+  const U = S.union(S.string(), S.number());
+  for (const s of ["-.5", "-.0", "-.5e1", "-01"]) {
+    rt(S.object({ x: U }), { x: s });
+    rt(S.array(U), [s]);
+    rt(S.array(S.object({ a: U, b: S.string() })), [{ a: s, b: "q" }]);
+  }
+  const D = S.union(
+    S.object({ k: S.literal("-.5"), a: S.number() }),
+    S.object({ k: S.literal("b"), z: S.string() }),
+  );
+  rt(D, { k: "-.5", a: 1 }, "k: -.5\na: 1");
+  assert.equal(assertOk(anyParse(U)("-0.5")), -0.5);
+  assert.equal(assertOk(anyParse(U)("1.e5")), "1.e5");
+  // A leading-zero token is not a number
+  assertErr(anyParse(S.literal(5))("05"));
+  assert.equal(assertOk(anyParse(S.enum_("05", 5))("05")), "05");
+  rt(S.enum_("05", 5), 5, "5");
+});
+
+test("huge array header counts are an Err, never a throw (G3-3)", () => {
+  const huge = ["4294967296", "9".repeat(400)];
+  const shapes: [S.Schema, (n: string) => string][] = [
+    [S.object({ xs: S.array(S.string()) }), (n) => `xs[${n}]: a`],
+    [S.array(S.integer()), (n) => `[${n}]: 1`],
+    [S.array(S.object({ a: S.integer() })), (n) => `[${n}]{a}:\n  1`],
+    [S.object({ xs: S.array(S.array(S.string())) }), (n) => `xs[${n}]:\n  - [1]: a`],
+    [S.tuple(S.string(), S.integer()), (n) => `[${n}]: a,1`],
+  ];
+  for (const [schema, text] of shapes) {
+    const par = anyParse(schema);
+    for (const n of huge) assert.equal(assertErr(par(text(n))).expected, "array header", n);
+    // The largest valid array length is a count mismatch, not a RangeError
+    assertErr(par(text("4294967295")));
+  }
+  // Inline: more cells announced than the line could hold
+  assert.match(assertErr(anyParse(S.array(S.string()))("[100000000]: a")).expected, /inline items/);
+});
+
+test("flexible order rejects duplicate and undeclared keys (G3-6)", () => {
+  const O = S.object({ a: S.integer(), b: S.integer() });
+  const flex = anyParse(O, { flexibleOrder: true });
+  assert.deepEqual(assertOk(flex("b: 2\na: 1")), { a: 1, b: 2 });
+  assert.deepEqual(assertErr(flex("a: 1\nb: 2\nevil: 3")), {
+    path: "",
+    expected: "declared key",
+    received: "evil: 3",
+  });
+  assert.equal(assertErr(flex("a: 1\nevil: 3\nb: 2")).expected, "declared key");
+  assert.deepEqual(assertErr(flex("a: 1\na: 9\nb: 2")), {
+    path: "",
+    expected: "unique key",
+    received: "a: 9",
+  });
+  // A quoted spelling of a key is the same key
+  assert.equal(assertErr(flex('a: 1\n"a": 9\nb: 2')).expected, "unique key");
+  // __proto__ is just another undeclared key
+  assert.equal(assertErr(flex("__proto__: 1\na: 1\nb: 2")).expected, "declared key");
+  // Nested and list-item objects
+  const nested = anyParse(S.object({ o: S.object({ x: S.integer() }) }), { flexibleOrder: true });
+  assert.deepEqual(assertErr(nested("o:\n  x: 1\n  x: 2")), {
+    path: "o",
+    expected: "unique key",
+    received: "  x: 2",
+  });
+  const list = anyParse(S.array(S.object({ x: S.integer(), y: S.array(S.integer()) })), {
+    flexibleOrder: true,
+  });
+  assert.deepEqual(assertOk(list("[1]:\n  - y[1]: 2\n    x: 1")), [{ x: 1, y: [2] }]);
+  assert.equal(assertErr(list("[1]:\n  - x: 2\n    x: 1")).expected, "unique key");
+  // additionalProperties: undeclared keys (and their children) are skipped,
+  // duplicates are still rejected
+  const open = anyParse(S.object({ a: S.integer() }, { additionalProperties: true }), {
+    flexibleOrder: true,
+  });
+  assert.deepEqual(assertOk(open("x: 1\nj:\n  deep: 2\na: 5")), { a: 5 });
+  assert.equal(assertErr(open("a: 5\na: 6")).expected, "unique key");
+  assert.equal(assertErr(open("x: 5\nx: 6\na: 1")).expected, "unique key");
+});
+
+test("value tokens are stripped of surrounding spaces in every position (F3-C3, spec §12)", () => {
+  const str = anyParse(S.string());
+  assert.equal(assertOk(str('  "x" ')), "x");
+  assert.equal(assertOk(str(" x ")), "x");
+  assert.deepEqual(assertOk(anyParse(S.object({ a: S.string() }))('a: "x" ')), { a: "x" });
+  assert.deepEqual(assertOk(anyParse(S.object({ a: S.string() }))("a:  abc  ")), { a: "abc" });
+  const arr = anyParse(S.array(S.string()));
+  assert.deepEqual(assertOk(arr('[2]: "a", "b"')), ["a", "b"]);
+  assert.deepEqual(assertOk(arr('[2]: "a" ,"b" ')), ["a", "b"]);
+  assert.deepEqual(assertOk(arr('[2]: " a" , b ')), [" a", "b"]); // inside quotes kept
+  const tab = anyParse(S.array(S.object({ n: S.integer(), s: S.optional(S.string()) })));
+  assert.deepEqual(assertOk(tab("[2]{n,s}:\n   1 , x\n  2,  ")), [{ n: 1, s: "x" }, { n: 2 }]);
+  const list = anyParse(S.tuple(S.integer(), S.object({ a: S.integer() })));
+  assert.deepEqual(assertOk(list("[2]:\n  -  7 \n  - a:  1 ")), [7, { a: 1 }]);
+  assert.deepEqual(assertOk(anyParse(S.record(S.boolean()))("k:  true ")), { k: true });
+  assert.deepEqual(assertOk(anyParse(Shape)("kind:  circle \nr: 1")), { kind: "circle", r: 1 });
+  // Only U+0020: a tab or NBSP is part of the token
+  assertErr(anyParse(S.integer())("1\t"));
+  assert.equal(assertOk(str("x ")), "x ");
+  assertErr(str('"x"\t'));
+});
+
+test("indent must be an integer >= 1 (G3-7)", () => {
+  const schema = S.object({
+    o: S.object({ q: S.optional(S.string()) }),
+    q: S.optional(S.string()),
+  });
+  for (const indent of [0, -1, 1.5, NaN, Infinity]) {
+    assert.throws(() => ST.stringify(schema, { indent }), {
+      name: "TypeError",
+      message: "TOON: indent must be an integer >= 1, got " + indent,
+    });
+    assert.throws(() => ST.parse(schema, { indent }), TypeError);
+  }
+  rt(schema, { o: {}, q: "x" }, "o:\nq: x", { indent: 1 });
+  rt(schema, { o: { q: "y" } }, "o:\n   q: y", { indent: 3 });
+});
+
+test("non-comma delimiters are declared in every array header (G3-8)", () => {
+  const schema = S.object({
+    xs: S.array(S.string()),
+    t: S.tuple(S.integer(), S.integer()),
+    rows: S.array(S.object({ a: S.integer(), b: S.string() })),
+    ls: S.array(S.array(S.integer())),
+    lt: S.tuple(S.object({ a: S.integer() })),
+  });
+  const value = {
+    xs: ["p", "q"],
+    t: [1, 2],
+    rows: [{ a: 1, b: "x" }],
+    ls: [[1, 2], []],
+    lt: [{ a: 3 }],
+  };
+  const lines = (d: string) =>
+    `xs[2${d}]: p${d || ","}q\nt[2${d}]: 1${d || ","}2\nrows[1${d}]{a${d || ","}b}:\n  1${d || ","}x\n` +
+    `ls[2${d}]:\n  - [2${d}]: 1${d || ","}2\n  - [0${d}]: \nlt[1${d}]:\n  - a: 3`;
+  rt(schema, value, lines("|"), { delimiter: "|" });
+  rt(schema, value, lines("\t"), { delimiter: "\t" });
+  // Comma has no marker; the unmarked form is still accepted for any delimiter
+  rt(schema, value, lines(""));
+  const pipe = anyParse(S.array(S.integer()), { delimiter: "|" });
+  assert.deepEqual(assertOk(pipe("[2]: 1|2")), [1, 2]);
+  assertErr(pipe("[2\t]: 1|2"));
 });

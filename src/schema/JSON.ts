@@ -89,6 +89,40 @@ function stripProto(root: unknown): void {
   }
 }
 
+/**
+ * A JSON `\u` escape of a character of `__proto__`: `_` 5f, `o` 6f, `p` 70,
+ * `r` 72, `t` 74 (hex digits are case-insensitive in JSON). Every spelling of
+ * the key other than the literal one contains such an escape.
+ */
+const PROTO_ESCAPE = /\\u00(?:[56][fF]|7[024])/;
+
+/**
+ * JSON text of an `unknown` / `not` value where the slot cannot be omitted
+ * (array / tuple item, root): a value with no JSON form — undefined, a
+ * function, a symbol — is `null`, as in native `JSON.stringify` arrays.
+ */
+function unknownToJson(x: unknown): string {
+  const s = JSON.stringify(x);
+  return s === undefined ? "null" : s;
+}
+
+/** True if a function or symbol: values native `JSON.stringify` omits or nulls. */
+function hasNoJson(x: unknown): boolean {
+  return typeof x === "function" || typeof x === "symbol";
+}
+
+/**
+ * True for an `unknown` / `not` schema, optional-wrapped or not. As a record
+ * value or an optional property, its JSON text is computed first and the key
+ * omitted when the value has none (function, symbol, undefined), like native
+ * `JSON.stringify`. A required property emits `null` instead (`_ju`).
+ */
+function mayHaveNoJson(schema: Schema): boolean {
+  let s = schema;
+  while (s.kind === "optional") s = s.meta.inner;
+  return s.kind === "unknown" || s.kind === "not";
+}
+
 // ---------------------------------------------------------------------------
 // stringify
 // ---------------------------------------------------------------------------
@@ -103,13 +137,19 @@ function stripProto(root: unknown): void {
  * Objects emit only their declared keys, even with `additionalProperties:
  * true`. An `allOf` emits the keys of every variant (a `record` variant: all
  * own keys), a `conditional` those of the branch its `if` selects; `unknown`
- * and `not` declare nothing, so their values are emitted as-is.
+ * and `not` declare nothing, so their values are emitted as-is. As in native
+ * `JSON.stringify`, an undefined record value omits its key, and a value with
+ * no JSON form (function, symbol) omits its record / optional-field key and
+ * is `null` in an array slot or at the root. A required `unknown` / `not`
+ * field keeps its key: `null` for undefined / function / symbol, so `parse`
+ * accepts the output.
  */
 export function stringify<S extends Schema>(schema: S): (value: Infer<S>) => string {
   const buf = createBuffer();
   emitRef(buf, "_esc", escapeJsonString);
   emitRef(buf, "_num", numberToJson);
   emitRef(buf, "_js", JSON.stringify);
+  emitRef(buf, "_ju", unknownToJson);
   emitRef(buf, "_ix", stringifyCombinator);
 
   emit(buf, "return function stringify(v) {");
@@ -156,9 +196,10 @@ function walkStringify(buf: CodeBuffer, schema: Schema, accessor: string): strin
       return `(${accessor} === null ? "null" : ${walkStringify(buf, schema.meta.inner, accessor)})`;
     case "unknown":
     case "not":
-      // Nothing is declared about the value — it is serialized as-is
-      // (undefined outside an object field emits null, like optional(T))
-      return `(${accessor} === undefined ? "null" : _js(${accessor}))`;
+      // Nothing is declared about the value — it is serialized as-is. Here
+      // the slot cannot be omitted: undefined / function / symbol emit null
+      // (object fields and record values omit the key instead).
+      return `_ju(${accessor})`;
     case "allOf": {
       const merged = mergeAllOf(schema);
       if (merged !== null) return walkStringify(buf, merged, accessor);
@@ -373,7 +414,9 @@ function stringifyCombinator(schema: Schema, v: unknown): string {
  * as-is.
  */
 function stringifyShapes(schemas: readonly Schema[], v: unknown): string {
-  if (v === undefined) return "null";
+  // No JSON form (only `unknown` / `not` admit a function or symbol): null,
+  // like an array item in native JSON.stringify
+  if (v === undefined || hasNoJson(v)) return "null";
   if (typeof v !== "object" || v === null) {
     // Primitive output depends only on the value, not on the shapes
     if (typeof v === "string") return escapeJsonString(v);
@@ -382,7 +425,7 @@ function stringifyShapes(schemas: readonly Schema[], v: unknown): string {
   const shapes: Schema[] = [];
   for (let i = 0; i < schemas.length; i++) collectShapes(schemas[i], v, shapes);
   if (shapes.length === 1) return shapeStringify(shapes[0], v);
-  if (shapes.length === 0) return JSON.stringify(v);
+  if (shapes.length === 0) return unknownToJson(v);
   return Array.isArray(v) ? stringifyArrayShapes(shapes, v) : stringifyObjectShapes(shapes, v);
 }
 
@@ -427,7 +470,7 @@ function stringifyObjectShapes(shapes: readonly Schema[], o: object): string {
     const k = keys[i];
     // Own reads only: `toString` must not pick up Object.prototype's member
     const x = Object.hasOwn(o, k) ? (o as Record<string, unknown>)[k] : undefined;
-    if (x === undefined) continue;
+    if (x === undefined || hasNoJson(x)) continue; // omitted, as natively
     const per: Schema[] = [];
     for (let j = 0; j < shapes.length; j++) {
       const shape = shapes[j];
@@ -449,6 +492,9 @@ function walkStringifyObject(
   const keys = Object.keys(props);
   if (keys.length === 0) return `"{}"`;
 
+  // A required unknown / not field stays on the inline path (`_ju`: null for
+  // a value without a JSON form) — omitting a required key would produce
+  // text `parse` rejects. Only optional ones may omit the key.
   const hasOptional = keys.some((k) => propertyMayBeAbsent(props[k]));
 
   // All-required path: return a pure expression — no helper function needed.
@@ -473,22 +519,23 @@ function walkStringifyObject(
 
   // Optional fields require conditional inclusion — use a helper function
   // because the logic can't be expressed as a single expression.
-  const childExprs: { key: string; expr: string; optional: boolean }[] = [];
+  // `optional`: the key is included only when the value is defined.
+  // `json` (optional unknown / not): `expr` is the value's JSON text, and the
+  // key is included only when that is defined (not for a function / symbol).
+  const childExprs: { key: string; expr: string; optional: boolean; json: boolean }[] = [];
   for (let i = 0; i < keys.length; i++) {
     const key = keys[i];
     const child = props[key];
     const childAccessor = `o[${JSON.stringify(key)}]`;
-    if (child.kind === "optional") {
-      childExprs.push({
-        key,
-        expr: walkStringify(buf, child.meta.inner, childAccessor),
-        optional: true,
-      });
-    } else if (propertyMayBeAbsent(child)) {
-      // allOf / conditional accepting undefined: omit the key when absent
-      childExprs.push({ key, expr: walkStringify(buf, child, childAccessor), optional: true });
+    if (child.kind === "optional" && mayHaveNoJson(child)) {
+      childExprs.push({ key, expr: `_js(${childAccessor})`, optional: true, json: true });
+    } else if (child.kind === "optional") {
+      const expr = walkStringify(buf, child.meta.inner, childAccessor);
+      childExprs.push({ key, expr, optional: true, json: false });
     } else {
-      childExprs.push({ key, expr: walkStringify(buf, child, childAccessor), optional: false });
+      // Any other schema accepting undefined (propertyMayBeAbsent): omit the key when absent
+      const expr = walkStringify(buf, child, childAccessor);
+      childExprs.push({ key, expr, optional: propertyMayBeAbsent(child), json: false });
     }
   }
 
@@ -497,11 +544,20 @@ function walkStringifyObject(
   body += '  var s = "{";\n';
   body += "  var first = true;\n";
   for (let i = 0; i < childExprs.length; i++) {
-    const { key, expr, optional } = childExprs[i];
+    const { key, expr, optional, json } = childExprs[i];
     const keyFragment = JSON.stringify(key) + ":";
-    if (optional) {
-      // Names like `toString` would read an inherited member when absent.
-      const own = key in Object.prototype ? `Object.hasOwn(o, ${JSON.stringify(key)}) && ` : "";
+    // Names like `toString` would read an inherited member when absent.
+    const own = key in Object.prototype ? `Object.hasOwn(o, ${JSON.stringify(key)}) && ` : "";
+    if (json) {
+      const t = "t" + i;
+      const read =
+        own === "" ? expr : `Object.hasOwn(o, ${JSON.stringify(key)}) ? ${expr} : undefined`;
+      body += `  var ${t} = ${read};\n`;
+      body += `  if (${t} !== undefined) {\n`;
+      body += `    s += (first ? "" : ",") + ${JSON.stringify(keyFragment)} + ${t};\n`;
+      body += "    first = false;\n";
+      body += "  }\n";
+    } else if (optional) {
       body += `  if (${own}o[${JSON.stringify(key)}] !== undefined) {\n`;
       body += `    s += (first ? "" : ",") + ${JSON.stringify(keyFragment)} + ${expr};\n`;
       body += "    first = false;\n";
@@ -575,7 +631,15 @@ function walkStringifyRecord(
   accessor: string,
 ): string {
   const helperName = freshVar(buf);
-  const valExpr = walkStringify(buf, schema.meta.values, "o[k]");
+  const values = schema.meta.values;
+  // Like native JSON.stringify, an undefined value omits its key (so does a
+  // function / symbol under unknown / not, whose JSON text is undefined).
+  // The skip runs before the comma bookkeeping.
+  const json = mayHaveNoJson(values);
+  const read = json
+    ? "var x = _js(o[k]); if (x === undefined) continue;"
+    : "var x = o[k]; if (x === undefined) continue;";
+  const valExpr = json ? "x" : walkStringify(buf, values, "x");
 
   // for...in avoids Object.keys() array allocation on the hot path.
   // Object.hasOwn guard prevents inherited/polluted prototype keys from leaking.
@@ -583,7 +647,7 @@ function walkStringifyRecord(
     buf,
     `function ${helperName}(o) {
   var s = "{", first = 1;
-  for (var k in o) { if (!Object.hasOwn(o, k)) continue; if (first) first = 0; else s += ","; s += _esc(k) + ":" + ${valExpr}; }
+  for (var k in o) { if (!Object.hasOwn(o, k)) continue; ${read} if (first) first = 0; else s += ","; s += _esc(k) + ":" + ${valExpr}; }
   return s === "{" ? "{}" : s + "}";
 }`,
   );
@@ -718,9 +782,14 @@ export function parse<S extends Schema>(
   emit(buf, "var v = _jp(json);");
   emit(buf, 'if (v === undefined) return _err(_me("", "valid JSON", json));');
   // Cheap pre-check on the raw text. A backslash-u escape can spell the key
-  // without the literal token (e.g. "__proto__"), so any `\u` also
-  // triggers the walk.
-  emit(buf, 'if (json.indexOf("__proto__") !== -1 || json.indexOf("\\\\u") !== -1) _strip(v);');
+  // without the literal token, but only by escaping one of its letters
+  // (`_ p r o t`), so only those escapes trigger the walk — an unrelated
+  // escape (`é`) no longer costs a full-tree walk (~20% of a parse).
+  emitRef(buf, "_pe", PROTO_ESCAPE);
+  emit(
+    buf,
+    'if (json.indexOf("__proto__") !== -1 || (json.indexOf("\\\\u") !== -1 && _pe.test(json))) _strip(v);',
+  );
   emitValidation(buf, schema, "v", '""');
   emit(buf, "return _ok(v);");
   buf.indent--;

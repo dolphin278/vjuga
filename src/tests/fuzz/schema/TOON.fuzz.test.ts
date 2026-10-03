@@ -2,6 +2,7 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as S from "../../../schema/Schema.js";
 import * as ST from "../../../schema/TOON.js";
+import * as V from "../../../schema/Validate.js";
 import * as Arb from "../../../Arbitrary.js";
 import * as Prop from "../../../Property.js";
 import type { Result } from "../../../Result.js";
@@ -382,4 +383,357 @@ test("random schemas round-trip through TOON or are rejected at compile time", (
   );
   // Guard against a generator that only produces rejected shapes.
   assert.ok(roundTrips > rejected, `roundTrips=${roundTrips} rejected=${rejected}`);
+});
+
+// ---------------------------------------------------------------------------
+// G3: constraints, number / string token grammar, header counts, flexible keys
+// ---------------------------------------------------------------------------
+
+const validateAny = V.validate as unknown as (
+  s: S.Schema,
+) => (v: unknown) => Result<unknown, unknown>;
+
+/** A constrained schema `c` and its unconstrained twin `u` (same TOON layout). */
+interface Twin {
+  readonly c: S.Schema;
+  readonly u: S.Schema;
+}
+
+function int(r: G.Rng, n: number): number {
+  return Math.floor(r() * n);
+}
+
+function genConstrainedLeaf(r: G.Rng): Twin {
+  switch (int(r, 4)) {
+    case 0: {
+      const k: { minLength?: number; maxLength?: number; pattern?: string } = {};
+      if (r() < 0.5) k.minLength = int(r, 4);
+      if (r() < 0.5) k.maxLength = 1 + int(r, 4);
+      if (r() < 0.3) k.pattern = "^[ab]*$";
+      return { c: S.string(k), u: S.string() };
+    }
+    case 1: {
+      const k: { minimum?: number; maximum?: number; multipleOf?: number } = {};
+      if (r() < 0.5) k.minimum = int(r, 7) - 3;
+      if (r() < 0.5) k.maximum = int(r, 7) - 3;
+      if (r() < 0.3) k.multipleOf = 2 + int(r, 2);
+      return { c: S.integer(k), u: S.integer() };
+    }
+    case 2: {
+      const k: { exclusiveMinimum?: number; exclusiveMaximum?: number } = {};
+      if (r() < 0.5) k.exclusiveMinimum = int(r, 5) - 2;
+      if (r() < 0.5) k.exclusiveMaximum = int(r, 5) - 2;
+      return { c: S.number(k), u: S.number() };
+    }
+    default: {
+      const t = genConstrainedLeaf(r);
+      return { c: S.nullable(t.c), u: S.nullable(t.u) };
+    }
+  }
+}
+
+function genArrayOpts(r: G.Rng): { minItems?: number; maxItems?: number } {
+  const o: { minItems?: number; maxItems?: number } = {};
+  if (r() < 0.5) o.minItems = int(r, 3);
+  if (r() < 0.5) o.maxItems = 1 + int(r, 3);
+  return o;
+}
+
+function genTwinObject(r: G.Rng, depth: number, leavesOnly: boolean): Twin {
+  const c: Record<string, S.Schema> = {};
+  const u: Record<string, S.Schema> = {};
+  const n = 1 + int(r, 3);
+  for (let i = 0; i < n; i++) {
+    let t = leavesOnly ? genConstrainedLeaf(r) : genTwin(r, depth + 1);
+    if (r() < 0.3) t = { c: S.optional(t.c), u: S.optional(t.u) };
+    c["k" + i] = t.c;
+    u["k" + i] = t.u;
+  }
+  return { c: S.object(c), u: S.object(u) };
+}
+
+/** Objects, inline / tabular / list arrays and tuples over constrained leaves. */
+function genTwin(r: G.Rng, depth = 0): Twin {
+  const x = depth >= 2 ? 0 : int(r, 5);
+  switch (x) {
+    case 0:
+      return genConstrainedLeaf(r);
+    case 1:
+      return genTwinObject(r, depth, false);
+    case 2: {
+      const item = r() < 0.5 ? genConstrainedLeaf(r) : genTwinObject(r, depth, r() < 0.5);
+      const o = genArrayOpts(r);
+      return { c: S.array(item.c, o), u: S.array(item.u) };
+    }
+    case 3: {
+      const item = genTwin(r, depth + 1);
+      return { c: S.array(item.c, genArrayOpts(r)), u: S.array(item.u) };
+    }
+    default: {
+      const a = genConstrainedLeaf(r);
+      const b = genTwin(r, depth + 1);
+      return { c: S.tuple(a.c, b.c), u: S.tuple(a.u, b.u) };
+    }
+  }
+}
+
+/** A value of the unconstrained twin — violates the constraints about half the time. */
+function genLoose(r: G.Rng, s: S.Schema): unknown {
+  switch (s.kind) {
+    case "string":
+      return ["", "a", "ab", "abc", "abcd", "x", "ba", "b c"][int(r, 8)];
+    case "integer":
+      return int(r, 11) - 5;
+    case "number":
+      return (int(r, 11) - 5) / 2;
+    case "nullable":
+      return r() < 0.3 ? null : genLoose(r, s.meta.inner);
+    case "optional":
+      return r() < 0.3 ? undefined : genLoose(r, s.meta.inner);
+    case "array": {
+      const out: unknown[] = [];
+      const n = int(r, 5);
+      for (let i = 0; i < n; i++) out.push(genLoose(r, s.meta.items));
+      return out;
+    }
+    case "tuple":
+      return (s.meta.items as S.Schema[]).map((it) => genLoose(r, it));
+    case "object": {
+      const out: Record<string, unknown> = {};
+      const props = s.meta.properties as Record<string, S.Schema>;
+      for (const k of Object.keys(props)) {
+        const v = genLoose(r, props[k]);
+        if (v !== undefined) out[k] = v;
+      }
+      return out;
+    }
+    default:
+      throw new Error("genLoose: unexpected kind " + s.kind);
+  }
+}
+
+/** Line-level mutations of a TOON document (drop / duplicate / swap / re-indent / insert). */
+function mutateToon(r: G.Rng, t: string): string {
+  const lines = t.split("\n");
+  const i = int(r, lines.length);
+  switch (int(r, 6)) {
+    case 0:
+      lines.splice(i, 1);
+      break;
+    case 1:
+      lines.splice(i, 0, lines[i]);
+      break;
+    case 2: {
+      const j = int(r, lines.length);
+      const tmp = lines[i];
+      lines[i] = lines[j];
+      lines[j] = tmp;
+      break;
+    }
+    case 3:
+      lines[i] = " " + lines[i];
+      break;
+    case 4:
+      lines[i] = lines[i].slice(1);
+      break;
+    default: {
+      const s = lines[i];
+      const k = int(r, s.length + 1);
+      const ins = ["-", '"', ",", ":", "null", "1", "0", "9", " ", "\\", "a"][int(r, 11)];
+      lines[i] = s.slice(0, k) + ins + s.slice(k);
+    }
+  }
+  return lines.join("\n");
+}
+
+interface CompiledTwin {
+  readonly twin: Twin;
+  readonly str: (v: unknown) => string;
+  readonly par: (s: string) => Result<unknown, unknown>;
+  readonly val: (v: unknown) => Result<unknown, unknown>;
+}
+const twinCache = new Map<number, CompiledTwin>();
+
+function compileTwin(schemaSeed: number): CompiledTwin {
+  let c = twinCache.get(schemaSeed);
+  if (c === undefined) {
+    const r = G.rng(schemaSeed ^ 0x2545f491);
+    const twin = genTwin(r);
+    const opts = { delimiter: ([",", "\t", "|"] as const)[int(r, 3)], indent: 1 + int(r, 3) };
+    c = {
+      twin,
+      str: toonStringify(twin.u, opts),
+      par: toonParse(twin.c, { ...opts, flexibleOrder: r() < 0.3 }),
+      val: validateAny(twin.c),
+    };
+    twinCache.set(schemaSeed, c);
+  }
+  return c;
+}
+
+test("parse enforces constraints exactly like validate, and accepts nothing validate rejects", () => {
+  let accepted = 0;
+  let rejected = 0;
+  Prop.assert(
+    Arb.tuple(Arb.integer(0, 0x7fffffff), Arb.string({ maxLength: 12 })),
+    ([n, s]) => {
+      const seed = G.hashSeed(n + ":" + s);
+      const c = compileTwin(seed % SCHEMA_SEEDS);
+      const r = G.rng(seed);
+      const value = genLoose(r, c.twin.u);
+      const out = c.str(value);
+      const why = G.describeCase(seed, c.twin.c, value, out);
+      const want = c.val(value)[0];
+      const got = c.par(out);
+      assert.equal(got[0], want, why + "\nparse=" + JSON.stringify(got));
+      if (got[0]) {
+        accepted++;
+        assert.deepStrictEqual(G.normalize(got[1]), G.normalize(value), why);
+      } else rejected++;
+      // Soundness on malformed text: whatever parses also validates
+      for (let m = 0; m < 3; m++) {
+        const text = mutateToon(r, out);
+        const res = c.par(text);
+        if (res[0]) {
+          assert.ok(c.val(res[1])[0], why + "\nmutated=" + JSON.stringify(text));
+        }
+      }
+      return true;
+    },
+    { numRuns: NUM_RUNS },
+  );
+  assert.ok(accepted > NUM_RUNS / 10 && rejected > NUM_RUNS / 10, `${accepted}/${rejected}`);
+});
+
+const NUMBER_GRAMMAR = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/;
+const numberParse = toonParse(S.number());
+const unionParse = toonParse(S.union(S.number(), S.string()));
+
+test("number tokens follow the JSON number grammar exactly", () => {
+  const alphabet = "0123456789-+.eE0011x ";
+  Prop.assert(
+    Arb.array(Arb.integer(0, alphabet.length - 1), { maxLength: 9 }),
+    (idx) => {
+      let tok = "";
+      for (const i of idx) tok += alphabet[i];
+      tok = tok.trim();
+      const r = numberParse(tok);
+      const n = Number(tok);
+      const valid = NUMBER_GRAMMAR.test(tok) && Number.isFinite(n);
+      assert.equal(r[0], valid, JSON.stringify(tok));
+      if (valid) assert.ok(Object.is(r[1], n), tok);
+      // Untyped (primitive union): non-numbers that are not keywords stay text
+      const u = unionParse(tok);
+      if (valid) assert.ok(Object.is(u[1], n), tok);
+      else if (tok !== "") assert.equal(u[1], tok, tok);
+      return true;
+    },
+    { numRuns: NUM_RUNS },
+  );
+});
+
+const QUOTED_GRAMMAR = /^"(?:[^"\\]|\\["\\nrt]|\\u[0-9a-fA-F]{4})*"$/;
+const stringParse = toonParse(S.string());
+
+test("quoted tokens decode iff well-formed (spec escapes plus \\uXXXX)", () => {
+  const alphabet = ['"', "\\", "a", "n", "t", "r", "u", "0", "0", "F", "x", ",", "/", "b"];
+  Prop.assert(
+    Arb.tuple(Arb.array(Arb.integer(0, alphabet.length - 1), { maxLength: 10 }), Arb.boolean()),
+    ([idx, close]) => {
+      let tok = '"';
+      for (const i of idx) tok += alphabet[i];
+      if (close) tok += '"';
+      const r = stringParse(tok);
+      const valid = QUOTED_GRAMMAR.test(tok);
+      assert.equal(r[0], valid, tok);
+      // Within this alphabet the accepted grammar is a subset of JSON's
+      if (valid) assert.equal(r[1], JSON.parse(tok), tok);
+      return true;
+    },
+    { numRuns: NUM_RUNS },
+  );
+});
+
+const headerParse = toonParse(S.object({ xs: S.array(S.string()) }));
+const listHeaderParse = toonParse(S.array(S.object({ a: S.integer(), b: S.array(S.integer()) })));
+
+test("array header counts of any size are an Err or a value, never a throw", () => {
+  Prop.assert(
+    Arb.array(Arb.integer(0, 9), { minLength: 1, maxLength: 40 }),
+    (digits) => {
+      const n = digits.join("");
+      const r = headerParse(`xs[${n}]: a`);
+      assert.equal(r[0], Number(n) === 1, n);
+      const l = listHeaderParse(`[${n}]:\n  - a: 1\n    b[${n}]: 2`);
+      assert.equal(l[0], Number(n) === 1, n);
+      return true;
+    },
+    { numRuns: NUM_RUNS },
+  );
+});
+
+const flexClosed = toonParse(
+  S.object({ a: S.integer(), b: S.optional(S.integer()), c: S.integer() }),
+  { flexibleOrder: true },
+);
+const flexOpen = toonParse(
+  S.object(
+    { a: S.integer(), b: S.optional(S.integer()), c: S.integer() },
+    {
+      additionalProperties: true,
+    },
+  ),
+  { flexibleOrder: true },
+);
+
+test("flexible order: any order of unique declared keys, nothing else", () => {
+  const pool = ["a", "b", "c", "x", '"a"', "__proto__"];
+  Prop.assert(
+    Arb.array(Arb.integer(0, pool.length - 1), { maxLength: 6 }),
+    (idx) => {
+      const keys = idx.map((i) => pool[i]);
+      const names = keys.map((k) => (k === '"a"' ? "a" : k));
+      const text = keys.map((k, i) => `${k}: ${i}`).join("\n");
+      const unique = new Set(names).size === names.length;
+      const required = names.includes("a") && names.includes("c");
+      const declared = names.every((k) => k === "a" || k === "b" || k === "c");
+      const expected: Record<string, number> = {};
+      names.forEach((k, i) => {
+        if (k === "a" || k === "b" || k === "c") expected[k] = i;
+      });
+      const closed = flexClosed(text);
+      assert.equal(closed[0], unique && required && declared, text);
+      if (closed[0]) assert.deepStrictEqual({ ...(closed[1] as object) }, expected, text);
+      const open = flexOpen(text);
+      assert.equal(open[0], unique && required, text);
+      if (open[0]) assert.deepStrictEqual({ ...(open[1] as object) }, expected, text);
+      return true;
+    },
+    { numRuns: NUM_RUNS },
+  );
+});
+
+test("indent: an integer >= 1 compiles, anything else throws TypeError", () => {
+  const schema = S.object({ o: S.object({ a: S.integer() }) });
+  Prop.assert(
+    Arb.oneOf(
+      Arb.integer(-3, 9),
+      Arb.float(-3, 9),
+      Arb.constantFrom(NaN, Infinity, -Infinity, 0.5, 2.0000001),
+    ),
+    (indent) => {
+      const ok = Number.isInteger(indent) && indent >= 1;
+      for (const make of [toonStringify, toonParse]) {
+        if (ok) make(schema, { indent });
+        else assert.throws(() => make(schema, { indent }), TypeError);
+      }
+      if (ok) {
+        const out = toonStringify(schema, { indent })({ o: { a: 1 } });
+        assert.equal(out, "o:\n" + " ".repeat(indent) + "a: 1");
+        assert.deepStrictEqual(toonParse(schema, { indent })(out), [true, { o: { a: 1 } }]);
+      }
+      return true;
+    },
+    { numRuns: NUM_RUNS },
+  );
 });

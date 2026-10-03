@@ -361,6 +361,95 @@ test("parse strips escaped __proto__ spellings (G9-9)", () => {
   assert.deepEqual(assertOk(fn('{"\\u0061":1}')), { a: 1 });
 });
 
+/** Every spelling of `__proto__` with each letter literal, `\u` lowercase-hex or uppercase-hex. */
+function protoSpellings(): string[] {
+  const key = "__proto__";
+  let out = [""];
+  for (let i = 0; i < key.length; i++) {
+    const hex = key.charCodeAt(i).toString(16).padStart(4, "0");
+    const forms = [key[i], "\\u" + hex, "\\u" + hex.toUpperCase()];
+    const next: string[] = [];
+    for (const prefix of out) for (const f of forms) next.push(prefix + f);
+    out = next;
+  }
+  return out;
+}
+
+test("parse strips every escaped __proto__ spelling, with a narrowed \\u trigger (G3-5)", () => {
+  const rec = SJ.parse(S.record(S.integer()));
+  const nested = SJ.parse(S.array(S.object({ o: S.record(S.integer()) })));
+  const spellings = protoSpellings();
+  assert.equal(spellings.length, 3 ** 9);
+  for (const key of spellings) {
+    const text = `{"a":2,"${key}":1}`;
+    // Precondition: native JSON.parse creates an own __proto__ key
+    assert.equal(Object.hasOwn(JSON.parse(text), "__proto__"), true, key);
+    const r = assertOk(rec(text));
+    assert.equal(Object.hasOwn(r, "__proto__"), false, key);
+    assert.deepEqual(Object.keys(r), ["a"]);
+    const n = assertOk(nested(`[{"o":{"b":3}},{"o":${text}}]`));
+    assert.equal(Object.hasOwn(n[1].o, "__proto__"), false, key);
+  }
+  // Unrelated escapes (no letter of __proto__) decode normally; an escaped
+  // backslash before `u005f` is a false positive that only costs the walk.
+  assert.deepEqual(assertOk(rec('{"\\u00e9":1,"\\u005c":2}')), { é: 1, "\\": 2 });
+  assert.deepEqual(assertOk(SJ.parse(S.string())('"\\\\u005f"')), "\\u005f");
+});
+
+test("stringify omits undefined record values like JSON.stringify (G3-4b)", () => {
+  const rec = SJ.stringify(S.record(S.optional(S.string())));
+  for (const v of [
+    { a: undefined, b: "x" },
+    { a: "x", b: undefined },
+    { a: undefined },
+    { a: undefined, b: undefined, c: "z" },
+  ]) {
+    const out = rec(v);
+    assert.equal(out, JSON.stringify(v));
+    assertOk(SJ.parse(S.record(S.optional(S.string())))(out));
+  }
+  const nested = SJ.stringify(S.record(S.optional(S.object({ n: S.integer() }))));
+  assert.equal(nested({ a: undefined, b: { n: 1 } }), '{"b":{"n":1}}');
+});
+
+test("stringify of unknown / not values without a JSON form matches JSON.stringify (G3-4c)", () => {
+  const fn = (): number => 1;
+  const sym = Symbol("s");
+  const native = (schema: S.Schema, v: unknown): void => {
+    const out = (SJ.stringify as unknown as (s: S.Schema) => (v: unknown) => string)(schema)(v);
+    assert.equal(out, JSON.stringify(v) ?? "null");
+  };
+  // Object fields: the key is omitted
+  native(S.object({ a: S.unknown() }), { a: fn });
+  native(S.object({ a: S.unknown(), b: S.integer() }), { a: sym, b: 1 });
+  native(S.object({ b: S.integer(), a: S.not(S.string()) }), { b: 1, a: fn });
+  native(S.object({ a: S.optional(S.unknown()), b: S.integer() }), { a: undefined, b: 1 });
+  native(S.object({ a: S.optional(S.unknown()), b: S.integer() }), { a: [1, fn], b: 1 });
+  native(S.object({ toString: S.optional(S.unknown()) }), {});
+  native(S.object({ toString: S.optional(S.unknown()) }), { toString: 5 });
+  native(S.object({ toString: S.unknown() }), { toString: fn });
+  // Record values: the key is omitted
+  native(S.record(S.unknown()), { a: fn, b: 1, c: sym, d: undefined });
+  native(S.record(S.optional(S.unknown())), { a: undefined, b: { c: 1 } });
+  // Array / tuple slots and the root: null
+  native(S.array(S.unknown()), [fn, sym, undefined, 1]);
+  native(S.tuple(S.unknown(), S.not(S.null_())), [fn, sym]);
+  native(S.unknown(), undefined);
+  assert.equal(SJ.stringify(S.unknown())(fn), "null");
+  // Shapes resolved per call (allOf with a nullable variant)
+  native(S.allOf(S.object({ a: S.unknown() }), S.nullable(S.object({ b: S.integer() }))), {
+    a: fn,
+    b: 1,
+  });
+  native(S.allOf(S.array(S.unknown()), S.nullable(S.array(S.unknown()))), [fn, 1, sym]);
+  assert.equal(
+    (SJ.stringify as unknown as (s: S.Schema) => (v: unknown) => string)(
+      S.conditional(S.string(), S.string(), S.unknown()),
+    )(fn),
+    "null",
+  );
+});
+
 // ---------------------------------------------------------------------------
 // Round-trip: stringify → parse
 // ---------------------------------------------------------------------------

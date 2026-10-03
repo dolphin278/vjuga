@@ -13,8 +13,9 @@
  * `parse` expects schema field order unless `flexibleOrder: true`.
  *
  * Design tradeoffs:
- *   Spec: TOON 3.0 subset — no key folding, no `[N|]` delimiter markers on
- *   output (accepted on input). Keys are quoted only when needed to parse.
+ *   Spec: TOON 3.0 subset — no key folding. A non-comma delimiter is marked
+ *   in every array header (`[N|]`, `[N\t]`); parse also accepts unmarked
+ *   headers. Keys are quoted only when needed to parse.
  *   Every shape `stringify` accepts round-trips through `parse`. Shapes TOON
  *   cannot encode unambiguously throw `TypeError("TOON: unsupported ...")` at
  *   compile time: `optional(compound)` outside an object field, unions
@@ -22,7 +23,8 @@
  *   and `unknown` / `allOf` / `not` / `conditional`. Unions of primitives
  *   decode the token's type (quoted → string), then pick the first variant
  *   that validates (`oneOf`: exactly one must). Parsing is strict (`strict` is a no-op):
- *   exact item/row counts, JSON-grammar numbers, an empty cell means "absent".
+ *   exact item/row counts, JSON-grammar numbers, spec escapes (plus `\uXXXX`)
+ *   only, an empty cell means "absent"; constraints are enforced like `validate`.
  *   `__proto__` keys are dropped on parse; non-finite numbers emit `null`.
  *
  * @example Objects, tabular arrays, round-trip
@@ -43,7 +45,7 @@ import type { Result } from "../Result.js";
 import { ok, err } from "../Result.js";
 import { escapeJsonString } from "../JSON.js";
 import type { Schema, Infer } from "./Schema.js";
-import { type SchemaError, emitStandardRefs, validate } from "./Validate.js";
+import { type SchemaError, emitStandardRefs, emitValidation, validate } from "./Validate.js";
 import { findDiscriminant, isPrimitive as isLeaf } from "./Schema.js";
 import { unreachable } from "../FunctionUtils.js";
 import {
@@ -55,6 +57,7 @@ import {
   compileFunction,
   childPath,
   dynamicChildPath,
+  jsLiteral,
 } from "./Codegen.js";
 
 // ---------------------------------------------------------------------------
@@ -153,15 +156,24 @@ function encodeKey(k: string, delimCode: number): string {
 
 const HEX4_RE = /^[0-9a-fA-F]{4}$/;
 
-/** Decode a quoted token; unquoted tokens are returned as-is. */
-function toonUnquote(s: string): string {
+/**
+ * Decode a quoted token; unquoted tokens are returned as-is. Null when a
+ * token starting with `"` is malformed: unterminated, an unescaped `"` before
+ * the end, text after the closing quote, or an escape other than spec §7.1's
+ * `\\ \" \n \r \t` and `\uXXXX` (exactly 4 hex digits — an extension, emitted
+ * by `quote` for the other control characters).
+ */
+function toonUnquote(s: string): string | null {
+  if (s.charCodeAt(0) !== 0x22) return s;
   const end = s.length - 1;
-  if (end < 1 || s.charCodeAt(0) !== 0x22 || s.charCodeAt(end) !== 0x22) return s;
-  if (s.indexOf("\\") === -1) return s.slice(1, end);
+  // Fast path (no escapes): the only other `"` must be the last character.
+  if (s.indexOf("\\") === -1) return s.indexOf('"', 1) === end ? s.slice(1, end) : null;
   let out = "";
   let last = 1;
-  for (let i = 1; i < end - 1; i++) {
-    if (s.charCodeAt(i) !== 0x5c) continue;
+  for (let i = 1; i < end; i++) {
+    const c = s.charCodeAt(i);
+    if (c === 0x22) return null; // unescaped quote before the end
+    if (c !== 0x5c) continue;
     const next = s.charCodeAt(i + 1);
     let rep: string;
     let skip = 1;
@@ -169,14 +181,16 @@ function toonUnquote(s: string): string {
     else if (next === 0x72) rep = "\r";
     else if (next === 0x74) rep = "\t";
     else if (next === 0x5c || next === 0x22) rep = s[i + 1];
-    else if (next === 0x75 && HEX4_RE.test(s.slice(i + 2, i + 6)) && i + 5 < end) {
+    else if (next === 0x75 && i + 5 < end && HEX4_RE.test(s.slice(i + 2, i + 6))) {
       rep = String.fromCharCode(parseInt(s.slice(i + 2, i + 6), 16));
       skip = 5;
-    } else continue; // unknown escape: kept verbatim
+    } else return null;
     out += s.slice(last, i) + rep;
     i += skip;
     last = i + 1;
   }
+  // `last > end`: an escape consumed the closing quote (`"abc\"`).
+  if (s.charCodeAt(end) !== 0x22 || last > end) return null;
   return out + s.slice(last, end);
 }
 
@@ -185,39 +199,60 @@ function canonicalNumber(n: number): string {
   return n - n === 0 ? "" + n : "null";
 }
 
+function isDigit(c: number): boolean {
+  return c >= 0x30 && c <= 0x39;
+}
+
 /**
- * Strict number token → number, or NaN. Rejects what `+s` would accept but
- * the JSON/TOON number grammar does not: hex/octal/binary, `Infinity`,
- * padding, leading `+`/`.`, trailing `.`, empty string. No allocation.
+ * Strict number token → number, or NaN. Accepts exactly the JSON number
+ * grammar `-?(0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?` with a finite value, so
+ * `01`, `-.5`, `1.e5`, `+1`, hex and `Infinity` are not numbers (untyped,
+ * such text decodes as a string). No regex, no allocation.
+ *
+ * Split of the work: this charCode scan checks what `+s` would accept but
+ * the grammar does not — a lead that is not a digit (`-.5`, `+1`), a leading
+ * zero, a `.` not followed by a digit (`1.e5`), a non-digit last character,
+ * characters outside `0-9 . + - e E`. `+s` then rejects misplaced signs,
+ * dots and exponents (`1-2`, `1.5.5`, `1e5e5`). Faster than a full grammar
+ * state machine on bun (~2x) and equal on node; a fuzz test checks it
+ * against the grammar regex.
  */
 function parseNumber(s: string): number {
   const len = s.length;
-  const first = s.charCodeAt(0);
-  const last = s.charCodeAt(len - 1);
-  if (!(first === 0x2d || (first >= 0x30 && first <= 0x39)) || !(last >= 0x30 && last <= 0x39)) {
+  // charCodeAt past the end is NaN, which fails every isDigit test.
+  const neg = s.charCodeAt(0) === 0x2d ? 1 : 0;
+  const lead = s.charCodeAt(neg);
+  if (
+    !isDigit(lead) ||
+    (lead === 0x30 && isDigit(s.charCodeAt(neg + 1))) ||
+    !isDigit(s.charCodeAt(len - 1))
+  ) {
     return NaN;
   }
-  for (let i = 1; i < len - 1; i++) {
+  for (let i = neg + 1; i < len - 1; i++) {
     const c = s.charCodeAt(i);
-    // 0-9 . + - e E
-    if (
-      !((c >= 0x30 && c <= 0x39) || (c >= 0x2b && c <= 0x2e && c !== 0x2c) || (c | 0x20) === 0x65)
-    ) {
-      return NaN;
-    }
+    if (isDigit(c) || (c | 0x20) === 0x65 || c === 0x2b || c === 0x2d) continue;
+    if (c !== 0x2e || !isDigit(s.charCodeAt(i + 1))) return NaN;
   }
   const n = +s;
   return n - n === 0 ? n : NaN;
 }
 
+/** `decodePrimitive` result for a malformed quoted token: equals no schema value. */
+const MALFORMED: unique symbol = Symbol("TOON.malformed");
+
 /**
  * Decode an untyped primitive token (primitive unions, literals,
  * discriminants): quoted → string, true/false/null, number grammar → number,
- * empty → undefined (absent), anything else → the unquoted text.
+ * empty → undefined (absent), malformed quoted → `MALFORMED`, anything else
+ * → the unquoted text.
  */
 function decodePrimitive(raw: string): unknown {
   if (raw === "") return undefined;
-  if (raw.charCodeAt(0) === 0x22) return toonUnquote(raw);
+  if (raw.charCodeAt(0) === 0x22) {
+    const u = toonUnquote(raw);
+    return u === null ? MALFORMED : u;
+  }
   if (raw === "true") return true;
   if (raw === "false") return false;
   if (raw === "null") return null;
@@ -238,6 +273,9 @@ function primitiveToToon(v: unknown, delim: string): string {
  * exactly `expected` cells are present.
  */
 function splitByDelimiter(s: string, delim: string, expected: number): string[] | null {
+  // n cells need n - 1 delimiters. Also keeps a huge header count away from
+  // Array(expected), which throws RangeError above 2^32 - 1.
+  if (expected > s.length + 1) return null;
   const dc = delim.charCodeAt(0);
   const result = Array<string>(expected);
   let idx = 0;
@@ -311,10 +349,14 @@ function splitKeyLine(line: string, padLen: number): [string, string] | null {
   }
   const t = line.charCodeAt(end);
   if (end === padLen || (t !== 0x3a && t !== 0x5b)) return null;
-  return [toonUnquote(line.slice(padLen, end)), line.slice(end)];
+  const key = toonUnquote(line.slice(padLen, end));
+  return key === null ? null : [key, line.slice(end)];
 }
 
-/** Array header `[N]` (or `[N<delim>]`) at the start of `tail` → N, or -1. */
+/**
+ * Array header `[N]` (or `[N<delim>]`) at the start of `tail` → N, or -1.
+ * N above 2^32 - 1 (the maximum array length) is -1.
+ */
 function headerCount(tail: string, delimCode: number): number {
   if (tail.charCodeAt(0) !== 0x5b) return -1;
   let i = 1;
@@ -322,7 +364,7 @@ function headerCount(tail: string, delimCode: number): number {
   for (let c = tail.charCodeAt(i); c >= 0x30 && c <= 0x39; c = tail.charCodeAt(++i)) {
     n = n * 10 + (c - 0x30);
   }
-  if (i === 1) return -1;
+  if (i === 1 || n > 0xffffffff) return -1;
   if (tail.charCodeAt(i) === delimCode) i++;
   return tail.charCodeAt(i) === 0x5d ? n : -1;
 }
@@ -344,9 +386,17 @@ function findDiscriminantValue(
  * Flexible-order scan: index the key lines of the block at `pad` (deeper
  * child lines are skipped). Each key line is rewritten with the canonical key
  * spelling so the schema-order field reader matches it (e.g. `"id": 1` →
- * `id: 1`). Returns [key → line index, end of block].
+ * `id: 1`). A repeated key, or one not in `declared` (null when
+ * `additionalProperties` allows any key; such lines are then skipped), stops
+ * the scan. Returns [key → line index, end of block, offending line or -1,
+ * what that line should have been].
  */
-function scanBlock(lines: string[], li: number, pad: string): [Record<string, number>, number] {
+function scanBlock(
+  lines: string[],
+  li: number,
+  pad: string,
+  declared: ReadonlySet<string> | null,
+): [Record<string, number>, number, number, string] {
   const map: Record<string, number> = Object.create(null);
   const padLen = pad.length;
   let i = li;
@@ -356,10 +406,13 @@ function scanBlock(lines: string[], li: number, pad: string): [Record<string, nu
       if (lines[i].charCodeAt(padLen) === 0x20) continue; // child line
       break;
     }
-    map[kv[0]] = i;
-    lines[i] = pad + encodeKey(kv[0], -1) + kv[1];
+    const key = kv[0];
+    if (map[key] !== undefined) return [map, i, i, "unique key"];
+    if (declared !== null && !declared.has(key)) return [map, i, i, "declared key"];
+    map[key] = i;
+    lines[i] = pad + encodeKey(key, -1) + kv[1];
   }
-  return [map, i];
+  return [map, i, -1, ""];
 }
 
 // ---------------------------------------------------------------------------
@@ -471,6 +524,7 @@ function assertSupported(schema: Schema, field: boolean): void {
 // ---------------------------------------------------------------------------
 
 export interface ToonStringifyOptions {
+  /** Spaces per nesting level, an integer >= 1 (default 2); else the factory throws TypeError. */
   readonly indent?: number;
   readonly delimiter?: "," | "\t" | "|";
 }
@@ -510,6 +564,22 @@ function pad(g: Gen, depth: number): string {
   return " ".repeat(depth * g.indent);
 }
 
+/** The `indent` option (default 2); anything but an integer ≥ 1 is a TypeError. */
+function indentOption(indent: number | undefined): number {
+  if (indent === undefined) return 2;
+  // indent 0 flattens nesting (a child line reads as a sibling); fractions
+  // and negatives make `" ".repeat` round or throw RangeError per depth.
+  if (!Number.isInteger(indent) || indent < 1) {
+    throw new TypeError("TOON: indent must be an integer >= 1, got " + indent);
+  }
+  return indent;
+}
+
+/** Array header closer: `|]` / `\t]` declare a non-comma delimiter (spec header syntax). */
+function headerClose(g: Gen): string {
+  return g.delim === "," ? "]" : g.delim + "]";
+}
+
 /**
  * Compiles a schema into a TOON stringify function via `new Function`.
  * Throws `TypeError("TOON: unsupported ...")` for shapes TOON cannot
@@ -523,7 +593,7 @@ export function stringify<S extends Schema>(
   assertSupported(schema, false);
   const g: Gen = {
     buf: createBuffer(),
-    indent: options?.indent ?? 2,
+    indent: indentOption(options?.indent),
     delim: options?.delimiter ?? ",",
     flexible: false,
   };
@@ -653,14 +723,15 @@ function emitArrayStr(
   p: Prefix,
   depth: number,
 ): void {
+  const close = headerClose(g);
   if (core.kind === "tuple") {
     const items = core.meta.items as Schema[];
     if (items.every(isPrimitive)) {
       const cells = items.map((it, i) => cellExpr(it, `${acc}[${i}]`)).join(" + _delim + ");
-      emit(g.buf, `s += ${pre(p, `[${items.length}]: `)} + ${cells || '""'} + "\\n";`);
+      emit(g.buf, `s += ${pre(p, `[${items.length}${close}: `)} + ${cells || '""'} + "\\n";`);
       return;
     }
-    emit(g.buf, `s += ${pre(p, `[${items.length}]:\n`)};`);
+    emit(g.buf, `s += ${pre(p, `[${items.length}${close}:\n`)};`);
     for (let i = 0; i < items.length; i++) emitListItemStr(g, items[i], `${acc}[${i}]`, depth + 1);
     return;
   }
@@ -669,7 +740,7 @@ function emitArrayStr(
   const idx = freshVar(g.buf);
   if (isPrimitive(items)) {
     // Inline loop — keeps everything in one function for Turbofan.
-    emit(g.buf, `s += ${pre(p, "[")} + ${acc}.length + "]: ";`);
+    emit(g.buf, `s += ${pre(p, "[")} + ${acc}.length + ${escapeJsonString(close + ": ")};`);
     emit(g.buf, `if (${acc}.length > 0) {`);
     emit(g.buf, `  s += ${cellExpr(items, `${acc}[0]`)};`);
     emit(
@@ -684,7 +755,7 @@ function emitArrayStr(
     const obj = items as Schema & { readonly kind: "object" };
     const fields = Object.keys(obj.meta.properties);
     const dc = g.delim.charCodeAt(0);
-    const header = "]{" + fields.map((f) => encodeKey(f, dc)).join(g.delim) + "}:\n";
+    const header = close + "{" + fields.map((f) => encodeKey(f, dc)).join(g.delim) + "}:\n";
     emit(g.buf, `s += ${pre(p, "[")} + ${acc}.length + ${escapeJsonString(header)};`);
     emit(g.buf, `for (var ${idx} = 0; ${idx} < ${acc}.length; ${idx}++) {`);
     g.buf.indent++;
@@ -697,7 +768,7 @@ function emitArrayStr(
     emit(g.buf, "}");
     return;
   }
-  emit(g.buf, `s += ${pre(p, "[")} + ${acc}.length + "]:\\n";`);
+  emit(g.buf, `s += ${pre(p, "[")} + ${acc}.length + ${escapeJsonString(close + ":\n")};`);
   emit(g.buf, `for (var ${idx} = 0; ${idx} < ${acc}.length; ${idx}++) {`);
   g.buf.indent++;
   emitListItemStr(g, items, `${acc}[${idx}]`, depth + 1);
@@ -744,14 +815,16 @@ function emitListItemStr(g: Gen, schema: Schema, acc: string, depth: number): vo
 // ---------------------------------------------------------------------------
 
 export interface ToonParseOptions {
+  /** Spaces per nesting level, an integer >= 1 (default 2); else the factory throws TypeError. */
   readonly indent?: number;
   readonly delimiter?: "," | "\t" | "|";
   /** @deprecated No effect — parsing is always strict (counts, number grammar, literals). */
   readonly strict?: boolean;
   /**
    * Accept object fields in any order, at every nesting level (~2.5x slower
-   * for a 3-field object; see TOON.bench).
-   * Tabular headers must still list fields in schema order.
+   * for a 3-field object; see TOON.bench). A repeated key is an error, and so
+   * is an undeclared one unless the object has `additionalProperties` (then
+   * it is skipped). Tabular headers must still list fields in schema order.
    */
   readonly flexibleOrder?: boolean;
 }
@@ -759,7 +832,9 @@ export interface ToonParseOptions {
 /**
  * Compiles a schema into a TOON parse function via `new Function`. Throws
  * `TypeError("TOON: unsupported ...")` for the same shapes as `stringify`.
- * The compiled function never throws; it returns `Err` on malformed input.
+ * The compiled function never throws; it returns `Err` on malformed input
+ * and on values `validate` would reject (string / number constraints,
+ * `minItems` / `maxItems` — checked on the header count, before the items).
  */
 export function parse<S extends Schema>(
   schema: S,
@@ -768,7 +843,7 @@ export function parse<S extends Schema>(
   assertSupported(schema, false);
   const g: Gen = {
     buf: createBuffer(),
-    indent: options?.indent ?? 2,
+    indent: indentOption(options?.indent),
     delim: options?.delimiter ?? ",",
     flexible: options?.flexibleOrder ?? false,
   };
@@ -850,6 +925,7 @@ function emitCell(g: Gen, schema: Schema, raw: string, path: string, out: string
     case "string":
       emit(buf, `if (${raw} === "") ${fail("string")}`);
       emit(buf, `${out} = _uq(${raw});`);
+      emit(buf, `if (${out} === null) ${fail("string")}`);
       break;
     case "number":
       emit(buf, `${out} = _pn(${raw});`);
@@ -903,6 +979,13 @@ function emitCell(g: Gen, schema: Schema, raw: string, path: string, out: string
     }
   }
   for (; open > 0; open--) emit(buf, "}");
+  // Constraints (length, pattern, format, range, multipleOf): the decoded
+  // value goes through the same checks `validate` emits for this leaf — only
+  // where the schema has any, so plain leaves pay nothing. The wrappers stay,
+  // so an absent / null value passes as it does in `validate`.
+  if ((core.kind === "string" || core.kind === "number" || core.kind === "integer") && core.meta) {
+    emitValidation(buf, schema, out, path);
+  }
 }
 
 /** Emit parsing of an object / record / discriminated-union body at `depth` into `out`. */
@@ -924,7 +1007,14 @@ function emitObjectParse(
   const props = schema.meta.properties as Record<string, Schema>;
   emit(buf, `var ${out} = {};`);
   const scan = freshVar(buf);
-  if (g.flexible) emit(buf, `var ${scan} = _scan(lines, li, ${escapeJsonString(padStr)});`);
+  if (g.flexible) {
+    // Declared keys by reference (a Set: `"__proto__" in {}` is true).
+    const declared = schema.meta.additionalProperties
+      ? "null"
+      : emitRef(buf, freshVar(buf), new Set(Object.keys(props)));
+    emit(buf, `var ${scan} = _scan(lines, li, ${escapeJsonString(padStr)}, ${declared});`);
+    emit(buf, `if (${scan}[2] >= 0) return _err(_me(${path}, ${scan}[3], lines[${scan}[2]]));`);
+  }
   for (const k of Object.keys(props)) {
     const child = props[k];
     const { core, opt, nul } = unwrap(child);
@@ -1019,6 +1109,12 @@ function emitHeaderParse(
       buf,
       `if (${n} !== ${fixed.length}) return _err(_me(${path}, "${fixed.length} items", "" + ${n}));`,
     );
+  } else {
+    // Item-count constraints (labels as in `validate`), checked on the header
+    // count before any item is read.
+    const { minItems, maxItems } = (core as Schema & { readonly kind: "array" }).meta;
+    if (minItems !== undefined) emitCountCheck(buf, n, "<", "minItems", minItems, path);
+    if (maxItems !== undefined) emitCountCheck(buf, n, ">", "maxItems", maxItems, path);
   }
   const inline = fixed !== null ? fixed.every(isPrimitive) : isPrimitive(core.meta.items);
 
@@ -1102,6 +1198,19 @@ function emitHeaderParse(
       emit(buf, "}");
     }
   }
+}
+
+function emitCountCheck(
+  buf: CodeBuffer,
+  n: string,
+  op: "<" | ">",
+  name: string,
+  limit: number,
+  path: string,
+): void {
+  const lit = jsLiteral(limit);
+  const label = escapeJsonString(`array(${name}=${lit})`);
+  emit(buf, `if (${n} ${op} ${lit}) return _err(_me(${path}, ${label}, "" + ${n}));`);
 }
 
 /** Emit parsing of one `- ` list item whose hyphen sits at `depth`. */

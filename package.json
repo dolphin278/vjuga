@@ -13,10 +13,13 @@
     "./WorkerPool.worker": null,
     "./WorkerPool.protocol.js": null,
     "./WorkerPool.protocol": null,
+    "./UUID.v7.js": null,
+    "./UUID.v7": null,
     "./benchmarks/*.js": null,
     "./benchmarks/*": null,
     "./tests/*.js": null,
     "./tests/*": null,
+    "./package.json": "./package.json",
     "./schema/*.js": {
       "types": "./src/schema/*.d.ts",
       "default": "./src/schema/*.js"
@@ -48,7 +51,7 @@
     "lint": "oxlint ./src",
     "lint:fix": "oxlint --fix ./src",
     "lint:fmt": "oxfmt --check 'src/**/*.ts' '!src/**/*.d.ts'",
-    "coverage": "npm run build:test && node --expose-gc --experimental-test-coverage --test-reporter=dot --test-coverage-lines=100 --test-coverage-branches=100 --test-coverage-functions=100 --test-coverage-exclude='src/benchmarks/**' --test-coverage-exclude='src/tests/**' --test-coverage-exclude='src/**/*.ts' --test-coverage-exclude='src/CoverageGuided.js' --test 'src/tests/*.test.js' 'src/tests/schema/*.test.js'",
+    "coverage": "npm run build:test && node --expose-gc --experimental-test-coverage --test-reporter=dot --test-coverage-lines=100 --test-coverage-branches=100 --test-coverage-functions=100 --test-coverage-exclude='src/benchmarks/**' --test-coverage-exclude='src/tests/**' --test-coverage-exclude='src/**/*.ts' --test 'src/tests/*.test.js' 'src/tests/schema/*.test.js'",
     "coverage:bun": "bun run build:test && bun test --path-ignore-patterns='**/CoverageGuided*' --path-ignore-patterns='**/fuzz/**' './src/tests/' './src/tests/schema/'",
     "coverage:all": "bash -c 'npm run coverage & P1=$!; npm run coverage:bun & P2=$!; wait $P1; R1=$?; wait $P2; R2=$?; exit $((R1|R2))'",
     "lint:docs": "node scripts/lint-docs.js",

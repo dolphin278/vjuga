@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as UUID from "../UUID.js";
+import { resetV7State } from "../UUID.v7.js";
 import { ValidationError } from "../schema/ValidationError.js";
 
 // --- uuid (throwing constructor) ---
@@ -105,6 +106,89 @@ test("v7() returns unique values", () => {
   const a = UUID.v7();
   const b = UUID.v7();
   assert.notEqual(a, b);
+});
+
+declare const Bun: unknown;
+// Bun delegates v7 to Bun.randomUUIDv7, which ignores a faked Date.now().
+const isBun = typeof Bun !== "undefined";
+
+/** Counter fields of a v7 id: rand_a (12 bits) and the 30 bits after the variant. */
+function v7Counter(id: string): number {
+  const hex = id.replace(/-/g, "");
+  return parseInt(hex.slice(13, 16), 16) * 2 ** 30 + (parseInt(hex.slice(16, 24), 16) & 0x3fffffff);
+}
+
+/** Runs `body` with `Date.now()` returning `clock()`, then restores the real clock. */
+function withFakeClock(clock: () => number, body: () => void): void {
+  const realNow = Date.now;
+  Date.now = clock;
+  try {
+    resetV7State();
+    body();
+  } finally {
+    Date.now = realNow;
+    resetV7State();
+  }
+}
+
+test("v7() is strictly increasing across consecutive calls (G8-4)", () => {
+  let prev = UUID.v7();
+  for (let i = 0; i < 100_000; i++) {
+    const id = UUID.v7();
+    assert.ok(id > prev, `${id} > ${prev}`);
+    prev = id;
+  }
+  // Bun's 12-bit counter borrows future milliseconds in a burst this large,
+  // so its timestamps run ahead of Date.now(); wait for the clock to catch up
+  // so later timestamp checks are unaffected. (Node never runs ahead: its
+  // 42-bit counter does not borrow, so this spins at most 1 ms there.)
+  const last = parseInt(prev.slice(0, 8) + prev.slice(9, 13), 16);
+  while (Date.now() <= last) {
+    // spin; bounded by the number of borrowed milliseconds
+  }
+});
+
+test("v7() increments the counter by 1 within a millisecond and reseeds on a new one", () => {
+  if (isBun) return;
+  let now = 1_700_000_000_000;
+  withFakeClock(
+    () => now,
+    () => {
+      const a = UUID.v7();
+      const b = UUID.v7();
+      assert.ok(b > a);
+      assert.equal(v7Counter(b), v7Counter(a) + 1);
+      assert.ok(v7Counter(a) < 2 ** 41, "seed leaves the top counter bit clear");
+      assert.equal(a.slice(0, 13), b.slice(0, 13), "same timestamp");
+      assert.equal(UUID.version(b), 7);
+      assert.ok("89ab".includes(b[19]), "variant bits preserved");
+      now++;
+      const c = UUID.v7();
+      assert.ok(c > b);
+      assert.equal(parseInt(c.slice(0, 8) + c.slice(9, 13), 16), now);
+      assert.ok(v7Counter(c) < 2 ** 41, "reseeded on the new millisecond");
+    },
+  );
+});
+
+test("v7() stays monotonic when the clock steps back", () => {
+  if (isBun) return;
+  let now = 1_700_000_000_500;
+  withFakeClock(
+    () => now,
+    () => {
+      const a = UUID.v7();
+      now -= 400; // NTP step backwards
+      const b = UUID.v7();
+      assert.ok(b > a);
+      assert.equal(b.slice(0, 13), a.slice(0, 13), "keeps the last timestamp");
+      assert.equal(v7Counter(b), v7Counter(a) + 1);
+      now += 401; // clock passes the last timestamp again
+      const c = UUID.v7();
+      assert.ok(c > b);
+      assert.equal(parseInt(c.slice(0, 8) + c.slice(9, 13), 16), now);
+    },
+  );
 });
 
 test("v7() embeds current timestamp (approximately)", () => {

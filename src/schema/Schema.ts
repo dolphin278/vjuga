@@ -1728,7 +1728,11 @@ function decideUndefined(s: Schema, memo: Map<Schema, number>): boolean {
   }
 }
 
-/** True if the schema describes a leaf value (no nesting). */
+/**
+ * True if the schema describes a leaf value (no nesting).
+ *
+ * @internal Exported for the schema code generators only — not part of the public API contract.
+ */
 export function isPrimitive(schema: Schema): boolean {
   // Iterative unwrap of optional/nullable wrappers — avoids recursion
   let s = schema;
@@ -1755,6 +1759,8 @@ export function isPrimitive(schema: Schema): boolean {
  * Returns the key name if ALL variants are object schemas sharing an own
  * property whose schema is a literal with distinct values (a `NaN` literal
  * never qualifies — it cannot be matched by `switch`). Returns null otherwise.
+ *
+ * @internal Exported for the schema code generators only — not part of the public API contract.
  */
 export function findDiscriminant(variants: readonly Schema[]): string | null {
   if (variants.length < 2) return null;

@@ -327,3 +327,154 @@ test("stateful: MemoryPool with throwing factory/reset, minSize and identity che
     timeoutMs: 300_000,
   });
 });
+
+// ---------------------------------------------------------------------------
+// Stateful (async): withAcquire with thenable results is settle-aware (G8-2)
+// ---------------------------------------------------------------------------
+
+const AMAX = 4;
+
+interface Borrow {
+  obj: Obj;
+  resolve: (v: number) => void;
+  reject: (e: Error) => void;
+  outcome: Promise<Outcome>;
+}
+
+interface Outcome {
+  ok: boolean;
+  value?: unknown;
+  error?: unknown;
+}
+
+interface AModel {
+  free: Obj[]; // expected free list (LIFO)
+  borrowed: Obj[]; // instances held by unsettled async borrowers
+}
+
+interface AReal {
+  pool: Pool.MemoryPool<Obj>;
+  env: { failReset: boolean; resetCalls: Obj[]; created: number };
+  borrows: Borrow[];
+}
+
+/** Turns a promise into its settled outcome so a rejection is never unhandled. */
+function settleOf(p: Promise<unknown>): Promise<Outcome> {
+  return p.then(
+    (value) => ({ ok: true, value }),
+    (error: unknown) => ({ ok: false, error }),
+  );
+}
+
+test("stateful async: withAcquire holds the instance until a returned promise settles", async () => {
+  await ST.assertStatefulAsync<AModel, AReal>({
+    initialModel: () => ({ free: [], borrowed: [] }),
+    initialReal: () => {
+      const env = { failReset: false, resetCalls: [] as Obj[], created: 0 };
+      const pool = Pool.make<Obj>({
+        factory: () => ({ id: env.created++ }),
+        reset: (o) => {
+          env.resetCalls.push(o);
+          if (env.failReset) throw new Error("reset");
+        },
+        maxSize: AMAX,
+      });
+      return { pool, env, borrows: [] };
+    },
+    commands: [
+      () =>
+        Arb.constant({
+          name: "start",
+          run: async (m: AModel, r: AReal) => {
+            if (m.free.length === 0 && m.borrowed.length >= AMAX) {
+              // Unsettled borrowers still count against maxSize.
+              assert.throws(
+                () => Pool.withAcquire(r.pool, () => Promise.resolve(0)),
+                Pool.MemoryPoolExhaustedError,
+              );
+              return;
+            }
+            const expected = m.free.length > 0 ? m.free.pop() : undefined;
+            let resolve!: (v: number) => void;
+            let reject!: (e: Error) => void;
+            const inner = new Promise<number>((res, rej) => {
+              resolve = res;
+              reject = rej;
+            });
+            let seen: Obj | undefined;
+            const outer = Pool.withAcquire(r.pool, (o) => {
+              seen = o;
+              return inner;
+            });
+            assert.ok(outer instanceof Promise, "thenable result gives a Promise");
+            assert.notEqual(outer, inner, "a new Promise, settled after the release");
+            if (expected !== undefined) assert.equal(seen, expected, "LIFO identity");
+            assert.ok(!m.borrowed.includes(seen!), "async borrowers never share an instance");
+            m.borrowed.push(seen!);
+            r.borrows.push({ obj: seen!, resolve, reject, outcome: settleOf(outer) });
+          },
+        }),
+      (model) =>
+        Arb.map(
+          Arb.tuple(
+            Arb.integer(0, Math.max(0, model.borrowed.length - 1)),
+            Arb.boolean(),
+            Arb.boolean(),
+          ),
+          ([idx, fulfil, failReset]) => ({
+            name: `settle(${idx}, ${fulfil ? "fulfil" : "reject"}, failReset=${failReset})`,
+            check: (m: AModel) => m.borrowed.length > 0,
+            run: async (m: AModel, r: AReal) => {
+              const i = Math.min(idx, r.borrows.length - 1);
+              const b = r.borrows.splice(i, 1)[0]!;
+              assert.equal(m.borrowed.splice(i, 1)[0], b.obj);
+              assert.ok(!r.env.resetCalls.includes(b.obj), "no reset while borrowed");
+              r.env.failReset = failReset;
+              if (fulfil) b.resolve(7);
+              else b.reject(new Error("user"));
+              const out = await b.outcome;
+              r.env.failReset = false;
+              if (fulfil && !failReset) assert.deepEqual(out, { ok: true, value: 7 });
+              else if (fulfil) assert.match((out.error as Error).message, /reset/);
+              else assert.match((out.error as Error).message, /user/, "fn's rejection wins");
+              assert.equal(r.env.resetCalls.at(-1), b.obj, "reset ran once the borrow settled");
+              r.env.resetCalls.length = 0;
+              // Recycled unless reset threw.
+              if (!failReset) m.free.push(b.obj);
+            },
+          }),
+        ),
+      () =>
+        Arb.map(Arb.integer(-5, 5), (val) => ({
+          name: `withAcquireSync(${val})`,
+          run: async (m: AModel, r: AReal) => {
+            if (m.free.length === 0 && m.borrowed.length >= AMAX) {
+              assert.throws(
+                () => Pool.withAcquire(r.pool, () => val),
+                Pool.MemoryPoolExhaustedError,
+              );
+              return;
+            }
+            const expected = m.free.length > 0 ? m.free.pop() : undefined;
+            let seen: Obj | undefined;
+            const out = Pool.withAcquire(r.pool, (o) => {
+              seen = o;
+              return val;
+            });
+            assert.equal(out, val);
+            if (expected !== undefined) assert.equal(seen, expected);
+            assert.ok(!m.borrowed.includes(seen!));
+            r.env.resetCalls.length = 0;
+            m.free.push(seen!);
+          },
+        })),
+    ],
+    teardown: async (r) => {
+      for (const b of r.borrows) b.resolve(0);
+      await Promise.all(r.borrows.map((b) => b.outcome));
+    },
+    numRuns: 1_000_000,
+    maxCommands: 50,
+    timeoutMs: 300_000,
+  });
+});

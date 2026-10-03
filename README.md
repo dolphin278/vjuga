@@ -52,7 +52,7 @@ Validate compiles schemas to code-generated validators - one pass validation at 
 Branded ISOTimestamp, ISODate, UnixTimestamp validates and brands at construction time. UUID v4 random and v7 time-ordered.
 
 ### Testing
-Property.check() runs property-based tests - generates random input, shrinks to minimal counterexamples automatically. StatefulTest.assertStateful() for model-based stateful testing with oracle model. CoverageGuided.fuzz() is time-boxed random fuzzing; fuzzAsync() adds V8 coverage feedback.
+Property.check() runs property-based tests - generates random input, shrinks to minimal counterexamples automatically. StatefulTest.assertStateful() for model-based stateful testing with oracle model. CoverageGuided.fuzz() is time-boxed random fuzzing; fuzzAsync() adds V8 coverage feedback (falling back to random fuzzing when NODE_V8_COVERAGE is set).
 
 ## Why this exists
 
@@ -68,7 +68,7 @@ Property.check() runs property-based tests - generates random input, shrinks to 
 - ESM-only, zero runtime dependencies
 - No root export — import `@dolphin278/vjuga/<Module>`
 - Extensionless subpath imports are supported; `.js` subpaths remain compatible
-- Works identically on Node.js and Bun
+- Same API and semantics on Node.js and Bun; performance differs per runtime, and `UUID.v7()` on Bun (native `Bun.randomUUIDv7`, 12-bit counter) can run its timestamp ahead of the clock in bursts above ~4096 IDs/ms
 
 Contributor policy lives in the git repository:
 https://github.com/dolphin278/vjuga/blob/master/CONTRIBUTING-AGENTS.md

@@ -19,7 +19,7 @@
  * BigInt state cost ~2.5–3× per draw, and property tests run millions of
  * draws. Outputs are bit-identical to the reference BigInt SplitMix64, so
  * seeds and replay paths are stable. BigInt appears only at the edges
- * (`seed`, `nextBigInt`, ranges above 2^36 in `nextInt`).
+ * (`seed`, `nextBigInt`, ranges above 2^37 in `nextInt`).
  *
  * Prior art: Java's SplittableRandom (Steele, Lea, Flood 2014).
  *
@@ -77,11 +77,11 @@ const SPLIT_LO = 0xf3bc_c908;
 /** 2^32 — weight of the high half. */
 const TWO_32 = 0x1_0000_0000;
 
-/** Largest range reduced in one step: (hi mod r)·2^32 + lo < 2^20·2^32 = 2^52. */
-const ONE_STEP_RANGE = 0x10_0000;
+/** Largest range reduced in one step: (hi mod r)·2^32 + lo <= r·2^32 - 1 < 2^53. */
+const ONE_STEP_RANGE = 0x20_0000;
 
-/** Largest range reduced with 16-bit Horner steps: (r - 1)·2^16 + 0xffff < 2^52. */
-const HORNER_RANGE = 0x10_0000_0000;
+/** Largest range reduced with 16-bit Horner steps: (m mod r)·2^16 + limb <= r·2^16 - 1 < 2^53. */
+const HORNER_RANGE = 0x20_0000_0000;
 
 // ---------------------------------------------------------------------------
 // Internal mixing
@@ -160,17 +160,17 @@ function create(hi: number, lo: number): PRNG {
 }
 
 /**
- * `x mod r` for integers 0 <= x < 2^52, 0 < r <= 2^36, without the double
- * `%` operator: V8 lowers a non-int32 `%` to a C `fmod` call whose cost grows
- * with the exponent gap (~100 ns for x near 2^52 on node 26), while
- * divide/floor/multiply is a few ns. `fl(x / r)` is within 1 of the exact
- * quotient Q (relative error 2^-53, Q < 2^52), and floor of it is floor(Q) or
- * floor(Q) + 1, so one `m < 0` correction makes the result exact; `q * r`
- * <= x + r < 2^53 is exact too.
+ * `x mod r` for integers 0 <= x < 2^53, r >= 2, without the double `%`
+ * operator: V8 lowers a non-int32 `%` to a C `fmod` call whose cost grows
+ * with the exponent gap (~100 ns per draw on node 26), while
+ * divide/floor/multiply is a few ns. Exact: an integer quotient Q = x / r is
+ * representable, so the division returns it; otherwise Q sits at least 1/r
+ * from either neighbouring integer, while the rounding error is at most
+ * half an ulp <= Q·2^-53 = x / (r·2^53) < 1/r, so `floor` sees the true
+ * integer part. Then `q * r <= x < 2^53` and the subtraction are exact too.
  */
 function modSmall(x: number, r: number): number {
-  const m = x - Math.floor(x / r) * r;
-  return m < 0 ? m + r : m;
+  return x - Math.floor(x / r) * r;
 }
 
 /** The mixed output of the last draw as an unsigned 64-bit bigint. */
@@ -221,7 +221,7 @@ export function nextInt(prng: PRNG, min: number, max: number): number {
   // Modulo bias is negligible for ranges << 2^64.
   advance(prng);
   // (hi·2^32 + lo) mod range, reduced in doubles while every intermediate
-  // stays below 2^52 — BigInt only for ranges above 2^36.
+  // stays below 2^53 — BigInt only for ranges above 2^37.
   if (range <= ONE_STEP_RANGE) {
     return min + modSmall(modSmall(outHi, range) * TWO_32 + outLo, range);
   }

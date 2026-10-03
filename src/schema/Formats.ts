@@ -10,11 +10,12 @@
  *
  * Grammar: `date`, `date-time` and `time` are RFC 3339 (`isISODate`,
  * `isRfc3339DateTime`, `isRfc3339Time` — not reimplemented here). `email` is
- * an RFC 5321 ASCII mailbox: dot-atom or quoted local part, hostname or
- * `[IPv4]` / `[IPv6:...]` domain. `uri` is an absolute RFC 3986 URI (any
- * scheme, ASCII only, valid `%XX`). `ipv4` is dotted decimal without leading
- * zeros, `ipv6` is RFC 4291 text form. `iso-datetime` is a legacy vjuga name:
- * a loose prefix check (`YYYY-MM-DDTHH:MM:SS…`), not RFC 3339.
+ * an RFC 5321 ASCII mailbox: dot-atom or quoted local part (64 octets max),
+ * hostname or `[IPv4]` / `[IPv6:...]` domain. `uri` is an absolute RFC 3986
+ * URI (any scheme, ASCII only, valid `%XX`). `ipv4` is dotted decimal without
+ * leading zeros, `ipv6` is RFC 4291 text form. `uuid` takes any version and
+ * variant nibble (looser than `UUID.uuid`). `iso-datetime` is a legacy vjuga
+ * name: a loose prefix check (`YYYY-MM-DDTHH:MM:SS…`), not RFC 3339.
  *
  * Design tradeoffs: every tester is a linear scan or an unambiguous regex, so
  * hostile input cannot trigger regex backtracking blowups. A tester is any
@@ -210,8 +211,8 @@ const IPV6_TAG = /^IPv6:/i;
 
 /**
  * RFC 5321 mailbox (`email`), ASCII only: `local@domain` where local is a
- * dot-atom or quoted string and domain is a host name, `[IPv4]` or
- * `[IPv6:addr]`.
+ * dot-atom or quoted string of at most 64 octets (quotes included, RFC 5321
+ * §4.5.3.1.1) and domain is a host name (253 max), `[IPv4]` or `[IPv6:addr]`.
  *
  * @example
  * ```ts
@@ -221,7 +222,8 @@ const IPV6_TAG = /^IPv6:/i;
  */
 export function isEmail(value: string): boolean {
   const end = value.charCodeAt(0) === 0x22 /* " */ ? quotedEnd(value) : dotAtomEnd(value);
-  if (end === -1 || value.charCodeAt(end) !== 0x40 /* @ */) return false;
+  // `end` is the local part's length (quotes included)
+  if (end === -1 || end > 64 || value.charCodeAt(end) !== 0x40 /* @ */) return false;
   const start = end + 1;
   if (value.charCodeAt(start) === 0x5b /* [ */) {
     if (value.charCodeAt(value.length - 1) !== 0x5d /* ] */) return false;
@@ -236,7 +238,8 @@ export function isEmail(value: string): boolean {
 // ---------------------------------------------------------------------------
 
 const PCHAR = UNRESERVED | SUB_DELIM | COLON | AT;
-const IPV_FUTURE = /^v[0-9A-Fa-f]+\.[A-Za-z0-9\-._~!$&'()*+,;=:]+$/;
+// RFC 3986 ABNF literals are case-insensitive: "v" or "V"
+const IPV_FUTURE = /^[vV][0-9A-Fa-f]+\.[A-Za-z0-9\-._~!$&'()*+,;=:]+$/;
 
 /** True if `s[start, end)` is only chars in `mask` or `%XX` escapes. */
 function scan(s: string, start: number, end: number, mask: number): boolean {
@@ -350,7 +353,10 @@ function isUriScan(value: string): boolean {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * RFC 4122 text form (`uuid`): 8-4-4-4-12 hex digits, any case, any version.
+ * RFC 4122 text form (`uuid`): 8-4-4-4-12 hex digits, any case, any version
+ * and any variant nibble. Looser than `UUID.uuid` / `UUID.validator`, which
+ * require the RFC 9562 variant (`8`, `9`, `a` or `b` starting the 4th group):
+ * `550e8400-e29b-41d4-0716-446655440000` passes here but `UUID.uuid` throws.
  *
  * @example
  * ```ts

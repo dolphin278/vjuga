@@ -120,6 +120,12 @@ test("isEmail — domain literals and limits", () => {
   assert.equal(isEmail("a@"), false);
   assert.equal(isEmail("a@b-"), false);
   assert.equal(isEmail("a@-b"), false);
+  // RFC 5321 §4.5.3.1.1: local part at most 64 octets (quotes included)
+  assert.equal(isEmail("x".repeat(64) + "@x.com"), true);
+  assert.equal(isEmail("x".repeat(65) + "@x.com"), false);
+  assert.equal(isEmail("a." + "x".repeat(63) + "@x.com"), false); // 65 with a dot
+  assert.equal(isEmail('"' + "x".repeat(62) + '"@x.com'), true); // 64 with quotes
+  assert.equal(isEmail('"' + "x".repeat(63) + '"@x.com'), false);
 });
 
 test("isUri — authority, ports, IP literals, query and fragment", () => {
@@ -128,6 +134,8 @@ test("isUri — authority, ports, IP literals, query and fragment", () => {
     "http://host:/p", // empty port is allowed
     "http://[::1]:80/",
     "http://[v1.fe]/",
+    "http://[V1.x]/", // ABNF literals are case-insensitive
+    "http://[VaF.a:b]/",
     "file:///etc/hosts", // empty host
     "a:", // scheme + empty path
     "a:b/c",
@@ -149,6 +157,8 @@ test("isUri — authority, ports, IP literals, query and fragment", () => {
     "http://[::1]x/",
     "http://[::1/]",
     "http://[zz]/",
+    "http://[V.x]/",
+    "http://[W1.x]/",
     "http://a@b@c/",
     "http://h:8a/",
     "http://h:8é/",
@@ -174,6 +184,9 @@ test("isUri — authority, ports, IP literals, query and fragment", () => {
 test("isUuid", () => {
   assert.equal(isUuid("550e8400-e29b-41d4-a716-446655440000"), true);
   assert.equal(isUuid("550e8400-e29b-41d4-a716-44665544000"), false);
+  // any variant nibble (UUID.uuid requires 8/9/a/b there): documented looseness
+  assert.equal(isUuid("550e8400-e29b-41d4-0716-446655440000"), true);
+  assert.equal(isUuid("550e8400-e29b-41d4-c716-446655440000"), true);
 });
 
 test("testers stay linear on adversarial input (no regex backtracking blowup)", () => {

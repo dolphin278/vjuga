@@ -530,3 +530,52 @@ test("allOf / conditional properties that accept undefined may be absent", () =>
     "[null]",
   );
 });
+
+test("nullable(optional(T)) / union(optional(T), U) properties may be absent", () => {
+  const s = S.object({
+    n: S.nullable(S.optional(S.string())),
+    u: S.union(S.optional(S.string()), S.number()),
+    x: S.oneOf(S.optional(S.string()), S.null_()), // exactly one variant takes undefined
+    r: S.nullable(S.string()),
+  });
+  const p = s.meta.properties;
+  assert.equal(S.propertyMayBeAbsent(p.n), true);
+  assert.equal(S.propertyMayBeAbsent(p.u), true);
+  assert.equal(S.propertyMayBeAbsent(p.x), true);
+  assert.equal(S.propertyMayBeAbsent(p.r), false);
+  assert.equal(S.propertyMayBeAbsent(S.union(S.string(), S.number())), false);
+  assert.equal(S.propertyMayBeAbsent(S.nullable(S.nullable(S.optional(S.null_())))), true);
+  // toJsonSchema: only `r` is required, and the round trip keeps `{}`-ish values valid
+  const js = S.toJsonSchema(s);
+  assert.deepEqual(js.required, ["r"]);
+  const back = S.fromJsonSchema(js);
+  assert.ok(back[0]);
+  assert.equal(validate(back[1])({ r: null })[0], true);
+  assert.equal(validate(s)({ r: null })[0], true);
+  // JSON: stringify omits absent keys; parse accepts its own output
+  const str = SJ.stringify(s);
+  const par = SJ.parse(s);
+  const values = [
+    { r: null },
+    { r: "a", n: "s", u: "t", x: "v" },
+    { r: "a", n: null, u: 1, x: null },
+    { r: "a", n: undefined, u: undefined, x: undefined },
+  ];
+  for (const v of values) {
+    const text = str(v as never);
+    assert.equal(text.includes("undefined"), false, text);
+    const parsed = par(text);
+    assert.ok(parsed[0], text);
+    assert.equal(validate(s)(parsed[1])[0], true, text);
+    assert.equal(str(parsed[1] as never), text);
+  }
+  assert.equal(str({ r: null } as never), '{"r":null}');
+  assert.equal(
+    str({ r: "a", n: null, u: 1, x: null } as never),
+    '{"n":null,"u":1,"x":null,"r":"a"}',
+  );
+  // G3-4(a): union(optional(T), U) used to emit "u":null, which its own parse rejected
+  const su = S.object({ a: S.union(S.optional(S.string()), S.number()), b: S.number() });
+  assert.equal(SJ.stringify(su)({ b: 1 } as never), '{"b":1}');
+  assert.deepEqual(SJ.parse(su)(SJ.stringify(su)({ b: 1 } as never)), [true, { b: 1 }]);
+});

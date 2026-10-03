@@ -1378,18 +1378,19 @@ test("make() rejects invalid size and timeout options with RangeError (G4-3)", (
     { maxHeaderSize: 0 },
     { maxHeaderSize: -1 },
     { maxHeaderSize: 1.5 },
-    { maxHeaderSize: Infinity },
+    { maxHeaderSize: -Infinity },
     { maxBodySize: NaN },
     { maxBodySize: -1 },
     { maxBodySize: 0.5 },
-    { maxBodySize: 2 ** 53 },
+    { maxBodySize: 1000.1 },
     { headersTimeout: NaN },
     { headersTimeout: -1 },
-    { headersTimeout: Infinity },
-    { headersTimeout: 2 ** 31 },
+    { headersTimeout: -Infinity },
     { keepAliveTimeout: NaN },
     { keepAliveTimeout: -5 },
     { keepAliveTimeout: 1e10 },
+    { keepAliveTimeout: 2 ** 31 },
+    { keepAliveTimeout: Infinity },
   ] as HttpServer.Options[]) {
     assert.throws(() => HttpServer.make(h, opts), RangeError, JSON.stringify(opts));
   }
@@ -1397,6 +1398,9 @@ test("make() rejects invalid size and timeout options with RangeError (G4-3)", (
   HttpServer.make(h, { maxHeaderSize: 1, maxBodySize: 0, headersTimeout: 0, keepAliveTimeout: 0 });
   HttpServer.make(h, { headersTimeout: 2 ** 31 - 1, keepAliveTimeout: 0.5 });
   HttpServer.make(h, { maxHeaderSize: undefined, maxBodySize: undefined });
+  // Unlimited / very large values accepted as in 10.0.0
+  HttpServer.make(h, { maxHeaderSize: Infinity, maxBodySize: Infinity, headersTimeout: Infinity });
+  HttpServer.make(h, { maxBodySize: 2 ** 60, headersTimeout: 1e10, keepAliveTimeout: 2 ** 31 - 1 });
 });
 
 test("maxBodySize 0 rejects any body", () => {
@@ -1512,6 +1516,8 @@ test("Connection: close and HTTP/1.0 end the connection after the response (G4-5
     "GET / HTTP/1.0\r\n\r\n",
     "GET / HTTP/1.0\r\nConnection: keep-alive, close\r\n\r\n",
     "GET / HTTP/1.0\r\nConnection: foo\r\n\r\n",
+    "GET / HTTP/1.0\r\nConnection: keep-alive\r\nConnection: close\r\n\r\n",
+    "GET / HTTP/1.0\r\nConnection: keep-alivx\r\n\r\n",
   ];
   for (const req of closing) {
     const { seen, connect } = fakeServer();
@@ -1529,6 +1535,7 @@ test("Connection: close and HTTP/1.0 end the connection after the response (G4-5
     // Same length as a framing name, different bytes
     "GET / HTTP/1.1\r\nConnectiox: close\r\nContent-Lengtx: 5\r\nTransfer-Encodinx: x\r\n\r\n",
     "GET / HTTP/1.0\r\nConnection: Keep-Alive\r\n\r\n",
+    "GET / HTTP/1.0\r\nConnection:\tkeep-alive\r\n\r\n",
     "GET / HTTP/1.2\r\n\r\n",
     "GET / HTTP/2.0\r\n\r\n",
     "GET / HTTP/1x0\r\n\r\n",
@@ -1621,6 +1628,48 @@ test("close() over TCP resolves while a client holds a partial request (G4-7)", 
   await new Promise((r) => setTimeout(r, 10));
   await HttpServer.close(server);
   c.destroy();
+});
+
+test("async handler: dispatch waits for drain after a response fills the buffer", async () => {
+  const pending: Array<() => void> = [];
+  const { seen, connect } = fakeServer(undefined, (_req, socket) => {
+    pending.push(() => {
+      HttpServer.respond(socket, 200, "{}");
+      (socket as unknown as FakeSocket).writableNeedDrain = true;
+    });
+  });
+  const s = connect().feed("GET /1 HTTP/1.1\r\n\r\nGET /2 HTTP/1.1\r\n\r\n");
+  pending.shift()!();
+  await tick();
+  assert.equal(seen.length, 1); // buffer full: /2 held back
+  assert.equal(s.paused, true);
+  s.writableNeedDrain = false;
+  s.emit("drain");
+  assert.equal(seen.length, 2);
+});
+
+test("backpressure over TCP with an async handler: a non-reading client stays bounded", async () => {
+  const body = JSON.stringify("x".repeat(64 * 1024));
+  let handled = 0;
+  let maxQueued = 0;
+  const server = HttpServer.make((_req, socket) => {
+    handled++;
+    setImmediate(() => {
+      HttpServer.respond(socket, 200, body);
+      maxQueued = Math.max(maxQueued, socket.writableLength);
+    });
+  });
+  await HttpServer.listen(server, 0);
+  const c = net.createConnection({ port: getPort(server), host: "127.0.0.1" });
+  c.pause();
+  c.on("error", () => {});
+  await new Promise((r) => c.on("connect", r));
+  c.write("GET / HTTP/1.1\r\n\r\n".repeat(3000));
+  await new Promise((r) => setTimeout(r, 400));
+  assert.ok(handled < 1000, `handled ${handled}`);
+  assert.ok(maxQueued < 8 * 1024 * 1024, `queued ${maxQueued}`);
+  c.destroy();
+  await HttpServer.close(server);
 });
 
 test("a client disconnecting while its async request is pending is noticed (G4-2)", async () => {

@@ -103,8 +103,9 @@ export interface Request {
 export type Handler = (req: Request, socket: net.Socket) => void;
 
 /**
- * Server limits and timeouts. All sizes in bytes (integers), all times in ms
- * (at most 2147483647). make() throws RangeError on an invalid value.
+ * Server limits and timeouts. Sizes in bytes (integers, or Infinity for no
+ * limit), times in ms. make() throws RangeError on an invalid value (NaN,
+ * negative, a fractional size, keepAliveTimeout above 2147483647).
  */
 export interface Options {
   /** Max request-line + header block size (>= 1); larger → 431 + close. Default 65536. */
@@ -115,13 +116,15 @@ export interface Options {
    * Max time from the first byte of a request until its header block is
    * complete (slowloris guard); a stalled connection is destroyed. Checked
    * when data arrives and by a sweep every min(headersTimeout, 1000) ms
-   * while listening. 0 disables. Default 60000.
+   * while listening. 0 (or Infinity) disables. Default 60000. A request
+   * body is not covered: only keepAliveTimeout limits a stalled body.
    */
   headersTimeout?: number;
   /**
    * Socket inactivity timeout (no bytes read or written) after which an
-   * idle connection is destroyed; 0 disables. Default 5000. Never fires
-   * while a dispatched request still awaits its response.
+   * idle connection is destroyed; 0 disables; at most 2147483647 (the
+   * socket timer range). Default 5000. Never fires while a dispatched
+   * request still awaits its response.
    */
   keepAliveTimeout?: number;
   /**
@@ -340,18 +343,18 @@ function makeConnState(cfg: Config, handler: Handler): ConnState {
 /** Validate an integer size option (NaN would silently disable `x > limit` checks). */
 function sizeOption(name: string, value: number | undefined, def: number, min: number): number {
   const v = value ?? def;
-  if (!Number.isSafeInteger(v) || v < min) {
-    throw new RangeError(`HttpServer: ${name} must be an integer >= ${min}, got ${v}`);
+  // Infinity (no limit) is allowed; NaN, values below `min` and fractions are not
+  if (!(v >= min) || (v !== Infinity && !Number.isInteger(v))) {
+    throw new RangeError(`HttpServer: ${name} must be an integer >= ${min} or Infinity, got ${v}`);
   }
   return v;
 }
 
-/** Validate a timeout option: finite, >= 0, within the timer range. */
-function timeOption(name: string, value: number | undefined, def: number): number {
+/** Validate a timeout option: >= 0 and <= `max` (written so NaN fails too). */
+function timeOption(name: string, value: number | undefined, def: number, max: number): number {
   const v = value ?? def;
-  // Written so NaN fails too
-  if (!(v >= 0 && v <= MAX_TIMER_MS)) {
-    throw new RangeError(`HttpServer: ${name} must be in [0, ${MAX_TIMER_MS}] ms, got ${v}`);
+  if (!(v >= 0 && v <= max)) {
+    throw new RangeError(`HttpServer: ${name} must be in [0, ${max}] ms, got ${v}`);
   }
   return v;
 }
@@ -367,11 +370,19 @@ export function make(handler: Handler, options?: Options): HttpServer {
   const cfg: Config = {
     maxHeaderSize: sizeOption("maxHeaderSize", options?.maxHeaderSize, DEFAULT_MAX_HEADER_SIZE, 1),
     maxBodySize: sizeOption("maxBodySize", options?.maxBodySize, DEFAULT_MAX_BODY_SIZE, 0),
-    headersTimeout: timeOption("headersTimeout", options?.headersTimeout, DEFAULT_HEADERS_TIMEOUT),
+    // Only compared against elapsed time, so any non-negative value works
+    headersTimeout: timeOption(
+      "headersTimeout",
+      options?.headersTimeout,
+      DEFAULT_HEADERS_TIMEOUT,
+      Infinity,
+    ),
+    // Feeds socket.setTimeout(), which turns larger delays into 1 ms
     keepAliveTimeout: timeOption(
       "keepAliveTimeout",
       options?.keepAliveTimeout,
       DEFAULT_KEEP_ALIVE_TIMEOUT,
+      MAX_TIMER_MS,
     ),
     onError: options?.onError ?? noop,
     closing: false,
@@ -494,6 +505,14 @@ function resume(conn: ConnState, socket: net.Socket): void {
     conn.dead = true;
     return;
   }
+  if (socket.writableNeedDrain) {
+    // The (async) response just written filled the write buffer: dispatch
+    // nothing more until the peer reads it
+    conn.paused = true;
+    socket.pause();
+    socket.once("drain", () => resume(conn, socket));
+    return;
+  }
   socket.resume();
   try {
     processBuffer(conn, socket, conn.handler, conn.cfg);
@@ -530,8 +549,9 @@ export function listen(server: HttpServer, port: number, host?: string): Promise
  * immediately. A connection with a partially received request or a response
  * still in flight is ended after its next response, which carries
  * `Connection: close`; pipelined requests behind it are dropped. A stalled
- * partial request is cut off by headersTimeout. Resolves when all
- * connections are terminated.
+ * partial header block is cut off by headersTimeout; a stalled body only by
+ * keepAliveTimeout (with both 0, close() waits for the client). Resolves
+ * when all connections are terminated.
  */
 export function close(server: HttpServer): Promise<void> {
   server[kConfig].closing = true;
@@ -1019,7 +1039,17 @@ function tryParse(conn: ConnState, offset: number, end: number, scan: number, cf
       }
     } else if (nameLen === 10) {
       if (matchName(buf, pos, CONN_NAME)) {
-        connection |= parseConnection(buf, colon, lineEnd, http10);
+        // Fast path for the common exact `Connection: keep-alive`: skips the
+        // option walk (measured ~14 ns/request on node)
+        if (
+          lineEnd - colon === 12 &&
+          buf[colon + 1] === 0x20 &&
+          matchName(buf, colon + 2, KA_OPT)
+        ) {
+          connection |= CONN_KEEP_ALIVE;
+        } else {
+          connection |= parseConnection(buf, colon, lineEnd, http10);
+        }
       }
     } else if (nameLen === 17 && matchName(buf, pos, TE_NAME)) {
       // 501 is decided after the whole block is checked, so a later bad

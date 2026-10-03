@@ -418,8 +418,8 @@ test("make() throws RangeError exactly for invalid size/timeout options", () => 
     ([name, v]) => {
       const valid =
         name === "maxHeaderSize" || name === "maxBodySize"
-          ? Number.isSafeInteger(v) && v >= (name === "maxHeaderSize" ? 1 : 0)
-          : v >= 0 && v <= 2 ** 31 - 1;
+          ? (Number.isInteger(v) || v === Infinity) && v >= (name === "maxHeaderSize" ? 1 : 0)
+          : v >= 0 && v <= (name === "headersTimeout" ? Infinity : 2 ** 31 - 1);
       let threw: unknown = null;
       try {
         HttpServer.make(() => {}, { [name]: v } as HttpServer.Options);

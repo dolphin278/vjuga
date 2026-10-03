@@ -94,21 +94,26 @@ test("error classes set name and keep the original reference", async () => {
 
 test("G7-2: references into one file share a single module instance", async () => {
   const g = globalThis as { __refCountedEvals?: number };
-  const base = pathToFileURL(`${fixtures}/ref-counted.mjs`).href;
-  const inc = await resolve(`${base}#inc`);
-  const get = await resolve(`${base}#get`);
-  const def = await resolve(base);
-  const bare = await resolve(`${base}#`); // empty fragment → default export
-  const pathForm = await resolve(`${fixtures}/ref-counted.mjs#get`);
-  inc();
-  inc();
-  assert.equal(g.__refCountedEvals, 1);
-  assert.equal(get(), 2);
-  assert.equal(def(), 2);
-  assert.equal(bare, def);
-  assert.equal(pathForm, get);
-  const direct = (await import(base)) as { inc: unknown };
-  assert.equal(direct.inc, inc);
+  try {
+    const base = pathToFileURL(`${fixtures}/ref-counted.mjs`).href;
+    const inc = await resolve(`${base}#inc`);
+    const get = await resolve(`${base}#get`);
+    const def = await resolve(base);
+    const bare = await resolve(`${base}#`); // empty fragment → default export
+    const pathForm = await resolve(`${fixtures}/ref-counted.mjs#get`);
+    inc();
+    inc();
+    assert.equal(g.__refCountedEvals, 1);
+    assert.equal(get(), 2);
+    assert.equal(def(), 2);
+    assert.equal(bare, def);
+    assert.equal(pathForm, get);
+    const direct = (await import(base)) as { inc: unknown };
+    assert.equal(direct.inc, inc);
+  } finally {
+    // Don't leak the fixture's counter into a shared (bun) test process.
+    delete g.__refCountedEvals;
+  }
 });
 
 test("G7-2: the caller's URL object is not mutated", async () => {

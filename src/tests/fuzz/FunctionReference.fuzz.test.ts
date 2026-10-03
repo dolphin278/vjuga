@@ -83,14 +83,19 @@ test("any mix of fragments into one file shares one module instance; caller URL 
         for (let i = 0; i < 5; i++) src += `export function f${i}() { return id; }\n`;
         src += "export default function () { return id; }\n";
         writeFileSync(file, src);
-        for (const pick of picks) {
-          const url = pathToFileURL(file);
-          if (pick !== "none" && pick !== "bare") url.hash = pick;
-          const before = url.href;
-          const fn = await FunctionReference.resolve(pick === "bare" ? `${url.href}#` : url);
-          if (url.href !== before || fn() !== 1) return false;
+        try {
+          for (const pick of picks) {
+            const url = pathToFileURL(file);
+            if (pick !== "none" && pick !== "bare") url.hash = pick;
+            const before = url.href;
+            const fn = await FunctionReference.resolve(pick === "bare" ? `${url.href}#` : url);
+            if (url.href !== before || fn() !== 1) return false;
+          }
+          return (globalThis as Record<string, unknown>)[key] === 1;
+        } finally {
+          // Don't leak per-run counters into a shared (bun) test process.
+          delete (globalThis as Record<string, unknown>)[key];
         }
-        return (globalThis as Record<string, unknown>)[key] === 1;
       },
       { numRuns: 300 },
     );

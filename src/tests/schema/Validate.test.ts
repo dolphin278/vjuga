@@ -1202,6 +1202,83 @@ test("own properties — only proto-colliding keys skip the prototype flag", () 
   assertErr(disc({}));
 });
 
+/**
+ * Run `fn` with `Object.prototype[key] = value` (prototype pollution happening
+ * after the validators were compiled), always restoring it.
+ */
+function polluted(entries: Record<string, unknown>, fn: () => void): void {
+  const proto = Object.prototype as Record<string, unknown>;
+  try {
+    for (const k of Object.keys(entries)) proto[k] = entries[k];
+    fn();
+  } finally {
+    for (const k of Object.keys(entries)) delete proto[k];
+  }
+}
+
+test("own properties — Object.prototype polluted after compile never supplies a key", () => {
+  // Compile first: compile-time `key in Object.prototype` must not see the pollution
+  const v = validate(S.object({ role: S.literal("admin"), id: S.integer() }));
+  const all = validate(S.object({ role: S.literal("admin"), id: S.integer() }), {
+    allErrors: true,
+  });
+  const open = validate(S.object({ isAdmin: S.boolean() }, { additionalProperties: true }));
+  const anyKey = validate(S.object({ meta: S.unknown() }, { additionalProperties: true }));
+  const parse = jsonParse(S.object({ role: S.literal("admin"), id: S.integer() }));
+  polluted({ role: "admin", isAdmin: true, meta: Number.NaN }, () => {
+    assert.equal(assertErr(v({ id: 1 })).path, "role");
+    assert.equal(assertErr(v(JSON.parse('{"id":1}'))).path, "role");
+    // An own value equal to the polluted one is still accepted
+    assertOk(v(JSON.parse('{"role":"admin","id":1}')));
+    assertErr(v(JSON.parse('{"role":"user","id":1}')));
+    assert.deepEqual(paths(all(JSON.parse('{"id":1}'))), ["role"]);
+    assert.equal(assertErr(open(JSON.parse("{}"))).path, "isAdmin");
+    assertOk(open(JSON.parse('{"isAdmin":false}')));
+    // NaN never equals itself, so a value-comparison guard would miss it
+    assert.equal(assertErr(anyKey(JSON.parse("{}"))).path, "meta");
+    // schema/JSON.parse shares the emitted reads
+    assert.equal(assertErr(parse('{"id":1}')).path, "role");
+    assertOk(parse('{"role":"admin","id":1}'));
+  });
+  // Unpolluted again: the direct-read path is back and still correct
+  assertOk(v(JSON.parse('{"role":"admin","id":1}')));
+  assert.equal(assertErr(v(JSON.parse('{"id":1}'))).path, "role");
+});
+
+test("own properties — polluted tag or variant key never selects or satisfies a variant", () => {
+  const disc = validate(
+    S.union(
+      S.object({ kind: S.literal("admin"), id: S.integer() }),
+      S.object({ kind: S.literal("user"), id: S.integer(), name: S.string() }),
+    ),
+  );
+  polluted({ kind: "admin" }, () => {
+    const e = assertErr(disc(JSON.parse('{"id":1}')));
+    assert.equal(e.path, "kind");
+    assert.equal(e.received, undefined);
+    assertOk(disc(JSON.parse('{"kind":"admin","id":1}')));
+  });
+  polluted({ name: "x" }, () => {
+    assert.equal(assertErr(disc(JSON.parse('{"kind":"user","id":1}'))).path, "name");
+    assertOk(disc(JSON.parse('{"kind":"user","id":1,"name":"y"}')));
+  });
+});
+
+test("own properties — residual: a lying own-chain __proto__ getter is trusted", () => {
+  // Documented limitation (emitPlainFlag): the flag believes `v.__proto__`
+  class Liar {
+    get ["__proto__"](): object {
+      return Object.prototype;
+    }
+  }
+  (Liar.prototype as unknown as Record<string, unknown>).role = "admin";
+  const inst = Object.assign(new Liar(), { id: 1 });
+  const v = validate(S.object({ role: S.literal("admin"), id: S.integer() }));
+  assertOk(v(inst));
+  // Without the lie the inherited key is ignored
+  assertErr(v(Object.assign(Object.create({ role: "admin" }) as object, { id: 1 })));
+});
+
 test("hoisting — each property is read exactly once", () => {
   let reads = 0;
   const o = {};
@@ -1520,6 +1597,70 @@ test("allErrors: allOf checks every variant at the same value", () => {
   assert.deepEqual(paths(v({ a: 1, b: 2 })), ["a", "b"]);
   // A failed type check at the allOf's own value stops the remaining variants
   assert.deepEqual(paths(v(3)), [""]);
+});
+
+test("shared subtrees — allOf[X, X] and conditional(_, X, X) emit X once", () => {
+  const x = S.object({ a: S.string({ minLength: 1 }), b: S.optional(S.integer()) });
+  const base = validate(x).toString();
+  assert.equal(validate(S.allOf(x, x, x)).toString(), base);
+  assert.equal(validate(S.conditional(S.number(), x, x)).toString(), base);
+  // Distinct variants keep their order; only identity repeats are dropped
+  const y = S.object({ a: S.string() }, { additionalProperties: true });
+  assert.equal(validate(S.allOf(x, y, x)).toString(), validate(S.allOf(x, y)).toString());
+  // allErrors reports the shared subtree's errors once, not once per use
+  const all = validate(S.allOf(x, x), { allErrors: true });
+  assert.deepEqual(paths(all({ a: "", b: "z" })), ["a", "b"]);
+  // A $ref DAG of depth 24 (2^24 paths) compiles to linear code
+  // (Casts: Infer<Schema> on the wide type is too deep for the checker)
+  let node: S.Schema = x;
+  for (let i = 0; i < 24; i++) {
+    node = (i % 2 === 0 ? S.allOf(node, node) : S.conditional(S.null_(), node, node)) as S.Schema;
+  }
+  const deep = validate(node as S.StringSchema);
+  assert.equal(deep.toString(), base);
+  assertOk(deep({ a: "q" }));
+  assert.equal(assertErr(deep({ a: "" })).path, "a");
+  const viaRef = S.fromJsonSchema({
+    $defs: { x: { type: "string" }, y: { allOf: [{ $ref: "#/$defs/x" }, { $ref: "#/$defs/x" }] } },
+    $ref: "#/$defs/y",
+  });
+  assert.ok(viaRef[0]);
+  const refSchema = viaRef[1] as S.StringSchema;
+  assert.equal(validate(refSchema).toString(), validate(S.string()).toString());
+});
+
+test("shared subtrees — dedupe keeps exact checks and presence counts exact", () => {
+  const lit = S.literal("a");
+  // Non-last union variants use exact checks: allOf / anyOf / conditional repeats
+  const u = validate(
+    S.union(
+      S.allOf(lit, lit),
+      S.union(S.number(), S.number()),
+      S.conditional(S.string(), S.boolean(), S.boolean()),
+      S.null_(),
+    ),
+  );
+  for (const ok of ["a", 1, true, null]) assertOk(u(ok));
+  for (const bad of ["b", undefined, {}]) assertErr(u(bad));
+  // oneOf counts matches: a repeated variant matches twice, so nothing is valid
+  const twice = validate(S.union(S.oneOf(S.string(), S.string()), S.number()));
+  assertErr(twice("s"));
+  assertOk(twice(1));
+  assertErr(validate(S.oneOf(S.string(), S.string()))("s"));
+  // Repeated optional schemas still count presence (extra-key fast path stays exact)
+  const opt = S.optional(S.string());
+  const o = validate(
+    S.object({
+      a: S.allOf(opt, opt),
+      b: S.conditional(S.string(), opt, opt),
+      c: S.union(opt, opt),
+      d: S.conditional(S.string(), S.string(), opt),
+    }),
+  );
+  assertOk(o({}));
+  assertOk(o({ a: "x", b: "y", c: "z", d: "w" }));
+  assert.equal(assertErr(o({ a: "x", e: 1 })).path, "e");
+  assert.equal(assertErr(o({ a: undefined, e: 1 })).path, "e");
 });
 
 test("allErrors: errors[0] equals the first-error result", () => {

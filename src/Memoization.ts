@@ -11,11 +11,11 @@
  *     for such arguments.
  *   - Async results are cached as promises, so a rejection is cached forever;
  *     `this` is not forwarded to `fn`.
- *   - `once` retries after a throw and releases `fn` after the first success.
+ *   - `once` retries after a throw and releases `fn` after the first success;
+ *     a re-entrant call while the first run is in progress throws TypeError.
  *
- * When to use: pure functions with repeated identical arguments. Supply a
- * bounded cache when the key space is large. Use `once` for one-shot lazy
- * initialization that ignores arguments entirely.
+ * When to use: pure functions with repeated identical arguments (with a
+ * bounded cache for large key spaces); `once` for argument-free lazy init.
  *
  * Design notes:
  *   - The two-lookup trick (`cache.get` then `cache.has`) keeps the common
@@ -104,6 +104,11 @@ function defaultCacheKeyFn<T extends readonly unknown[]>(...args: T): string {
 /**
  * Returns a memoized version of `fn` that only calls the original function once.
  * If `fn` throws, the error propagates and the next call retries.
+ * Throws TypeError if the wrapper is called again (directly or indirectly)
+ * from inside `fn` while that first run is still in progress: there is no
+ * result to return yet, and running `fn` again would break the "once"
+ * guarantee. (An async `fn` returns its promise synchronously, so it is
+ * not affected.)
  */
 export function once<T extends readonly unknown[], R>(fn: Fn<T, R>): Fn<T, R> {
   // definite assignment: result is always set before first read (guarded by `f`)
@@ -112,10 +117,19 @@ export function once<T extends readonly unknown[], R>(fn: Fn<T, R>): Fn<T, R> {
   // so `fn`'s closure can be collected. A throw leaves it set, so the next call
   // retries.
   let f: Fn<T, R> | undefined = fn;
+  // Re-entrancy guard, only consulted before the first success; the
+  // initialized fast path stays a single `f !== undefined` check.
+  let running = false;
   return function memoized(...args: T): R {
     if (f !== undefined) {
-      result = Reflect.apply(f, null, args) as R;
-      f = undefined;
+      if (running) throw new TypeError("once: re-entrant call while fn is still running");
+      running = true;
+      try {
+        result = Reflect.apply(f, null, args) as R;
+        f = undefined;
+      } finally {
+        running = false;
+      }
     }
     return result;
   };

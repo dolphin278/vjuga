@@ -68,7 +68,7 @@ Property.check() runs property-based tests - generates random input, shrinks to 
 - ESM-only, zero runtime dependencies
 - No root export — import `@dolphin278/vjuga/<Module>`
 - Extensionless subpath imports are supported; `.js` subpaths remain compatible
-- Works identically on Node.js and Bun
+- Same API and semantics on Node.js and Bun; performance differs per runtime, and `UUID.v7()` on Bun (native `Bun.randomUUIDv7`, 12-bit counter) can run its timestamp ahead of the clock in bursts above ~4096 IDs/ms
 
 Contributor policy lives in the git repository:
 https://github.com/dolphin278/vjuga/blob/master/CONTRIBUTING-AGENTS.md

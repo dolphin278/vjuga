@@ -8,29 +8,63 @@ import { fullFormats } from "ajv-formats/dist/formats.js";
 
 // Full ECMAScript Date range.
 const MAX_MS = 8.64e15;
+// Years 0000-9999: the instants the brand can represent.
+const MIN_4Y = -62167219200000;
+const MAX_4Y = 253402300799999;
 
-test("fromEpochMs matches native toISOString over the full Date range (integers)", () => {
+/** Oracle: native formatting inside years 0000-9999 (after Date's truncation), RangeError outside. */
+function expectEpochMs(ms: number, actual: () => string): void {
+  const t = Math.trunc(ms);
+  if (t >= MIN_4Y && t <= MAX_4Y) assert.equal(actual(), new Date(ms).toISOString());
+  else assert.throws(actual, RangeError, String(ms));
+}
+
+test("fromEpochMs matches native in years 0000-9999 and throws outside (integers)", () => {
   Prop.assert(
     Arb.oneOf(
       Arb.integer(-0x7fff_ffff, 0x7fff_ffff),
       Arb.map(Arb.float(-MAX_MS, MAX_MS), Math.trunc),
       Arb.map(Arb.float(-1e13, 4e14), Math.trunc),
-      Arb.constantFrom(0, -1, 253402300799999, 253402300800000, -MAX_MS, MAX_MS),
+      Arb.integer(MIN_4Y - 1000, MIN_4Y + 1000),
+      Arb.integer(MAX_4Y - 1000, MAX_4Y + 1000),
+      Arb.constantFrom(0, -1, MIN_4Y, MIN_4Y - 1, MAX_4Y, MAX_4Y + 1, -MAX_MS, MAX_MS, NaN),
     ),
     (ms) => {
-      assert.equal(ISO.fromEpochMs(ms), new Date(ms).toISOString());
+      expectEpochMs(ms, () => ISO.fromEpochMs(ms));
+      expectEpochMs(ms, () => ISO.fromDate(new Date(ms)));
     },
     { numRuns: 1_000_000 },
   );
 });
 
-test("fromEpochMs matches native for fractional ms and Unix.toISO", () => {
+test("fromEpochMs matches native for fractional ms; Unix.toISO/toDate keep exact ms", () => {
   Prop.assert(
-    Arb.float(-1e13, 4e14),
+    Arb.oneOf(Arb.float(-1e13, 4e14), Arb.float(MIN_4Y - 2, MIN_4Y + 2)),
     (ms) => {
-      assert.equal(ISO.fromEpochMs(ms), new Date(ms).toISOString());
+      expectEpochMs(ms, () => ISO.fromEpochMs(ms));
       const s = Unix.unixTimestamp(ms / 1000);
-      assert.equal(Unix.toISO(s), new Date(s * 1000).toISOString());
+      // toDate: the exact ms whose own double is `s`, else Date's truncation.
+      const got = Unix.toDate(s).getTime();
+      assert.ok(got / 1000 === s || got === Math.trunc(s * 1000), `${s} -> ${got}`);
+      assert.ok(Math.abs(got - s * 1000) < 1, `${s} -> ${got}`);
+      expectEpochMs(got, () => Unix.toISO(s));
+    },
+    { numRuns: 1_000_000 },
+  );
+});
+
+test("Unix.toDate/toISO round-trip every exact millisecond over the full Date range", () => {
+  Prop.assert(
+    Arb.oneOf(
+      Arb.integer(-0x7fff_ffff, 0x7fff_ffff),
+      // `+ 0` turns -0 into 0, which is what Date#getTime returns.
+      Arb.map(Arb.float(-MAX_MS, MAX_MS), (x) => Math.trunc(x) + 0),
+      Arb.map(Arb.float(MIN_4Y, MAX_4Y), (x) => Math.trunc(x) + 0),
+    ),
+    (ms) => {
+      const s = Unix.unixTimestamp(ms / 1000);
+      assert.equal(Unix.toDate(s).getTime(), ms, String(s));
+      expectEpochMs(ms, () => Unix.toISO(s));
     },
     { numRuns: 1_000_000 },
   );

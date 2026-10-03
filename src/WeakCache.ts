@@ -180,7 +180,7 @@ export function size<K, V extends object>(cache: WeakCache<K, V>): number {
  * time the value was collected and this callback fires, `set()` may have
  * stored a new value under the same key — deleting blindly would lose it.
  *
- * Exported for testing only — not part of the public API contract.
+ * @internal Exported for testing only — not part of the public API contract.
  */
 export function cleanupStaleEntry<K, V extends object>(entries: Map<K, WeakRef<V>>, key: K): void {
   const ref = entries.get(key);

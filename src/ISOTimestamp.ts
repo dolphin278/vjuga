@@ -15,10 +15,13 @@
  * Design tradeoffs: validation is one allocation-free char-code scan with
  * explicit field ranges and a real calendar check (`Date.parse` alone accepts
  * `"Tuesday"` and silently rolls `2023-02-29` and `T24:00` over). `toDate`
- * truncates fractions beyond milliseconds. `now()` bypasses `toISOString()`
- * using Hinnant's civil-from-days algorithm with pre-built pad tables (~40%
- * faster). `isRfc3339DateTime` / `isRfc3339Time` are separate, stricter
- * predicates for JSON Schema `date-time` / `time` (RFC 3339 section 5.6).
+ * truncates fractions beyond milliseconds. `fromDate` / `fromEpochMs` throw
+ * `RangeError` outside years 0000–9999 rather than brand an expanded-year
+ * string. `now()` bypasses `toISOString()` via Hinnant's civil-from-days
+ * algorithm with pre-built pad tables: ~20–25% faster on Node, ~5–20% slower
+ * on Bun (whose native `toISOString` is already fast). `isRfc3339DateTime` /
+ * `isRfc3339Time` are separate, stricter predicates for JSON Schema
+ * `date-time` / `time` (RFC 3339 section 5.6).
  *
  * @example
  * ```ts
@@ -197,8 +200,14 @@ export function isoTimestamp(value: string): ISOTimestamp {
   return value as ISOTimestamp;
 }
 
-/** Converts a Date to a branded ISOTimestamp via `toISOString()`. */
+/**
+ * Converts a Date to a branded ISOTimestamp via `toISOString()`. Throws
+ * RangeError for an invalid Date or a year outside 0000–9999 (`toISOString`
+ * would give an expanded `+010000-…` / `-000001-…` year that the brand's
+ * grammar, and `isoTimestamp`, reject).
+ */
 export function fromDate(date: Date): ISOTimestamp {
+  checkRange(date.getTime());
   return date.toISOString() as ISOTimestamp;
 }
 
@@ -211,7 +220,7 @@ export function fromDate(date: Date): ISOTimestamp {
  */
 export function toDate(ts: ISOTimestamp): Date {
   // Only 4-digit-year forms with seconds carry a fraction at index 19
-  // (expanded years from fromDate have ':' there).
+  // (an expanded-year `+010000-…` string has ":" there).
   if (ts.charCodeAt(19) === 46) {
     const end = skipDigits(ts, 20);
     if (end > 23) return new Date(ts.slice(0, 23) + ts.slice(end));
@@ -221,23 +230,41 @@ export function toDate(ts: ISOTimestamp): Date {
 
 /** 9999-12-31T23:59:59.999Z + 1 ms — upper bound of the 4-digit-year fast path. */
 const MAX_FAST_MS = 253402300800000;
+/** 0000-01-01T00:00:00.000Z — the earliest instant with a 4-digit year. */
+const MIN_MS = -62167219200000;
+
+/**
+ * Throws unless `ms` formats with a 4-digit year. `Date` truncates fractional
+ * ms toward zero, so anything above `MIN_MS - 1` still lands in year 0000.
+ * NaN fails both comparisons.
+ */
+function checkRange(ms: number): void {
+  if (!(ms > MIN_MS - 1 && ms < MAX_FAST_MS)) {
+    throw new RangeError(
+      `ISOTimestamp out of range (0000-01-01T00:00:00.000Z .. 9999-12-31T23:59:59.999Z), got ${ms} ms`,
+    );
+  }
+}
 
 /**
  * Converts epoch milliseconds to an ISO 8601 UTC datetime string using
  * Hinnant's civil-from-days algorithm (integer arithmetic only) and pre-built
  * pad lookup tables. Avoids both Date allocation and the native toISOString()
- * C++ → JS string bridge. Negative, fractional and out-of-4-digit-year inputs
- * fall back to `new Date(ms).toISOString()` (output identical to native;
- * NaN / beyond ±8.64e15 throws RangeError).
+ * C++ → JS string bridge. Negative and fractional inputs fall back to
+ * `new Date(ms).toISOString()` (output identical to native). Throws
+ * RangeError for NaN and for instants outside years 0000–9999, which the
+ * brand cannot represent.
  *
  * @see https://howardhinnant.github.io/date_algorithms.html
  */
 export function fromEpochMs(ms: number): ISOTimestamp {
   // Fast path covers integer ms in years 1970-9999; everything else (negative,
-  // fractional, >= year 10000, NaN) takes the native path, which formats or throws
-  // exactly like `Date`.
-  if (!(ms >= 0 && ms < MAX_FAST_MS) || ms % 1 !== 0)
+  // fractional, out of range, NaN) is range-checked here, off the hot path,
+  // then formatted natively.
+  if (!(ms >= 0 && ms < MAX_FAST_MS) || ms % 1 !== 0) {
+    checkRange(ms);
     return new Date(ms).toISOString() as ISOTimestamp;
+  }
   const rem_ms = ms % 1000;
   const totalSec = (ms - rem_ms) / 1000;
   const rem_sec = totalSec % 60;
@@ -275,7 +302,10 @@ export function fromEpochMs(ms: number): ISOTimestamp {
     "Z") as ISOTimestamp;
 }
 
-/** Returns the current time as a branded ISOTimestamp (~40% faster than Date.toISOString). */
+/**
+ * Returns the current time as a branded ISOTimestamp. About 20–25% faster than
+ * `new Date().toISOString()` on Node; about 5–20% slower on Bun.
+ */
 export function now(): ISOTimestamp {
   return fromEpochMs(Date.now());
 }

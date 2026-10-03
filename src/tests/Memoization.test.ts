@@ -98,6 +98,39 @@ test("once retries after fn throws and then caches the first success", () => {
   assert.equal(calls, 2);
 });
 
+test("once throws TypeError on a re-entrant call during the first run (G8-10)", () => {
+  let calls = 0;
+  let inner: unknown;
+  const init: () => number = once(() => {
+    calls++;
+    if (calls === 1) {
+      try {
+        init();
+      } catch (e) {
+        inner = e;
+      }
+    }
+    return calls;
+  });
+  assert.equal(init(), 1);
+  assert.ok(inner instanceof TypeError, "re-entrant call throws TypeError");
+  assert.equal(calls, 1, "fn ran exactly once");
+  assert.equal(init(), 1);
+});
+
+test("once: an uncaught re-entrant TypeError fails the first run, which can be retried", () => {
+  let calls = 0;
+  const init: () => number = once(() => {
+    calls++;
+    if (calls === 1) init(); // propagates the TypeError out of fn
+    return calls;
+  });
+  assert.throws(() => init(), TypeError);
+  // The guard is cleared after the failed run, so the next call retries.
+  assert.equal(init(), 2);
+  assert.equal(init(), 2);
+});
+
 test("once caches an undefined result without calling fn again", () => {
   let calls = 0;
   const memoized = once((): undefined => {

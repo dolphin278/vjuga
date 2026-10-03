@@ -7,6 +7,11 @@
  * (`a.cause = b; b.cause = a`) terminate: Brent's cycle detection, with no
  * allocation, ends the walk after one lap.
  *
+ * "Is an `Error`" means `instanceof Error` in this realm: an error created
+ * in another realm (a `node:vm` context, an iframe) fails that check, so the
+ * walk stops before it (for a foreign root, `toArray` / `find` see nothing
+ * while `chain` still yields the root alone).
+ *
  * When to use: when you need to inspect or search a wrapped error chain (e.g.,
  * finding a specific error type deep in a cause chain). If you only need the
  * immediate cause, access `error.cause` directly.

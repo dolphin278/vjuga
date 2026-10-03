@@ -17,6 +17,7 @@
     "./benchmarks/*": null,
     "./tests/*.js": null,
     "./tests/*": null,
+    "./package.json": "./package.json",
     "./schema/*.js": {
       "types": "./src/schema/*.d.ts",
       "default": "./src/schema/*.js"

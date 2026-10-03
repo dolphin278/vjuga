@@ -138,10 +138,27 @@ test("toDate() truncates fractions beyond milliseconds (never rounds)", () => {
   assert.equal(t("2024-01-15T10:30:00Z"), "2024-01-15T10:30:00.000Z");
 });
 
-test("toDate() handles expanded-year values produced by fromEpochMs", () => {
+test("toDate() handles expanded-year strings cast to the brand", () => {
   for (const ms of [253402300800000, -62198755200000, 8.64e15, -8.64e15]) {
-    assert.equal(ISOTimestamp.toDate(ISOTimestamp.fromEpochMs(ms)).getTime(), ms);
+    const cast = new Date(ms).toISOString() as ISOTimestamp.ISOTimestamp;
+    assert.equal(ISOTimestamp.toDate(cast).getTime(), ms);
   }
+});
+
+test("fromDate() throws RangeError outside years 0000-9999 and for an invalid Date (G8-3)", () => {
+  const bad = [
+    new Date(Date.UTC(10000, 0, 1)),
+    new Date(-62167219200001), // 0000-01-01 minus 1 ms = year -1
+    new Date(8.64e15),
+    new Date(-8.64e15),
+    new Date(NaN),
+  ];
+  for (const d of bad) {
+    assert.throws(() => ISOTimestamp.fromDate(d), RangeError, String(d.getTime()));
+  }
+  // The bounds themselves are representable.
+  assert.equal(ISOTimestamp.fromDate(new Date(-62167219200000)), "0000-01-01T00:00:00.000Z");
+  assert.equal(ISOTimestamp.fromDate(new Date(253402300799999)), "9999-12-31T23:59:59.999Z");
 });
 
 // --- RFC 3339 predicates (JSON Schema date-time / time) ---
@@ -302,10 +319,20 @@ test("fromEpochMs() matches native for fractional ms", () => {
   }
 });
 
-test("fromEpochMs() matches native at and beyond year 9999", () => {
+test("fromEpochMs() formats years 0000 and 9999 and throws beyond them (G8-3)", () => {
   assert.equal(ISOTimestamp.fromEpochMs(253402300799999), "9999-12-31T23:59:59.999Z");
-  assert.equal(ISOTimestamp.fromEpochMs(253402300800000), "+010000-01-01T00:00:00.000Z");
-  assert.equal(ISOTimestamp.fromEpochMs(8.64e15), new Date(8.64e15).toISOString());
+  assert.equal(ISOTimestamp.fromEpochMs(253402300799999.9), "9999-12-31T23:59:59.999Z");
+  assert.equal(ISOTimestamp.fromEpochMs(-62167219200000), "0000-01-01T00:00:00.000Z");
+  // Date truncates fractional ms toward zero, so this is still year 0000.
+  assert.equal(ISOTimestamp.fromEpochMs(-62167219200000.9), "0000-01-01T00:00:00.000Z");
+  for (const ms of [253402300800000, -62167219200001, -62198755200001, 8.64e15, -8.64e15]) {
+    assert.throws(() => ISOTimestamp.fromEpochMs(ms), RangeError, String(ms));
+  }
+  // Every accepted string satisfies the brand's own grammar.
+  for (const ms of [253402300799999, -62167219200000, -1, 0.5]) {
+    const ts = ISOTimestamp.fromEpochMs(ms);
+    assert.equal(ISOTimestamp.validator()(ts)[0], true, ts);
+  }
 });
 
 test("fromEpochMs() throws RangeError on NaN / Infinity / beyond Date range", () => {

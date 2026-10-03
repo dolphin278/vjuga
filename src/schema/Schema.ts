@@ -475,8 +475,9 @@ export interface JsonSchemaObject {
  *
  * OptionalSchema is expressed via the parent object's `required` array — the
  * inner schema is emitted directly; any property that accepts `undefined`
- * (`propertyMayBeAbsent`) is left out of `required`. A node shared by several
- * parents is converted once and its output object is shared too. Throws
+ * (`propertyMayBeAbsent`) is left out of `required`. A non-leaf node shared by
+ * several parents is converted once and its output object is shared by those
+ * parents (leaves are rebuilt per use). Throws
  * `TypeError` on a cyclic schema (recursive schemas are not supported).
  */
 export function toJsonSchema(root: Schema): JsonSchemaObject {
@@ -743,7 +744,8 @@ export interface FromJsonSchemaOptions {
  * unique), invalid `pattern` regexes, and results too big to compile safely
  * (over 50,000 nodes once every `$ref` use is expanded, or nested deeper than
  * 256). `prefixItems` + `items: false` lowers to one tuple per allowed length,
- * so without `minItems` = `maxItems` it is capped near 315 items. Unknown
+ * so without `minItems` = `maxItems` it is capped near 315 items (the cap is
+ * shared by every such site and checked before building). Unknown
  * `format` names are annotation-only unless `options.formats` is `"strict"`,
  * which returns `Err` for them.
  *
@@ -770,6 +772,7 @@ export function fromJsonSchema(
     registry: new Map(),
     rawRefs: options?.refs,
     strictFormats: options?.formats === "strict",
+    tupleNodes: 0,
     memo: new Map(),
     active: new Set(),
     path: [],
@@ -875,6 +878,8 @@ interface LowerCtx {
   readonly path: string[];
   /** `formats: "strict"` — unknown `format` names fail instead of annotating. */
   readonly strictFormats: boolean;
+  /** Nodes built so far by prefixItems length expansion, across all sites. */
+  tupleNodes: number;
 }
 
 /** Internal failure carrier; converted to `Err` by `fromJsonSchema`. */
@@ -1538,10 +1543,13 @@ function lowerArrayKeywords(ctx: LowerCtx, js: Record<string, unknown>, base: st
     if (lo === hi) return tuple(...lowered.slice(0, lo));
     // prefixItems does not require presence: accept every allowed length.
     // That is quadratic in the prefix length — refuse before building it:
-    // the union, one tuple per length k and its k items (a lower bound on
-    // what checkExpansion would count, so nothing it accepts is refused).
+    // the union, one tuple per length k and its k items, summed over every
+    // site (many sub-cap sites would otherwise each build ~50k nodes). Each
+    // site is built once, so the sum is a lower bound on what checkExpansion
+    // counts and nothing it accepts is refused.
     const count = hi - lo + 1;
-    if (1 + count + (count * (lo + hi)) / 2 > MAX_EXPANDED_NODES) {
+    ctx.tupleNodes += 1 + count + (count * (lo + hi)) / 2;
+    if (ctx.tupleNodes > MAX_EXPANDED_NODES) {
       fail(
         ctx,
         "prefixItems without a fixed length expands to more than " +

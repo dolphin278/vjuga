@@ -506,6 +506,16 @@ test("prefixItems without a fixed length is refused before its tuples are built"
   lower({ type: "array", prefixItems: items(2000), items: false, maxItems: 300 });
   // a pinned length is one tuple, any size
   lower({ type: "array", prefixItems: items(20_000), items: false, minItems: 20_000 });
+  // the budget is shared by every site: many sub-cap sites cannot each build ~50k
+  const two = { type: "array", prefixItems: items(250), items: false }; // 31,627 each
+  lower({ type: "object", properties: { a: two } });
+  assert.match(lowerErr({ type: "object", properties: { a: two, b: two } }), tooBig);
+  // a $ref target is lowered (and counted) once, however often it is used
+  // (two uses then exceed the expansion cap, reported as $ref fan-out)
+  const ref = { $ref: "#/$defs/t" };
+  lower({ $defs: { t: two }, type: "array", items: ref });
+  const twice = { $defs: { t: two }, type: "object", properties: { a: ref, b: ref } };
+  assert.match(lowerErr(twice), /\$ref fan-out/);
   // 60 KB of JSON fails fast (it used to build ~2·10^8 nodes first)
   const t = performance.now();
   assert.match(lowerErr({ type: "array", prefixItems: items(20_000), items: false }), tooBig);

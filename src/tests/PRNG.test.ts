@@ -254,6 +254,20 @@ test("nextInt() throws RangeError for fractional or non-finite bounds", () => {
   });
   assert.throws(() => PRNG.nextInt(rng, 0, Infinity), RangeError);
   assert.throws(() => PRNG.nextInt(rng, NaN, 3), RangeError);
+  // One rule on every path: an integral range, a range above 2^53 (BigInt
+  // path) and an empty range all reject fractional bounds cleanly.
+  for (const [min, max] of [
+    [0.5, 3.5],
+    [0.5, 2 ** 54],
+    [-1.5, 1e300],
+    [1.5, 0],
+  ] as const) {
+    assert.throws(() => PRNG.nextInt(rng, min, max), {
+      name: "RangeError",
+      message: /^nextInt: bounds must be integers/,
+    });
+  }
+  assert.ok(PRNG.nextInt(rng, 0, 2 ** 54) <= 2 ** 54);
 });
 
 test("nextInt() returns min without drawing when max < min", () => {

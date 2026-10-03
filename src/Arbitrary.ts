@@ -135,20 +135,46 @@ function sameArb(a: unknown, b: unknown): boolean {
   return fa.name === fb.name && fa.toString() === fb.toString();
 }
 
-/** Key parts: primitives by `Object.is`, functions via sameArb, arrays element-wise. */
+/** Comparison budget per key: past it (or past MAX_KEY_DEPTH) parts count as different. */
+const MAX_KEY_NODES = 1000;
+const MAX_KEY_DEPTH = 16;
+
 function sameKey(a: ArbKey, b: ArbKey): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    const x = a[i];
-    const y = b[i];
-    if (Object.is(x, y)) continue;
-    if (typeof x === "function" && typeof y === "function") {
-      if (!sameArb(x, y)) return false;
-    } else if (!Array.isArray(x) || !Array.isArray(y) || !sameKey(x, y)) {
-      return false;
+  return samePart(a, b, { nodes: MAX_KEY_NODES }, 0);
+}
+
+/**
+ * Key parts compare structurally so values rebuilt inline (`constant({ mode:
+ * "a" })` in a `gen` body) still match: primitives by `Object.is`, functions
+ * via sameArb, arrays and plain objects recursively. Other objects (Date, Map,
+ * class instances) compare by reference. Cyclic or huge values exhaust the
+ * bounded budget and count as different — only a missed reuse, never a
+ * wrong one.
+ */
+function samePart(x: unknown, y: unknown, budget: { nodes: number }, depth: number): boolean {
+  if (Object.is(x, y)) return true;
+  if (--budget.nodes < 0 || depth > MAX_KEY_DEPTH) return false;
+  if (typeof x === "function") return typeof y === "function" && sameArb(x, y);
+  if (Array.isArray(x)) {
+    if (!Array.isArray(y) || x.length !== y.length) return false;
+    for (let i = 0; i < x.length; i++) {
+      if (!samePart(x[i], y[i], budget, depth + 1)) return false;
     }
+    return true;
+  }
+  if (!isPlainObject(x) || !isPlainObject(y)) return false;
+  const keys = Object.keys(x);
+  if (keys.length !== Object.keys(y).length) return false;
+  for (const k of keys) {
+    if (!Object.hasOwn(y, k) || !samePart(x[k], y[k], budget, depth + 1)) return false;
   }
   return true;
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  if (typeof v !== "object" || v === null) return false;
+  const proto: unknown = Object.getPrototypeOf(v);
+  return proto === Object.prototype || proto === null;
 }
 
 // ---------------------------------------------------------------------------
@@ -530,23 +556,26 @@ export function constantFrom<T>(...values: [T, ...T[]]): Arbitrary<T> {
 
 /**
  * Validated `[minLength, maxLength]` for the collection arbitraries. An
- * omitted `maxLength` defaults to `max(minLength, 10)`. Throws `RangeError`
- * unless both are non-negative safe integers with minLength <= maxLength.
+ * omitted `maxLength` defaults to `max(minLength, 10)`; `Infinity` means
+ * uncapped (length still bounded by the size parameter). Throws `RangeError`
+ * unless minLength is a non-negative safe integer and maxLength a safe
+ * integer or Infinity, with minLength <= maxLength.
  */
 function lengthBounds(
   fn: string,
   minLength = 0,
   maxLength = Math.max(minLength, 10),
+  names: readonly [string, string] = ["minLength", "maxLength"],
 ): [number, number] {
   if (
     !Number.isSafeInteger(minLength) ||
-    !Number.isSafeInteger(maxLength) ||
+    !(Number.isSafeInteger(maxLength) || maxLength === Infinity) ||
     minLength < 0 ||
     minLength > maxLength
   ) {
     throw new RangeError(
-      `${fn}: lengths must be non-negative safe integers with minLength <= maxLength ` +
-        `(got ${minLength}, ${maxLength})`,
+      `${fn}: ${names[0]} must be a non-negative safe integer and ${names[1]} a safe ` +
+        `integer or Infinity, with ${names[0]} <= ${names[1]} (got ${minLength}, ${maxLength})`,
     );
   }
   return [minLength, maxLength];
@@ -556,8 +585,8 @@ function lengthBounds(
  * Generates strings of printable ASCII characters. Shrinks by removing runs of
  * characters at any position (down to `minLength`), then by replacing
  * characters with 'a'. `maxLength` defaults to `max(minLength, 10)`; throws
- * `RangeError` unless the lengths are non-negative safe integers with
- * minLength <= maxLength.
+ * `RangeError` on invalid lengths (non-negative safe integers, maxLength may
+ * be Infinity, minLength <= maxLength).
  */
 export function string(opts?: { minLength?: number; maxLength?: number }): Arbitrary<string> {
   const [minLen, maxLen] = lengthBounds("string", opts?.minLength, opts?.maxLength);
@@ -612,8 +641,8 @@ function shrinkString(current: string, minLength: number): Iterable<Tree<string>
 /**
  * Generates arrays of values from `arb`. Shrinks by removing elements, then
  * shrinking individual elements. `maxLength` defaults to `max(minLength, 10)`;
- * throws `RangeError` unless the lengths are non-negative safe integers with
- * minLength <= maxLength.
+ * throws `RangeError` on invalid lengths (non-negative safe integers,
+ * maxLength may be Infinity, minLength <= maxLength).
  */
 export function array<T>(
   arb: Arbitrary<T>,
@@ -797,8 +826,8 @@ export function date(
  * shrink candidate stays unique. On key collisions the element generator is
  * retried at growing sizes (up to 100); throws if `minLength` unique elements
  * still cannot be produced. `maxLength` defaults to `max(minLength, 10)`;
- * throws `RangeError` unless the lengths are non-negative safe integers with
- * minLength <= maxLength.
+ * throws `RangeError` on invalid lengths (non-negative safe integers,
+ * maxLength may be Infinity, minLength <= maxLength).
  */
 export function uniqueArray<T>(
   arb: Arbitrary<T>,
@@ -859,17 +888,22 @@ function uniqueArrayOf<T>(
 /**
  * Generates objects with arbitrary string keys and values from `valueArb`.
  * Shrinks by removing entries, then shrinking values. Sizes are validated
- * like `uniqueArray` lengths (`maxSize` defaults to `max(minSize, 10)`).
+ * like `uniqueArray` lengths (`maxSize` defaults to `max(minSize, 10)`, may be
+ * Infinity); invalid sizes throw `RangeError`.
  */
 export function dictionary<V>(
   keyArb: Arbitrary<string>,
   valueArb: Arbitrary<V>,
   opts?: { minSize?: number; maxSize?: number },
 ): Arbitrary<Record<string, V>> {
+  const [minSize, maxSize] = lengthBounds("dictionary", opts?.minSize, opts?.maxSize, [
+    "minSize",
+    "maxSize",
+  ]);
   const pairArb = tuple<[string, V]>(keyArb, valueArb);
   const arrArb = uniqueArray(pairArb, {
-    minLength: opts?.minSize,
-    maxLength: opts?.maxSize,
+    minLength: minSize,
+    maxLength: maxSize,
     key: ([k]) => k,
   });
   return map(arrArb, (pairs) => Object.fromEntries(pairs) as Record<string, V>);
@@ -1074,7 +1108,9 @@ interface Pick {
  * only if it was drawn from an equivalent arbitrary. Built-in arbitraries
  * compare by factory and parameters, so `integer(0, 10)` never feeds a pick
  * to `integer(100, 200)`: bounds, lengths and `constant`/`constantFrom`
- * values by `Object.is`, inner arbitraries recursively, and callbacks
+ * values structurally (primitives by `Object.is`, arrays and plain objects
+ * recursively, other objects by reference), inner arbitraries recursively,
+ * and callbacks
  * (`map`, `filter`, `chain`, `uniqueArray` keys) by reference or by name
  * and source — so arbitraries rebuilt inline in `fn` still match, but two
  * callbacks with the same source and different captured variables do too.

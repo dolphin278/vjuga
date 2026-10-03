@@ -208,15 +208,15 @@ export function next(prng: PRNG): number {
  * results are exact while both are safe integers (`max - min` below 2^53).
  * Wider ranges are reduced exactly in BigInt, but `min + offset` then rounds
  * like any double above 2^53. Returns `min` when `max <= min`. Throws
- * `RangeError` when `max - min + 1` is not an integer (fractional or
- * non-finite bounds).
+ * `RangeError` unless both bounds are integers (fractional, NaN or infinite
+ * bounds), whatever the range.
  */
 export function nextInt(prng: PRNG, min: number, max: number): number {
-  const range = max - min + 1;
-  if (range <= 1) return min;
-  if (!Number.isInteger(range)) {
+  if (!Number.isInteger(min) || !Number.isInteger(max)) {
     throw new RangeError(`nextInt: bounds must be integers (got ${min}, ${max})`);
   }
+  const range = max - min + 1;
+  if (range <= 1) return min;
   // Uniform distribution via modulo of mixed 64-bit output.
   // Modulo bias is negligible for ranges << 2^64.
   advance(prng);

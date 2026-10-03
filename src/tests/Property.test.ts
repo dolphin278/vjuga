@@ -661,11 +661,11 @@ test("assert() reports an Invalid Date counterexample instead of throwing RangeE
   assert.equal(counterexampleLine(new Date(0)), "Date(1970-01-01T00:00:00.000Z)");
 });
 
-test("assert() prints shared acyclic references in full and only cycles as [Circular]", () => {
+test("assert() prints a shared reference in full once, then [Ref]; cycles as [Circular]", () => {
   const a = { k: 1 };
   const d = new Date(0);
-  assert.equal(counterexampleLine([a, a]), "[{k: 1}, {k: 1}]");
-  assert.equal(counterexampleLine({ x: a, y: a }), "{x: {k: 1}, y: {k: 1}}");
+  assert.equal(counterexampleLine([a, a]), "[{k: 1}, [Ref]]");
+  assert.equal(counterexampleLine({ x: a, y: a }), "{x: {k: 1}, y: [Ref]}");
   assert.equal(
     counterexampleLine(
       new Map([
@@ -673,9 +673,10 @@ test("assert() prints shared acyclic references in full and only cycles as [Circ
         [2, a],
       ]),
     ),
-    "Map(1 => {k: 1}, 2 => {k: 1})",
+    "Map(1 => {k: 1}, 2 => [Ref])",
   );
-  assert.equal(counterexampleLine(new Set([[a], [a]])), "Set([{k: 1}], [{k: 1}])");
+  assert.equal(counterexampleLine(new Set([[a], [a]])), "Set([{k: 1}], [[Ref]])");
+  // Leaf objects (Date, RegExp, Error) always print in full.
   assert.equal(
     counterexampleLine([d, d]),
     "[Date(1970-01-01T00:00:00.000Z), Date(1970-01-01T00:00:00.000Z)]",
@@ -683,6 +684,14 @@ test("assert() prints shared acyclic references in full and only cycles as [Circ
   const cyclic: unknown[] = [1];
   cyclic.push(cyclic);
   assert.equal(counterexampleLine(cyclic), "[1, [Circular]]");
+});
+
+test("assert() keeps a DAG-shaped counterexample message small", () => {
+  let node: unknown = { k: 1 };
+  for (let i = 0; i < 6; i++) node = Array.from({ length: 20 }, () => node);
+  const line = counterexampleLine(node);
+  assert.ok(line.length < 2000, `message length ${line.length}`);
+  assert.ok(line.includes("[Ref]"));
 });
 
 test("assert() distinguishes -0 and bigint counterexamples", () => {

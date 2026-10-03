@@ -1382,6 +1382,22 @@ const swapCases: [string, Arb.Arbitrary<unknown>, Arb.Arbitrary<unknown>, (v: an
     (v) => v >= 50,
   ],
   ["constant", Arb.constant("x"), Arb.constant("y"), (v) => v === "y"],
+  [
+    "constant object",
+    Arb.constant({ mode: "a" }),
+    Arb.constant({ mode: "b" }),
+    (v) => v.mode === "b",
+  ],
+  ["constant object keys", Arb.constant({ a: 1 }), Arb.constant({ b: 1 }), (v) => "b" in v],
+  ["constant object size", Arb.constant({ a: 1 }), Arb.constant({ a: 1, b: 2 }), (v) => "b" in v],
+  ["constant array length", Arb.constant([1]), Arb.constant([1, 2]), (v) => v.length === 2],
+  ["constant array vs object", Arb.constant([1]), Arb.constant({ 0: 1 }), (v) => !Array.isArray(v)],
+  [
+    "constant nested callback",
+    Arb.constant({ f: () => 1 }),
+    Arb.constant({ f: () => 2 }),
+    (v) => v.f() === 2,
+  ],
   ["constantFrom", Arb.constantFrom(1, 2), Arb.constantFrom(8, 9), (v) => v >= 8],
   [
     "uniqueArray",
@@ -1487,6 +1503,63 @@ test("gen replay reuses picks of arbitraries rebuilt inline with equal parameter
   assert.ok(checked > 0);
 });
 
+test("gen replay matches inline object constants structurally, so shrinking still reaches the minimum", () => {
+  const bodies: [string, (pick: Arb.GenPick) => { n: number }][] = [
+    [
+      "constant",
+      (pick) => ({
+        cfg: pick(Arb.constant({ mode: "a", xs: [1, null] })),
+        n: pick(Arb.integer(0, 1000)),
+      }),
+    ],
+    [
+      "constantFrom",
+      (pick) => ({
+        cfg: pick(Arb.constantFrom({ mode: "a" }, { mode: "b" })),
+        n: pick(Arb.integer(0, 1000)),
+      }),
+    ],
+    [
+      "subarray",
+      (pick) => ({ s: pick(Arb.subarray([{ k: 1 }, { k: 2 }])), n: pick(Arb.integer(0, 1000)) }),
+    ],
+    [
+      "null-prototype object",
+      (pick) => ({
+        cfg: pick(Arb.constant(Object.assign(Object.create(null) as object, { m: 1 }))),
+        n: pick(Arb.integer(0, 1000)),
+      }),
+    ],
+  ];
+  for (const [name, body] of bodies) {
+    for (let s = 1n; s <= 20n; s++) {
+      const r = Prop.check(Arb.gen(body), (v) => v.n < 500, { seed: PRNG.seed(s), numRuns: 1000 });
+      assert.equal(r.ok, false);
+      assert.equal(r.counterexample!.n, 500, `${name} seed ${s}`);
+    }
+  }
+});
+
+test("gen replay structural comparison is bounded for cyclic and huge constants", () => {
+  for (const make of [
+    (): unknown => {
+      const c: unknown[] = [];
+      c.push(c);
+      return c;
+    },
+    (): unknown => Array.from({ length: 5000 }, (_, i) => i),
+  ]) {
+    const arb = Arb.gen((pick) => ({
+      c: pick(Arb.constant(make())),
+      n: pick(Arb.integer(0, 1000)),
+    }));
+    // Unequal-by-budget values only miss reuse; every node stays a valid value.
+    for (let s = 0n; s < 5n; s++) {
+      everyNode(arb(rng(s), 100), 2, (v) => assert.ok(v.n >= 0 && v.n <= 1000));
+    }
+  }
+});
+
 // ---------------------------------------------------------------------------
 // float: wide ranges and the exclusive max (G5-3)
 // ---------------------------------------------------------------------------
@@ -1572,20 +1645,45 @@ test("string/array/uniqueArray/dictionary reject invalid lengths with RangeError
     { maxLength: 2.5 },
     { minLength: -1 },
     { minLength: Number.NaN },
-    { maxLength: Infinity },
+    { minLength: Infinity },
+    { maxLength: -Infinity },
   ];
   for (const opts of bad) {
     assert.throws(() => Arb.string(opts), {
       name: "RangeError",
-      message: /^string: lengths must be non-negative safe integers/,
+      message: /^string: minLength must be a non-negative safe integer and maxLength/,
     });
-    assert.throws(() => Arb.array(Arb.nat(), opts), /^RangeError: array: lengths/);
-    assert.throws(() => Arb.uniqueArray(Arb.nat(), opts), /^RangeError: uniqueArray: lengths/);
+    assert.throws(() => Arb.array(Arb.nat(), opts), /^RangeError: array: minLength/);
+    assert.throws(() => Arb.uniqueArray(Arb.nat(), opts), /^RangeError: uniqueArray: minLength/);
   }
-  assert.throws(
-    () => Arb.dictionary(Arb.string(), Arb.nat(), { minSize: 3, maxSize: 1 }),
-    RangeError,
-  );
+  assert.throws(() => Arb.dictionary(Arb.string(), Arb.nat(), { minSize: 3, maxSize: 1 }), {
+    name: "RangeError",
+    message: /^dictionary: minSize must be .* maxSize .*\(got 3, 1\)$/,
+  });
+  assert.throws(() => Arb.dictionary(Arb.string(), Arb.nat(), { minSize: 0.5 }), /dictionary/);
+});
+
+test("maxLength / maxSize: Infinity means uncapped (bounded by size), as in 10.0.0", () => {
+  const prng = rng(3n);
+  const arbs: [string, Arb.Arbitrary<unknown>, (v: any) => number][] = [
+    ["string", Arb.string({ maxLength: Infinity }), (v) => v.length],
+    ["array", Arb.array(Arb.integer(), { maxLength: Infinity }), (v) => v.length],
+    ["uniqueArray", Arb.uniqueArray(Arb.integer(), { maxLength: Infinity }), (v) => v.length],
+    [
+      "dictionary",
+      Arb.dictionary(Arb.string({ minLength: 4 }), Arb.integer(), { maxSize: Infinity }),
+      (v) => Object.keys(v).length,
+    ],
+  ];
+  for (const [name, arb, len] of arbs) {
+    let longest = 0;
+    for (let i = 0; i < 200; i++) {
+      const n = len(arb(PRNG.split(prng), 40).value);
+      assert.ok(n <= 40, `${name}: ${n}`);
+      longest = Math.max(longest, n);
+    }
+    assert.ok(longest > 10, `${name} is capped at ${longest}`);
+  }
 });
 
 test("an omitted maxLength defaults to max(minLength, 10)", () => {

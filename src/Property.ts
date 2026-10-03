@@ -88,7 +88,10 @@ export interface CheckResult<T> {
 // Internal: stringify for counterexample formatting
 // ---------------------------------------------------------------------------
 
-function stringify(value: unknown, depth = 4, seen = new Set<unknown>()): string {
+/** Per-container state while formatting: true = on the current path, false = already printed. */
+type Seen = Map<unknown, boolean>;
+
+function stringify(value: unknown, depth = 4, seen: Seen = new Map()): string {
   if (value === null) return "null";
   if (value === undefined) return "undefined";
 
@@ -107,18 +110,21 @@ function stringify(value: unknown, depth = 4, seen = new Set<unknown>()): string
   if (value instanceof RegExp) return String(value);
   if (value instanceof Error) return `${value.constructor.name}: ${value.message}`;
 
-  // `seen` holds the containers on the current path only, so a shared but
-  // acyclic reference (`[a, a]`) prints twice and only true cycles collapse.
-  if (seen.has(value)) return "[Circular]";
-  seen.add(value);
+  // A container on the current path is a cycle; one printed earlier is a
+  // shared (acyclic) reference — printed in full once, then as [Ref], which
+  // keeps DAG-shaped counterexamples from expanding exponentially.
+  const state = seen.get(value);
+  if (state === true) return "[Circular]";
+  if (state === false) return "[Ref]";
+  seen.set(value, true);
   try {
     return stringifyContainer(value as object, depth, seen);
   } finally {
-    seen.delete(value);
+    seen.set(value, false);
   }
 }
 
-function stringifyContainer(value: object, depth: number, seen: Set<unknown>): string {
+function stringifyContainer(value: object, depth: number, seen: Seen): string {
   if (value instanceof Map) {
     const entries = [...value.entries()]
       .slice(0, 10)

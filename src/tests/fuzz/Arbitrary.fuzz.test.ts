@@ -155,7 +155,7 @@ test("string/array: lengths validate at construction and bound generated lengths
       const effMax = omitMax ? Math.max(minLength, 10) : maxLength;
       const valid =
         Number.isSafeInteger(minLength) &&
-        Number.isSafeInteger(effMax) &&
+        (Number.isSafeInteger(effMax) || effMax === Infinity) &&
         minLength >= 0 &&
         minLength <= effMax;
       let s: string;

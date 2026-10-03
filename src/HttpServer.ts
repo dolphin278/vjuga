@@ -24,8 +24,8 @@
  * - Response uses pre-computed prefix + string concat for single socket.write().
  * - Keep-alive and pipelining, one request in flight per connection: the next
  *   request is dispatched once the previous one is answered and the socket's
- *   write buffer has room. `Connection: close` / HTTP/1.0 end the connection
- *   after the response. No chunked TE, no upgrades.
+ *   write buffer has room. `Connection: close` (or HTTP/1.0 without keep-alive)
+ *   ends the connection after the response. No chunked TE, no upgrades.
  *
  * Prior art: uWebSockets.js (C++), Deno.serve (Rust). This module achieves
  * comparable throughput in pure JS on Node.js net.createServer.

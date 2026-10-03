@@ -115,20 +115,35 @@ test("property: make() accepts idleTimeout iff Infinity or in [0, 2^31-1]", () =
 // ---------------------------------------------------------------------------
 
 const badInitCountUrl = new URL("../fixtures/bad-init-count.mjs", import.meta.url).href;
+// G7-6: a module without a default function is a startup failure too.
+const noDefaultCountUrl = new URL("../fixtures/no-default-count.mjs", import.meta.url).href;
 
 test("property: startup-failure retries all settle, drain() settles, no respawn loop", async () => {
   await Prop.assertAsync(
-    Arb.tuple(Arb.integer(1, 3), Arb.integer(0, 4)),
-    async ([maxThreads, retries]) => {
+    Arb.tuple(
+      Arb.integer(1, 3),
+      Arb.integer(0, 4),
+      Arb.constantFrom(badInitCountUrl, noDefaultCountUrl),
+    ),
+    async ([maxThreads, retries, filename]) => {
+      const noDefault = filename === noDefaultCountUrl;
+      const ok = (e: unknown): boolean =>
+        noDefault
+          ? e instanceof Error &&
+            e.name === "TypeError" &&
+            /must export a default function/.test(e.message)
+          : /init failed/.test(String(e));
       const counter = new SharedArrayBuffer(4);
       const pool = WP.make<number, number>({
-        filename: badInitCountUrl,
+        filename,
         maxThreads,
         workerData: counter,
       });
       const outcomes: Promise<unknown>[] = [];
       // Retries are submitted between the failed worker's 'error' and 'exit'.
-      const first = WP.run(pool, 0).catch(() => {
+      let firstOk = false;
+      const first = WP.run(pool, 0).catch((e: unknown) => {
+        firstOk = ok(e);
         for (let i = 0; i < retries; i++) outcomes.push(WP.run(pool, i).catch((e: unknown) => e));
       });
       try {
@@ -137,7 +152,8 @@ test("property: startup-failure retries all settle, drain() settles, no respawn 
         await withTimeout(WP.drain(pool), 10_000, "drain()");
         const spawns = Atomics.load(new Int32Array(counter), 0);
         return (
-          errs.every((e) => /init failed/.test(String(e))) &&
+          firstOk &&
+          errs.every(ok) &&
           spawns <= 1 + retries &&
           WP.activeCount(pool) === 0 &&
           WP.pendingCount(pool) === 0

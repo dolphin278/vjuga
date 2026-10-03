@@ -49,11 +49,14 @@ export async function resolve(reference: URL | string): Promise<(...args: unknow
   let module: Record<string, unknown>;
   try {
     // Import WITHOUT the fragment: Node keys its module cache by full URL, so
-    // `#a` and `#b` would otherwise load separate module instances. Copy so the
-    // caller's URL is not mutated.
-    const target = new URL(reference.href);
-    target.hash = "";
-    module = await (import(target.href) as Promise<Record<string, unknown>>);
+    // `#a` and `#b` would otherwise load separate module instances. In a
+    // serialized href the only literal `#` starts the fragment (a bare trailing
+    // `#` included); slicing avoids a second URL parse and leaves the caller's
+    // URL untouched.
+    const href = reference.href;
+    const hashAt = href.indexOf("#");
+    const target = hashAt === -1 ? href : href.slice(0, hashAt);
+    module = await (import(target) as Promise<Record<string, unknown>>);
   } catch (error) {
     // import() always throws Error; the else branch is a safety net
     /* node:coverage ignore next 2 */

@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as PRNG from "../PRNG.js";
+import * as Ref from "./fixtures/PRNGReference.js";
 
 // --- seed / make ---
 
@@ -152,4 +153,113 @@ test("seed(0n) produces a usable PRNG", () => {
     values.add(PRNG.next(rng));
   }
   assert.ok(values.size > 90, "zero-seed PRNG should not collapse");
+});
+
+// --- bit-identity with the reference BigInt SplitMix64 (G5-8) ---
+
+/** Integer ranges (max - min + 1) at every reduction-path boundary. */
+const ORACLE_RANGES = [
+  2,
+  3,
+  95,
+  2 ** 16,
+  2 ** 20 - 1,
+  2 ** 20,
+  2 ** 20 + 1,
+  2 ** 21,
+  2 ** 31,
+  2 ** 32 - 1,
+  2 ** 32,
+  2 ** 32 + 1,
+  2 ** 36 - 1,
+  2 ** 36,
+  2 ** 36 + 1,
+  2 ** 40,
+  2 ** 52 + 3,
+  2 ** 53 - 1,
+  2 ** 53,
+];
+
+/** Runs one interleaved op chain on both implementations and compares. */
+function compareChain(s: bigint, ops: number): void {
+  let a = PRNG.make(PRNG.seed(s));
+  let b = Ref.make(s & 0xffff_ffff_ffff_ffffn);
+  const forksA: PRNG.PRNG[] = [];
+  const forksB: Ref.RefPRNG[] = [];
+  for (let i = 0; i < ops; i++) {
+    const op = i % 9;
+    if (op === 0) {
+      forksA.push(PRNG.split(a));
+      forksB.push(Ref.split(b));
+    } else if (op === 1 && forksA.length > 0 && i % 2 === 1) {
+      // Continue in a fork, so split children are exercised further.
+      a = forksA.pop()!;
+      b = forksB.pop()!;
+    } else if (op === 2) {
+      assert.equal(PRNG.nextBigInt(a), Ref.nextBigInt(b), `nextBigInt seed=${s} op=${i}`);
+    } else if (op === 3) {
+      assert.equal(PRNG.next(a), Ref.next(b), `next seed=${s} op=${i}`);
+    } else {
+      const range = ORACLE_RANGES[i % ORACLE_RANGES.length]!;
+      const min = i % 2 === 0 ? -7 : 0;
+      const max = min + range - 1;
+      assert.equal(PRNG.nextInt(a, min, max), Ref.nextInt(b, min, max), `nextInt r=${range}`);
+    }
+  }
+}
+
+test("uint32 PRNG is bit-identical to the BigInt reference across seeds and op chains", () => {
+  const seeds = [0n, 1n, 42n, 0xffff_ffff_ffff_ffffn, 0x8000_0000_0000_0000n, 0xffff_ffffn];
+  const gen = Ref.make(12345n);
+  for (let i = 0; i < 200; i++) seeds.push(Ref.nextBigInt(gen));
+  for (const s of seeds) compareChain(s, 2000);
+});
+
+test("make() masks an unmasked or negative bigint cast to Seed like the reference", () => {
+  for (const raw of [-1n, -12345n, (1n << 70n) + 99n]) {
+    const a = PRNG.make(raw as PRNG.Seed);
+    const b = Ref.make(raw);
+    for (let i = 0; i < 20; i++) assert.equal(PRNG.nextBigInt(a), Ref.nextBigInt(b));
+    assert.equal(PRNG.next(PRNG.split(a)), Ref.next(Ref.split(b)));
+  }
+});
+
+test("nextInt() at every reduction boundary matches BigInt modulo on extreme outputs", () => {
+  const outputs = [0n, 1n, 0xffff_ffff_ffff_ffffn, 0xffff_ffff_0000_0000n, 0x0000_0000_ffff_ffffn];
+  for (const out of outputs) {
+    for (const range of ORACLE_RANGES) {
+      const s = Ref.seedForOutput(out);
+      const got = PRNG.nextInt(PRNG.make(PRNG.seed(s)), 0, range - 1);
+      assert.equal(got, Number(out % BigInt(range)), `out=${out} range=${range}`);
+    }
+  }
+});
+
+// --- nextInt() preconditions (G5-9) ---
+
+test("nextInt() reaches an inclusive max of 2^53 (ranges above 2^53 reduce exactly)", () => {
+  const s = Ref.seedForOutput(2n ** 53n);
+  assert.equal(PRNG.nextInt(PRNG.make(PRNG.seed(s)), 0, 2 ** 53), 2 ** 53);
+  const rng = PRNG.make(PRNG.seed(3n));
+  for (let i = 0; i < 100; i++) {
+    const v = PRNG.nextInt(rng, -(2 ** 60), 2 ** 60);
+    assert.ok(v >= -(2 ** 60) && v <= 2 ** 60);
+  }
+});
+
+test("nextInt() throws RangeError for fractional or non-finite bounds", () => {
+  const rng = PRNG.make(PRNG.seed(1n));
+  assert.throws(() => PRNG.nextInt(rng, 0, 2.5), {
+    name: "RangeError",
+    message: /nextInt: bounds must be integers/,
+  });
+  assert.throws(() => PRNG.nextInt(rng, 0, Infinity), RangeError);
+  assert.throws(() => PRNG.nextInt(rng, NaN, 3), RangeError);
+});
+
+test("nextInt() returns min without drawing when max < min", () => {
+  const a = PRNG.make(PRNG.seed(9n));
+  const b = PRNG.make(PRNG.seed(9n));
+  assert.equal(PRNG.nextInt(a, 5, 1), 5);
+  assert.equal(PRNG.next(a), PRNG.next(b));
 });

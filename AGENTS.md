@@ -82,7 +82,7 @@ Add that paragraph to your app's `AGENTS.md`. In a monorepo, resolve `node_modul
 | ISO 8601 timestamp strings | `ISOTimestamp` | `isoTimestamp` (any fraction length, rejects impossible dates and hour 24), `fromDate` / `fromEpochMs` (throw `RangeError` outside years 0000–9999), `toDate` (truncates to ms), `now`, `validator()`; RFC 3339 predicates `isRfc3339DateTime(s)`, `isRfc3339Time(s)` |
 | Date-only `YYYY-MM-DD` strings | `ISODate` | `isoDate` (rejects impossible dates), `isISODate(s)`, `fromDate` / `today()` (UTC), `addDays(d, n)`, `toDate` (UTC midnight), `daysInMonth(y, m)`, `validator()` |
 | Unix epoch seconds | `UnixTimestamp` | `unixTimestamp` (brand does not enforce seconds or integers), `fromDate`, `toDate` / `toISO` (exact ms, sub-ms truncated; `toISO` throws `RangeError` outside years 0000–9999), `now`, `fromISO`, `validator()` |
-| UUID strings (v4 / v7) | `UUID` | `uuid` (lowercases; accepts Nil/Max; requires variant 8/9/a/b, stricter than schema `format: "uuid"`), `v4`, `v7` (strictly increasing within a process), `version`, `validator()`, `NIL`, `MAX` |
+| UUID strings (v4 / v7) | `UUID` | `uuid` (lowercases; accepts Nil/Max; requires variant 8/9/a/b, stricter than schema `format: "uuid"`), `v4`, `v7` (strictly increasing per thread), `version`, `validator()`, `NIL`, `MAX` |
 | Deep readonly at API boundary | `Immutable` | `make(value)` — zero-cost type cast, no runtime enforcement |
 | Pass-by-reference for primitives into closures | `Ref` | `make`, `get`, `set` |
 | Branded numbers (positive int, etc.) | `FunctionUtils` | `positiveInteger` (also a `NonNegativeInteger`), `nonNegativeInteger`, `integer`, `positiveNumber`; `brand<Base, Kind>(v)` is an unchecked cast for your own brands |
@@ -289,8 +289,7 @@ test("encode/decode roundtrip", () => {
 10. **Internal exports are not API** — exported only for tests or for the
     schema code generators; they may change in any release: `WeakCache.cleanupStaleEntry`,
     `UUID.resetV7State`, `schema/Validate` `emitStandardRefs` / `emitValidation` /
-    `makeError`, `schema/Schema` `findDiscriminant` / `isPrimitive`, and all of
-    `schema/Codegen`.
+    `makeError`, `schema/Schema` `findDiscriminant` / `isPrimitive`.
 
 ---
 

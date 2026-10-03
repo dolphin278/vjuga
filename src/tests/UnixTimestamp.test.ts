@@ -144,7 +144,7 @@ test("toDate()/toISO() keep exact milliseconds despite float error (G8-1)", () =
     [539075433.943, 539075433943],
     [1094491586.718, 1094491586718],
     [-1.005, -1005],
-    // Beyond 2^52 ms `Math.round(s * 1000)` is 1 too high (the `r - 1` retry).
+    // In [2^51, 2^52) ms `Math.round(s * 1000)` can be 1 too high (the `r - 1` retry).
     [-4435527859354.766, -4435527859354766],
   ];
   for (const [s, ms] of cases) {

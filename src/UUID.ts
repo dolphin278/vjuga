@@ -15,10 +15,11 @@
  * stricter than schema `format: "uuid"` (`Formats.isUuid`), which accepts
  * any variant nibble, so a schema-valid value can still fail `uuid()`. Input
  * is lower-cased when branded so equal UUIDs always compare `===`. v7 is
- * monotonic within a process on Node and Bun: consecutive `v7()` values are
- * strictly increasing, even within one millisecond or if the clock steps
- * back (RFC 9562 section 6.2, method 1: a 42-bit counter seeded randomly
- * each new millisecond, followed by 32 random bits).
+ * monotonic per thread (module instance): consecutive `v7()` calls return
+ * strictly increasing values, even within one millisecond or if the clock
+ * steps back (RFC 9562 section 6.2, method 1: a 42-bit counter seeded
+ * randomly each new millisecond, followed by 32 random bits). Separate
+ * `worker_threads` have separate counters, so their ids may interleave.
  *
  * @example
  * ```ts
@@ -163,13 +164,16 @@ function _v7Impl(): UUID {
  *   48-bit ms timestamp | 4-bit version (0111) | 12-bit counter (high) |
  *   2-bit variant (10)  | 30-bit counter (low) | 32-bit random
  *
- * Monotonic within the process: each value is strictly greater (as a string
- * and as a 128-bit number) than the previous one. The counter is reseeded
+ * Monotonic per thread (each Worker loads its own copy of this module): each
+ * value is strictly greater (as a string and as a 128-bit number) than the
+ * previous one from the same thread. The counter is reseeded
  * randomly each new millisecond and incremented within one; if the clock
  * steps back, the last timestamp is reused and the counter keeps counting.
  * Random bits come from a 4 KiB pool refilled via `crypto.getRandomValues`.
- * Delegates to `Bun.randomUUIDv7` (also monotonic) when running under Bun;
- * falls back to the manual implementation otherwise.
+ * Delegates to `Bun.randomUUIDv7` when running under Bun (also monotonic in
+ * a thread, but its 12-bit counter allows 4096 ids per millisecond and then
+ * runs the timestamp ahead of the clock); falls back to the manual
+ * implementation otherwise.
  */
 // Bun path is exercised by `npm run test:bun`; Node tests always take _v7Impl.
 /* node:coverage ignore next 4 */

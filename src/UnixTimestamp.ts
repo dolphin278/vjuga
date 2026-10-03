@@ -62,9 +62,11 @@ export function fromDate(date: Date): UnixTimestamp {
  * `ts * 1000` is often just below the intended integer (`1.005 * 1000` is
  * 1004.999…) and `Date` truncates it, so snap to the integer `r` whose
  * `r / 1000` is exactly `ts` (division is correctly rounded, so this holds
- * only when `ts` is that millisecond's own double). `Math.round` is off by
- * +1 only beyond 2^52 ms, hence the `r - 1` retry. Anything else is a real
- * sub-ms value and is truncated like `Date` does.
+ * only when `ts` is that millisecond's own double). For |ms| in
+ * [2^51, 2^52), where doubles are 0.5 apart, `ts * 1000` can land on a .5
+ * tie that `Math.round` rounds up, hence the `r - 1` retry (never needed
+ * elsewhere; verified by sampling the whole Date range). Anything else is a
+ * real sub-ms value and is truncated like `Date` does.
  */
 function toEpochMs(ts: number): number {
   const ms = ts * 1000;

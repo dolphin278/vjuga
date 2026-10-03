@@ -419,15 +419,32 @@ test("stringify of unknown / not values without a JSON form matches JSON.stringi
     const out = (SJ.stringify as unknown as (s: S.Schema) => (v: unknown) => string)(schema)(v);
     assert.equal(out, JSON.stringify(v) ?? "null");
   };
-  // Object fields: the key is omitted
-  native(S.object({ a: S.unknown() }), { a: fn });
-  native(S.object({ a: S.unknown(), b: S.integer() }), { a: sym, b: 1 });
-  native(S.object({ b: S.integer(), a: S.not(S.string()) }), { b: 1, a: fn });
+  // Optional object fields: the key is omitted
   native(S.object({ a: S.optional(S.unknown()), b: S.integer() }), { a: undefined, b: 1 });
+  native(S.object({ a: S.optional(S.unknown()), b: S.integer() }), { a: fn, b: 1 });
+  native(S.object({ a: S.optional(S.not(S.null_())), b: S.integer() }), { a: sym, b: 1 });
   native(S.object({ a: S.optional(S.unknown()), b: S.integer() }), { a: [1, fn], b: 1 });
   native(S.object({ toString: S.optional(S.unknown()) }), {});
   native(S.object({ toString: S.optional(S.unknown()) }), { toString: 5 });
-  native(S.object({ toString: S.unknown() }), { toString: fn });
+  // Required fields (F3-C1): the key stays, with null — output parse accepts
+  const any = (s: S.Schema) => ({
+    str: (SJ.stringify as unknown as (s: S.Schema) => (v: unknown) => string)(s),
+    par: (SJ.parse as unknown as (s: S.Schema) => (t: string) => readonly [boolean, unknown])(s),
+  });
+  for (const schema of [
+    S.object({ a: S.unknown(), b: S.integer() }),
+    S.object({ b: S.integer(), a: S.not(S.string()) }),
+    S.object({ a: S.unknown(), b: S.integer(), c: S.optional(S.string()) }),
+  ]) {
+    const { str, par } = any(schema);
+    for (const a of [undefined, fn, sym]) {
+      const out = str({ a, b: 1 });
+      assert.deepEqual(JSON.parse(out), { a: null, b: 1 });
+      assert.deepEqual(par(out), [true, { a: null, b: 1 }]);
+    }
+    assert.deepEqual(JSON.parse(str({ a: [1, fn], b: 1 })), { a: [1, null], b: 1 });
+  }
+  assert.equal(any(S.object({ toString: S.unknown() })).str({ toString: fn }), '{"toString":null}');
   // Record values: the key is omitted
   native(S.record(S.unknown()), { a: fn, b: 1, c: sym, d: undefined });
   native(S.record(S.optional(S.unknown())), { a: undefined, b: { c: 1 } });

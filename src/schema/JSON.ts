@@ -112,9 +112,10 @@ function hasNoJson(x: unknown): boolean {
 }
 
 /**
- * True for an `unknown` / `not` property or record value (optional-wrapped
- * too): its JSON text is computed first and the key omitted when the value
- * has none (function, symbol, undefined), like native `JSON.stringify`.
+ * True for an `unknown` / `not` schema, optional-wrapped or not. As a record
+ * value or an optional property, its JSON text is computed first and the key
+ * omitted when the value has none (function, symbol, undefined), like native
+ * `JSON.stringify`. A required property emits `null` instead (`_ju`).
  */
 function mayHaveNoJson(schema: Schema): boolean {
   let s = schema;
@@ -138,8 +139,10 @@ function mayHaveNoJson(schema: Schema): boolean {
  * own keys), a `conditional` those of the branch its `if` selects; `unknown`
  * and `not` declare nothing, so their values are emitted as-is. As in native
  * `JSON.stringify`, an undefined record value omits its key, and a value with
- * no JSON form (function, symbol) omits its object / record key and is `null`
- * in an array slot or at the root.
+ * no JSON form (function, symbol) omits its record / optional-field key and
+ * is `null` in an array slot or at the root. A required `unknown` / `not`
+ * field keeps its key: `null` for undefined / function / symbol, so `parse`
+ * accepts the output.
  */
 export function stringify<S extends Schema>(schema: S): (value: Infer<S>) => string {
   const buf = createBuffer();
@@ -489,9 +492,10 @@ function walkStringifyObject(
   const keys = Object.keys(props);
   if (keys.length === 0) return `"{}"`;
 
-  // unknown / not fields take the helper path too: a function / symbol value
-  // omits its key (+~20 ns per object on node vs the inline expression).
-  const hasOptional = keys.some((k) => propertyMayBeAbsent(props[k]) || mayHaveNoJson(props[k]));
+  // A required unknown / not field stays on the inline path (`_ju`: null for
+  // a value without a JSON form) — omitting a required key would produce
+  // text `parse` rejects. Only optional ones may omit the key.
+  const hasOptional = keys.some((k) => propertyMayBeAbsent(props[k]));
 
   // All-required path: return a pure expression — no helper function needed.
   // This is critical for inlining into array loops: the expression is spliced
@@ -516,14 +520,14 @@ function walkStringifyObject(
   // Optional fields require conditional inclusion — use a helper function
   // because the logic can't be expressed as a single expression.
   // `optional`: the key is included only when the value is defined.
-  // `json` (unknown / not): `expr` is the value's JSON text, and the key is
-  // included only when that is defined (not for a function / symbol).
+  // `json` (optional unknown / not): `expr` is the value's JSON text, and the
+  // key is included only when that is defined (not for a function / symbol).
   const childExprs: { key: string; expr: string; optional: boolean; json: boolean }[] = [];
   for (let i = 0; i < keys.length; i++) {
     const key = keys[i];
     const child = props[key];
     const childAccessor = `o[${JSON.stringify(key)}]`;
-    if (mayHaveNoJson(child)) {
+    if (child.kind === "optional" && mayHaveNoJson(child)) {
       childExprs.push({ key, expr: `_js(${childAccessor})`, optional: true, json: true });
     } else if (child.kind === "optional") {
       const expr = walkStringify(buf, child.meta.inner, childAccessor);

@@ -635,19 +635,40 @@ test("number tokens follow the JSON number grammar exactly", () => {
 const QUOTED_GRAMMAR = /^"(?:[^"\\]|\\["\\nrt]|\\u[0-9a-fA-F]{4})*"$/;
 const stringParse = toonParse(S.string());
 
-test("quoted tokens decode iff well-formed (spec escapes plus \\uXXXX)", () => {
-  const alphabet = ['"', "\\", "a", "n", "t", "r", "u", "0", "0", "F", "x", ",", "/", "b"];
+const fieldStringParse = toonParse(S.object({ a: S.string(), b: S.integer() }));
+const cellStringParse = toonParse(S.array(S.string()));
+
+test("quoted tokens decode iff well-formed (spec §7.1 escapes), space-padded or not", () => {
+  const alphabet = ['"', "\\", "a", "n", "t", "r", "u", "0", "0", "F", "x", ",", "/", "b", " "];
   Prop.assert(
-    Arb.tuple(Arb.array(Arb.integer(0, alphabet.length - 1), { maxLength: 10 }), Arb.boolean()),
-    ([idx, close]) => {
+    Arb.tuple(
+      Arb.array(Arb.integer(0, alphabet.length - 1), { maxLength: 10 }),
+      Arb.boolean(),
+      Arb.integer(0, 2),
+      Arb.integer(0, 2),
+    ),
+    ([idx, close, before, after]) => {
       let tok = '"';
       for (const i of idx) tok += alphabet[i];
       if (close) tok += '"';
-      const r = stringParse(tok);
-      const valid = QUOTED_GRAMMAR.test(tok);
-      assert.equal(r[0], valid, tok);
+      const padded = " ".repeat(before) + tok + " ".repeat(after);
+      // Surrounding U+0020 spaces are not part of the token (spec §12)
+      const inner = padded.replace(/^ +| +$/g, "");
+      const valid = QUOTED_GRAMMAR.test(inner);
       // Within this alphabet the accepted grammar is a subset of JSON's
-      if (valid) assert.equal(r[1], JSON.parse(tok), tok);
+      const want = valid ? JSON.parse(inner) : undefined;
+      const root = stringParse(padded);
+      assert.equal(root[0], valid, padded);
+      if (valid) assert.equal(root[1], want, padded);
+      const field = fieldStringParse("a: " + padded + "\nb: 1");
+      assert.equal(field[0], valid, padded);
+      if (valid) assert.deepStrictEqual(field[1], { a: want, b: 1 }, padded);
+      // As a cell: only when the token holds no delimiter outside its quotes
+      if (!padded.includes(",") && !padded.includes("\\")) {
+        const cell = cellStringParse("[2]: " + padded + ", x ");
+        assert.equal(cell[0], valid, padded);
+        if (valid) assert.deepStrictEqual(cell[1], [want, "x"], padded);
+      }
       return true;
     },
     { numRuns: NUM_RUNS },

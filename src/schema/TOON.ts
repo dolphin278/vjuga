@@ -23,8 +23,8 @@
  *   and `unknown` / `allOf` / `not` / `conditional`. Unions of primitives
  *   decode the token's type (quoted → string), then pick the first variant
  *   that validates (`oneOf`: exactly one must). Parsing is strict (`strict` is a no-op):
- *   exact item/row counts, JSON-grammar numbers, spec escapes (plus `\uXXXX`)
- *   only, an empty cell means "absent"; constraints are enforced like `validate`.
+ *   exact counts, JSON-grammar numbers, §7.1 escapes only, space-trimmed
+ *   values (§12), empty cell = "absent"; constraints enforced like `validate`.
  *   `__proto__` keys are dropped on parse; non-finite numbers emit `null`.
  *
  * @example Objects, tabular arrays, round-trip
@@ -157,11 +157,23 @@ function encodeKey(k: string, delimCode: number): string {
 const HEX4_RE = /^[0-9a-fA-F]{4}$/;
 
 /**
+ * Strip surrounding U+0020 spaces — and only those (spec §12) — from a value
+ * token before it is decoded. Returns `s` itself when there are none.
+ */
+function trimSpaces(s: string): string {
+  let a = 0;
+  let b = s.length;
+  while (a < b && s.charCodeAt(a) === 0x20) a++;
+  while (b > a && s.charCodeAt(b - 1) === 0x20) b--;
+  return a === 0 && b === s.length ? s : s.slice(a, b);
+}
+
+/**
  * Decode a quoted token; unquoted tokens are returned as-is. Null when a
  * token starting with `"` is malformed: unterminated, an unescaped `"` before
  * the end, text after the closing quote, or an escape other than spec §7.1's
- * `\\ \" \n \r \t` and `\uXXXX` (exactly 4 hex digits — an extension, emitted
- * by `quote` for the other control characters).
+ * `\\ \" \n \r \t \uXXXX` (exactly 4 hex digits; `quote` emits it for the
+ * other control characters).
  */
 function toonUnquote(s: string): string | null {
   if (s.charCodeAt(0) !== 0x22) return s;
@@ -850,6 +862,7 @@ export function parse<S extends Schema>(
   const buf = g.buf;
   emitStandardRefs(buf, ok, err);
   emitRef(buf, "_uq", toonUnquote);
+  emitRef(buf, "_ts", trimSpaces);
   emitRef(buf, "_pn", parseNumber);
   emitRef(buf, "_dec", decodePrimitive);
   emitRef(buf, "_rf", readField);
@@ -868,7 +881,7 @@ export function parse<S extends Schema>(
   emit(buf, "var li = 0;");
   const out = freshVar(buf);
   if (isPrimitive(schema)) {
-    emit(buf, "var raw = lines[li++].trim();");
+    emit(buf, "var raw = lines[li++];");
     emitCell(g, schema, "raw", '""', out);
   } else {
     const { core, nul } = unwrap(schema);
@@ -903,12 +916,19 @@ export function parse<S extends Schema>(
 
 /**
  * Emit code decoding the token in variable `raw` for a primitive-shaped
- * schema into `out` (declared here). An empty token means "absent": it yields
- * `undefined` when an `optional` wrapper allows it, an error otherwise.
+ * schema into `out` (declared here). The token is first stripped of
+ * surrounding spaces, the same in every position (root, field, cell, list
+ * item). An empty token means "absent": it yields `undefined` when an
+ * `optional` wrapper allows it, an error otherwise.
  */
 function emitCell(g: Gen, schema: Schema, raw: string, path: string, out: string): void {
   const buf = g.buf;
   const { core, opt, nul } = unwrap(schema);
+  // Inline edge test: the common unpadded token skips the call (~5 ns/cell).
+  emit(
+    buf,
+    `if (${raw}.charCodeAt(0) === 32 || ${raw}.charCodeAt(${raw}.length - 1) === 32) ${raw} = _ts(${raw});`,
+  );
   emit(buf, `var ${out};`);
   const fail = (expected: string): string =>
     `return _err(_me(${path}, ${escapeJsonString(expected)}, ${raw}));`;
@@ -1319,7 +1339,7 @@ function emitDiscParse(
     buf,
     `if (${raw} === null) return _err(_me(${discPath}, ${escapeJsonString("key '" + disc + "'")}, _ge(lines, li)));`,
   );
-  emit(buf, `var ${dv} = _dec(${raw});`);
+  emit(buf, `var ${dv} = _dec(_ts(${raw}));`);
   emit(buf, `var ${out} = null;`);
   for (let i = 0; i < variants.length; i++) {
     const lit = emitRef(buf, freshVar(buf), variants[i].meta.properties[disc].meta.value);

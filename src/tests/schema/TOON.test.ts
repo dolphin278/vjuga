@@ -1801,6 +1801,28 @@ test("flexible order rejects duplicate and undeclared keys (G3-6)", () => {
   assert.equal(assertErr(open("x: 5\nx: 6\na: 1")).expected, "unique key");
 });
 
+test("value tokens are stripped of surrounding spaces in every position (F3-C3, spec §12)", () => {
+  const str = anyParse(S.string());
+  assert.equal(assertOk(str('  "x" ')), "x");
+  assert.equal(assertOk(str(" x ")), "x");
+  assert.deepEqual(assertOk(anyParse(S.object({ a: S.string() }))('a: "x" ')), { a: "x" });
+  assert.deepEqual(assertOk(anyParse(S.object({ a: S.string() }))("a:  abc  ")), { a: "abc" });
+  const arr = anyParse(S.array(S.string()));
+  assert.deepEqual(assertOk(arr('[2]: "a", "b"')), ["a", "b"]);
+  assert.deepEqual(assertOk(arr('[2]: "a" ,"b" ')), ["a", "b"]);
+  assert.deepEqual(assertOk(arr('[2]: " a" , b ')), [" a", "b"]); // inside quotes kept
+  const tab = anyParse(S.array(S.object({ n: S.integer(), s: S.optional(S.string()) })));
+  assert.deepEqual(assertOk(tab("[2]{n,s}:\n   1 , x\n  2,  ")), [{ n: 1, s: "x" }, { n: 2 }]);
+  const list = anyParse(S.tuple(S.integer(), S.object({ a: S.integer() })));
+  assert.deepEqual(assertOk(list("[2]:\n  -  7 \n  - a:  1 ")), [7, { a: 1 }]);
+  assert.deepEqual(assertOk(anyParse(S.record(S.boolean()))("k:  true ")), { k: true });
+  assert.deepEqual(assertOk(anyParse(Shape)("kind:  circle \nr: 1")), { kind: "circle", r: 1 });
+  // Only U+0020: a tab or NBSP is part of the token
+  assertErr(anyParse(S.integer())("1\t"));
+  assert.equal(assertOk(str("x ")), "x ");
+  assertErr(str('"x"\t'));
+});
+
 test("indent must be an integer >= 1 (G3-7)", () => {
   const schema = S.object({
     o: S.object({ q: S.optional(S.string()) }),

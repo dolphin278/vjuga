@@ -143,6 +143,13 @@ export function emitStandardRefs(buf: CodeBuffer, okFn: unknown, errFn: unknown)
  * `err` result. Validate plain data (parsed JSON, structured clones); wrap the
  * call in `try` if the input may carry getters or be a Proxy.
  *
+ * Object properties are read as own properties even if `Object.prototype` is
+ * polluted after compilation, but array / tuple elements are read directly:
+ * a hole in a sparse array reads through to `Array.prototype` /
+ * `Object.prototype`, so an index polluted there (data-only pollution such as
+ * `Object.prototype[0] = x`) is validated as the element. JSON input never
+ * has holes; a per-element own check measured 2–10× slower on arrays.
+ *
  * @example
  * ```ts
  * const check = validate(S.object({ id: S.integer() }));
@@ -398,7 +405,9 @@ export function emitValidation(
     case "conditional":
       if (schema.meta.then === schema.meta.else) {
         // Same branch either way (a shared `$ref`): `if` is irrelevant, and
-        // emitting the branch twice would double the code at every level
+        // emitting the branch twice would double the code at every level.
+        // `if` is still checked, so a malformed one throws as it would emitted.
+        checkConstants(schema.meta.if);
         emitValidation(buf, schema.meta.then, accessor, pathExpr);
         break;
       }
@@ -636,7 +645,8 @@ function emitObjectTypeCheck(buf: CodeBuffer, accessor: string, pathExpr: string
  * property inherited from its real prototype counts as present; likewise a
  * getter installed on `Object.prototype` that returns `undefined` only when
  * the receiver is `Object.prototype` itself. Neither arises from JSON input
- * or from data-only prototype pollution (`o[a][b] = c`).
+ * or from data-only prototype pollution (`o[a][b] = c`). Array and tuple
+ * elements are not covered by this flag at all — see `validate()`.
  */
 function emitPlainFlag(
   buf: CodeBuffer,
@@ -683,6 +693,88 @@ function distinctVariants(variants: readonly Schema[]): readonly Schema[] {
   const seen = new Set(variants);
   if (seen.size === variants.length) return variants;
   return [...seen];
+}
+
+/** Schemas whose compile-time checks (`checkConstants`) already passed. */
+const checkedConstants = new WeakSet<Schema>();
+
+/**
+ * Run the compile-time checks emission would run on `schema` — `new RegExp`
+ * for every `pattern`, `jsLiteral` for every constraint, literal and enum
+ * value — without emitting code. Used where emission skips a subtree (the
+ * `if` of a `conditional` whose branches are identical), so a malformed
+ * schema still throws `SyntaxError` / `TypeError` from `validate()`. Nodes are
+ * marked only after their whole subtree passed, so a shared node is walked
+ * once (linear on `$ref` DAGs) and a failing one throws on every compile.
+ */
+function checkConstants(schema: Schema): void {
+  if (checkedConstants.has(schema)) return;
+  switch (schema.kind) {
+    case "string": {
+      const meta = schema.meta as StringMeta;
+      if (meta !== undefined) {
+        jsLiteral(meta.minLength);
+        jsLiteral(meta.maxLength);
+        if (meta.pattern !== undefined) RegExp(meta.pattern);
+      }
+      break;
+    }
+    case "number":
+    case "integer": {
+      const meta = schema.meta as NumericMeta;
+      if (meta !== undefined) {
+        jsLiteral(meta.minimum);
+        jsLiteral(meta.maximum);
+        jsLiteral(meta.exclusiveMinimum);
+        jsLiteral(meta.exclusiveMaximum);
+        jsLiteral(meta.multipleOf);
+      }
+      break;
+    }
+    case "boolean":
+    case "null":
+    case "unknown":
+      break;
+    case "literal":
+      jsLiteral(schema.meta.value);
+      break;
+    case "enum":
+      for (const value of schema.meta.values as readonly unknown[]) jsLiteral(value);
+      break;
+    case "object": {
+      const properties = schema.meta.properties as Readonly<Record<string, Schema>>;
+      for (const key of Object.keys(properties)) checkConstants(properties[key]);
+      break;
+    }
+    case "array":
+      jsLiteral(schema.meta.minItems);
+      jsLiteral(schema.meta.maxItems);
+      checkConstants(schema.meta.items);
+      break;
+    case "tuple":
+      for (const item of schema.meta.items as readonly Schema[]) checkConstants(item);
+      break;
+    case "record":
+      checkConstants(schema.meta.values);
+      break;
+    case "union":
+    case "allOf":
+      for (const variant of schema.meta.variants as readonly Schema[]) checkConstants(variant);
+      break;
+    case "optional":
+    case "nullable":
+    case "not":
+      checkConstants(schema.meta.inner);
+      break;
+    case "conditional":
+      checkConstants(schema.meta.if);
+      checkConstants(schema.meta.then);
+      checkConstants(schema.meta.else);
+      break;
+    default:
+      unreachable(schema);
+  }
+  checkedConstants.add(schema);
 }
 
 /** True if `schema` can accept `undefined` (so a required key may be absent). */
@@ -1146,7 +1238,10 @@ function exactCheck(schema: Schema, accessor: string): string | null {
       return inner === null ? null : `(${accessor} !== undefined && !${inner})`;
     }
     case "conditional": {
-      if (schema.meta.then === schema.meta.else) return exactCheck(schema.meta.then, accessor);
+      if (schema.meta.then === schema.meta.else) {
+        checkConstants(schema.meta.if);
+        return exactCheck(schema.meta.then, accessor);
+      }
       const checks = exactChecks(
         [schema.meta.if, schema.meta.then, schema.meta.else] as readonly Schema[],
         accessor,

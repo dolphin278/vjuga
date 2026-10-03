@@ -1629,6 +1629,43 @@ test("shared subtrees — allOf[X, X] and conditional(_, X, X) emit X once", () 
   assert.equal(validate(refSchema).toString(), validate(S.string()).toString());
 });
 
+test("shared subtrees — the skipped `if` of conditional(I, X, X) is still checked", () => {
+  const x = S.string();
+  const badPattern = S.string({ pattern: "[" });
+  const badLiteral = S.literal({} as unknown as string);
+  // First-error emission and the union exact-check path both still throw
+  assert.throws(() => validate(S.conditional(badPattern, x, x)), SyntaxError);
+  assert.throws(() => validate(S.conditional(badLiteral, x, x)), TypeError);
+  assert.throws(() => validate(S.union(S.conditional(badPattern, x, x), S.null_())), SyntaxError);
+  assert.throws(() => validate(S.union(S.conditional(badLiteral, x, x), S.null_())), TypeError);
+  // A failed check is not memoized: compiling again throws again
+  const nested = S.object({ a: S.array(S.optional(badLiteral)) });
+  assert.throws(() => validate(S.conditional(nested, x, x)), TypeError);
+  assert.throws(() => validate(S.conditional(nested, x, x)), TypeError);
+  assert.throws(() => validate(S.conditional({ kind: "bogus" } as unknown as S.Schema, x, x)));
+  // Every kind is walked; well-formed constants (and shared nodes) pass
+  const shared = S.integer({ minimum: 0, maximum: 9, multipleOf: 3 });
+  const every = S.object({
+    s: S.string(),
+    p: S.string({ minLength: 1, maxLength: 3, pattern: "^a" }),
+    n: S.number(),
+    i: shared,
+    j: shared,
+    b: S.boolean(),
+    z: S.nullable(S.null_()),
+    l: S.literal("a"),
+    e: S.enum_("a", 1),
+    arr: S.array(S.unknown(), { minItems: 1, maxItems: 2 }),
+    t: S.tuple(shared, S.not(S.string())),
+    r: S.record(S.allOf(shared)),
+    u: S.union(S.oneOf(S.number()), S.conditional(S.null_(), shared)),
+  });
+  const v = validate(S.conditional(every, x, x));
+  assertOk(v("s"));
+  assertErr(v(1));
+  assertOk(validate(S.union(S.conditional(every, x, x), S.null_()))(null));
+});
+
 test("shared subtrees — dedupe keeps exact checks and presence counts exact", () => {
   const lit = S.literal("a");
   // Non-last union variants use exact checks: allOf / anyOf / conditional repeats

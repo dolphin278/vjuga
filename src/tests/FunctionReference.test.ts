@@ -91,3 +91,42 @@ test("error classes set name and keep the original reference", async () => {
     return e.name === "ModuleResolutionError" && e.cause instanceof Error;
   });
 });
+
+test("G7-2: references into one file share a single module instance", async () => {
+  const g = globalThis as { __refCountedEvals?: number };
+  const base = pathToFileURL(`${fixtures}/ref-counted.mjs`).href;
+  const inc = await resolve(`${base}#inc`);
+  const get = await resolve(`${base}#get`);
+  const def = await resolve(base);
+  const bare = await resolve(`${base}#`); // empty fragment → default export
+  const pathForm = await resolve(`${fixtures}/ref-counted.mjs#get`);
+  inc();
+  inc();
+  assert.equal(g.__refCountedEvals, 1);
+  assert.equal(get(), 2);
+  assert.equal(def(), 2);
+  assert.equal(bare, def);
+  assert.equal(pathForm, get);
+  const direct = (await import(base)) as { inc: unknown };
+  assert.equal(direct.inc, inc);
+});
+
+test("G7-2: the caller's URL object is not mutated", async () => {
+  const url = pathToFileURL(`${fixtures}/ref-target.mjs`);
+  url.hash = "greet";
+  const before = url.href;
+  await resolve(url);
+  assert.equal(url.href, before);
+  assert.equal(url.hash, "#greet");
+});
+
+test("G7-2: errors keep the fragment in the reported reference", async () => {
+  const url = pathToFileURL(`${fixtures}/ref-target.mjs`);
+  url.hash = "VERSION";
+  const err = await resolve(url).catch((e: unknown) => e);
+  assert.ok(err instanceof ReferencedSymbolIsNotAFunction);
+  assert.equal(err.url.hash, "#VERSION");
+  const missing = await resolve(`${fixtures}/missing-xyz.mjs#fn`).catch((e: unknown) => e);
+  assert.ok(missing instanceof ModuleResolutionError);
+  assert.match(missing.message, /missing-xyz\.mjs#fn/);
+});

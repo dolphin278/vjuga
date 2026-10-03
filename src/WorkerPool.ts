@@ -26,11 +26,11 @@
  *
  * Failure model: a worker crash rejects its task with `WorkerExitError` and
  * queued work continues on a replacement. A worker that fails before it is
- * ready (bad module, throw at import) rejects the queued tasks with that
- * startup error and is NOT respawned. Aborting an in-flight task rejects the
- * caller at once, but the worker keeps running it: the task stays counted in
- * `activeCount()`/`drain()` until the worker replies. Equal-priority tasks
- * run in submission order.
+ * ready (bad module, no default function, throw at import) rejects the queued
+ * tasks with that error and is NOT respawned; later run() calls spawn
+ * afresh. Aborting an in-flight task rejects the caller at once, but the
+ * worker keeps running it: it stays in `activeCount()`/`drain()` until the
+ * worker replies. Equal-priority tasks run in submission order.
  *
  * @example
  * ```ts
@@ -81,14 +81,18 @@ export interface WorkerPoolConfig {
   minThreads?: number;
   /** Maximum number of threads. Default: os.availableParallelism(). */
   maxThreads?: number;
-  /** Idle timeout in ms before terminating excess threads. Default: 30000. 0 = no timeout. */
+  /**
+   * Idle timeout in ms before terminating excess threads. Default: 30000.
+   * `0` or `Infinity` = no timeout. Anything else outside `[0, 2^31 - 1]`
+   * (NaN, negative, too large for `setTimeout`) throws `RangeError`.
+   */
   idleTimeout?: number;
   /** Static data passed to all workers; seen as `workerData.userData` inside the worker. */
   workerData?: unknown;
 }
 
 export interface RunOptions {
-  /** Lower number = higher priority. Default: 0. */
+  /** Lower number = higher priority. Default: 0. `NaN` rejects with `RangeError`. */
   priority?: number;
   /** Transferable objects to transfer ownership. */
   transferList?: Transferable[];
@@ -142,6 +146,7 @@ const kDestroyed: unique symbol = Symbol("destroyed");
 const kWorkerData: unique symbol = Symbol("workerData");
 const kDrainDeferred: unique symbol = Symbol("drainDeferred");
 const kBootstrapPath: unique symbol = Symbol("bootstrapPath");
+const kAbortedQueued: unique symbol = Symbol("abortedQueued");
 
 // ---------------------------------------------------------------------------
 // WorkerPool interface
@@ -161,6 +166,8 @@ export interface WorkerPool<I, O> {
   [kWorkerData]: unknown;
   [kDrainDeferred]: PromiseWithResolvers<void> | undefined;
   [kBootstrapPath]: string;
+  /** Aborted tasks still sitting in kTaskQueue (skipped lazily on dequeue). */
+  [kAbortedQueued]: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -176,6 +183,9 @@ const taskCmp: PQ.Comparator<Task> = (a, b) => a.priority - b.priority || a.task
 // ---------------------------------------------------------------------------
 
 const taskMsg = { tag: MSG_TASK, taskId: 0, data: undefined as unknown };
+
+// Largest delay setTimeout honours; larger values are clamped to 1ms.
+const MAX_TIMEOUT = 2_147_483_647;
 
 // ---------------------------------------------------------------------------
 // Bootstrap path resolution
@@ -209,7 +219,14 @@ export function make<I, O>(config: WorkerPoolConfig): WorkerPool<I, O> {
     config.maxThreads !== undefined
       ? positiveInteger(config.maxThreads)
       : positiveInteger(availableParallelism());
-  const idleTimeout = config.idleTimeout !== undefined ? config.idleTimeout : 30_000;
+  let idleTimeout = config.idleTimeout !== undefined ? config.idleTimeout : 30_000;
+  if (idleTimeout === Infinity) {
+    idleTimeout = 0;
+  } else if (!(idleTimeout >= 0 && idleTimeout <= MAX_TIMEOUT)) {
+    throw new RangeError(
+      `idleTimeout must be Infinity or a number in [0, ${MAX_TIMEOUT}], got ${idleTimeout}`,
+    );
+  }
 
   if (minThreads > maxThreads) {
     throw new RangeError(`minThreads (${minThreads}) must not exceed maxThreads (${maxThreads})`);
@@ -229,6 +246,7 @@ export function make<I, O>(config: WorkerPoolConfig): WorkerPool<I, O> {
     [kWorkerData]: config.workerData,
     [kDrainDeferred]: undefined,
     [kBootstrapPath]: defaultBootstrapPath,
+    [kAbortedQueued]: 0,
   };
 
   // Pre-spawn minThreads workers.
@@ -241,6 +259,8 @@ export function make<I, O>(config: WorkerPoolConfig): WorkerPool<I, O> {
 
 /**
  * Submits a task to the pool. Returns a promise that resolves with the result.
+ * Rejects with `RangeError` if `options.priority` is `NaN` (it would break the
+ * queue's ordering for every other task).
  */
 export function run<I, O>(pool: WorkerPool<I, O>, data: I, options?: RunOptions): Promise<O> {
   if (pool[kDestroyed]) {
@@ -248,6 +268,12 @@ export function run<I, O>(pool: WorkerPool<I, O>, data: I, options?: RunOptions)
   }
 
   const signal = options?.signal;
+  const priority = options?.priority ?? 0;
+
+  // NaN makes taskCmp non-transitive and silently corrupts the heap order.
+  if (priority !== priority) {
+    return Promise.reject(new RangeError("priority must not be NaN"));
+  }
 
   // Fast path: already aborted.
   if (signal?.aborted) {
@@ -256,16 +282,17 @@ export function run<I, O>(pool: WorkerPool<I, O>, data: I, options?: RunOptions)
 
   return new Promise<O>((resolve, reject) => {
     const taskId = pool[kNextTaskId]++;
-    const priority = options?.priority ?? 0;
     const transferList = options?.transferList;
     let onResolve = resolve;
     let onReject = reject;
     if (signal) {
       // An aborted task is rejected now, but stays in kPendingTasks (if
       // dispatched) until its worker replies, so activeCount()/drain() stay
-      // truthful. Queued ones are skipped by dequeueNextValid.
+      // truthful. Queued ones are skipped by dequeueNextValid; until then they
+      // are counted in kAbortedQueued so pendingCount() excludes them.
       const onAbort = () => {
         task.aborted = true;
+        if (!pool[kPendingTasks].has(taskId)) pool[kAbortedQueued]++;
         reject(signal.reason);
       };
       signal.addEventListener("abort", onAbort, { once: true });
@@ -320,10 +347,11 @@ export function activeCount<I, O>(pool: WorkerPool<I, O>): number {
 }
 
 /**
- * Returns the number of tasks waiting in the queue.
+ * Returns the number of tasks waiting in the queue. Aborted tasks are not
+ * counted, even though they are only dropped from the queue lazily.
  */
 export function pendingCount<I, O>(pool: WorkerPool<I, O>): number {
-  return PQ.size(pool[kTaskQueue]);
+  return PQ.size(pool[kTaskQueue]) - pool[kAbortedQueued];
 }
 
 /**
@@ -354,6 +382,7 @@ export async function destroy<I, O>(pool: WorkerPool<I, O>): Promise<void> {
       task.reject(destroyError);
     }
   }
+  pool[kAbortedQueued] = 0;
 
   // Reject all in-flight tasks.
   for (const pending of pool[kPendingTasks].values()) {
@@ -613,7 +642,8 @@ function handleWorkerError<I, O>(pool: WorkerPool<I, O>, entry: WorkerEntry, err
 /**
  * A worker died before READY (bad module, throw at import). Reject its task and
  * everything queued with the startup error; no respawn, so a broken
- * `filename` can't spin up threads in a loop.
+ * `filename` can't spin up threads in a loop. Tasks submitted after this (e.g.
+ * a retry from the rejection handler) are dispatched by handleWorkerExit.
  */
 function failStartup<I, O>(pool: WorkerPool<I, O>, entry: WorkerEntry, err: unknown): void {
   if (entry.failed) return;
@@ -628,6 +658,7 @@ function failStartup<I, O>(pool: WorkerPool<I, O>, entry: WorkerEntry, err: unkn
   while ((queued = PQ.pop(pool[kTaskQueue])) !== undefined) {
     if (!queued.aborted) queued.reject(err);
   }
+  pool[kAbortedQueued] = 0;
 }
 
 function handleWorkerExit<I, O>(pool: WorkerPool<I, O>, entry: WorkerEntry, _code: number): void {
@@ -655,9 +686,12 @@ function handleWorkerExit<I, O>(pool: WorkerPool<I, O>, entry: WorkerEntry, _cod
     }
   }
 
-  if (entry.ready && !pool[kDestroyed]) {
-    // Replace if below minThreads, then let queued tasks use the freed slot.
-    if (pool[kWorkers].size < pool[kMinThreads]) {
+  if (!pool[kDestroyed]) {
+    // Replace a crashed ready worker if below minThreads (never a worker that
+    // failed startup: no respawn loop), then let queued tasks use the freed
+    // slot. After a startup failure the queue only holds tasks submitted since
+    // (a retry from the rejection handler); without this they would hang.
+    if (entry.ready && pool[kWorkers].size < pool[kMinThreads]) {
       spawnWorker(pool);
     }
     tryDispatch(pool);
@@ -670,6 +704,7 @@ function dequeueNextValid<I, O>(pool: WorkerPool<I, O>): Task<I, O> | undefined 
   while (PQ.size(pool[kTaskQueue]) > 0) {
     const task = PQ.pop(pool[kTaskQueue])!;
     if (!task.aborted) return task;
+    pool[kAbortedQueued]--;
   }
   return undefined;
 }

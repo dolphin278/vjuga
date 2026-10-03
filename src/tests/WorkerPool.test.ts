@@ -740,3 +740,176 @@ describe("G5-11: filename and workerData", () => {
     await WP.destroy(pool);
   });
 });
+
+// Fails the test instead of hanging the runner if `p` never settles.
+function within<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} did not settle within ${ms}ms`)), ms);
+  });
+  return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
+}
+
+describe("G7-1: task submitted from a startup-failure rejection handler", () => {
+  test("is dispatched to a fresh worker (no hang), drain() settles", async () => {
+    const counter = new SharedArrayBuffer(4);
+    const pool = WP.make<number, number>({
+      filename: fixture("bad-init-first.mjs"),
+      maxThreads: 1,
+      workerData: counter,
+    });
+    let retry: Promise<number> | undefined;
+    // Retry inside the handler: runs between the worker's 'error' and 'exit'.
+    const first = await WP.run(pool, 1).catch((e: unknown) => {
+      retry = WP.run(pool, 2);
+      return e;
+    });
+    assert.match(String(first), /init failed/);
+    assert.equal(await within(retry!, 5000, "retry"), 2);
+    await within(WP.drain(pool), 5000, "drain");
+    assert.equal(Atomics.load(new Int32Array(counter), 0), 2);
+    await WP.destroy(pool);
+  });
+
+  test("always-broken module: retry rejects, one extra spawn, no respawn loop", async () => {
+    const counter = new SharedArrayBuffer(4);
+    const pool = WP.make<number, number>({
+      filename: fixture("bad-init-count.mjs"),
+      maxThreads: 1,
+      workerData: counter,
+    });
+    let retry: Promise<unknown> | undefined;
+    await WP.run(pool, 1).catch(() => {
+      retry = WP.run(pool, 2).catch((e: unknown) => e);
+    });
+    assert.match(String(await within(retry!, 5000, "retry")), /init failed/);
+    await within(WP.drain(pool), 5000, "drain");
+    await sleep(300);
+    assert.equal(Atomics.load(new Int32Array(counter), 0), 2);
+    assert.equal(WP.activeCount(pool), 0);
+    assert.equal(WP.pendingCount(pool), 0);
+    await WP.destroy(pool);
+  });
+});
+
+describe("G7-3: idleTimeout validation", () => {
+  test("NaN, negative, -Infinity and > 2^31-1 throw RangeError (before spawning)", () => {
+    for (const idleTimeout of [NaN, -1, -Infinity, 2 ** 31, 1e12]) {
+      assert.throws(
+        () => WP.make({ filename: echoUrl, minThreads: 1, maxThreads: 1, idleTimeout }),
+        RangeError,
+      );
+    }
+  });
+
+  test("boundaries 0 and 2^31-1 are accepted", async () => {
+    for (const idleTimeout of [0, 2 ** 31 - 1, 0.5]) {
+      await WP.destroy(WP.make({ filename: echoUrl, maxThreads: 1, idleTimeout }));
+    }
+  });
+
+  test("Infinity means no timeout: the idle worker is kept and reused", async () => {
+    const pool = WP.make<null, number>({
+      filename: fixture("thread-id.mjs"),
+      maxThreads: 1,
+      idleTimeout: Infinity,
+    });
+    const a = await WP.run(pool, null);
+    await sleep(100);
+    assert.equal(await WP.run(pool, null), a);
+    await WP.destroy(pool);
+  });
+});
+
+describe("G7-4: NaN priority", () => {
+  test("run() rejects with RangeError and queues nothing", async () => {
+    const pool = WP.make<number, number>({ filename: echoUrl, maxThreads: 1 });
+    await assert.rejects(() => WP.run(pool, 1, { priority: NaN }), RangeError);
+    assert.equal(WP.pendingCount(pool), 0);
+    assert.equal(WP.activeCount(pool), 0);
+    assert.equal(await WP.run(pool, 3), 3);
+    await WP.destroy(pool);
+  });
+
+  test("±Infinity priorities keep a consistent order", async () => {
+    const pool = WP.make<number, string>({ filename: slowUrl, maxThreads: 1 });
+    const blocker = WP.run(pool, 50);
+    const order: number[] = [];
+    const prios = [Infinity, 1, -Infinity, Infinity, -Infinity, 0];
+    const ps = prios.map((priority, i) => WP.run(pool, 0, { priority }).then(() => order.push(i)));
+    await blocker;
+    await Promise.all(ps);
+    assert.deepEqual(order, [2, 4, 5, 1, 0, 3]);
+    await WP.destroy(pool);
+  });
+});
+
+describe("G7-6: worker module without a default function", () => {
+  test("fails at startup with a TypeError naming the module", async () => {
+    const pool = WP.make({ filename: fixture("no-default.mjs"), maxThreads: 1 });
+    const err = await WP.run(pool, 1).catch((e: unknown) => e);
+    assert.ok(err instanceof Error);
+    assert.equal(err.name, "TypeError");
+    assert.match(err.message, /no-default\.mjs must export a default function, got undefined/);
+    await within(WP.drain(pool), 5000, "drain");
+    await WP.destroy(pool);
+  });
+});
+
+describe("G7-7: pendingCount excludes aborted queued tasks", () => {
+  test("queued aborts are excluded at once; in-flight aborts do not touch it", async () => {
+    const pool = WP.make<number, string>({ filename: slowUrl, maxThreads: 1 });
+    const inflight = new AbortController();
+    const running = WP.run(pool, 100, { signal: inflight.signal }).catch((e: unknown) => e);
+    const c = [new AbortController(), new AbortController(), new AbortController()];
+    const queued = c.map((ac) => WP.run(pool, 10, { signal: ac.signal }).catch((e: unknown) => e));
+    assert.equal(WP.pendingCount(pool), 3);
+    c[0]!.abort();
+    c[2]!.abort();
+    assert.equal(WP.pendingCount(pool), 1);
+    c[2]!.abort(); // repeat abort is a no-op
+    assert.equal(WP.pendingCount(pool), 1);
+    await sleep(50);
+    inflight.abort();
+    assert.equal(WP.pendingCount(pool), 1);
+    await running;
+    await Promise.all(queued);
+    await WP.drain(pool);
+    assert.equal(WP.pendingCount(pool), 0);
+    // Queue is reused after lazily discarding aborted tasks: counts stay exact.
+    const blocker = WP.run(pool, 50);
+    const ac = new AbortController();
+    const later = WP.run(pool, 10, { signal: ac.signal }).catch((e: unknown) => e);
+    const kept = WP.run(pool, 10);
+    ac.abort();
+    assert.equal(WP.pendingCount(pool), 1);
+    await Promise.all([blocker, later, kept]);
+    assert.equal(WP.pendingCount(pool), 0);
+    await WP.destroy(pool);
+  });
+
+  test("destroy() and startup failure reset the count with the queue", async () => {
+    const pool = WP.make<number, string>({ filename: slowUrl, maxThreads: 1 });
+    const busy = WP.run(pool, 200).catch((e: unknown) => e);
+    const ac = new AbortController();
+    const p = WP.run(pool, 10, { signal: ac.signal }).catch((e: unknown) => e);
+    ac.abort();
+    await p;
+    assert.equal(WP.pendingCount(pool), 0);
+    await WP.destroy(pool);
+    await busy;
+    assert.equal(WP.pendingCount(pool), 0);
+
+    const bad = WP.make<number, number>({ filename: fixture("bad-init.mjs"), maxThreads: 1 });
+    const first = WP.run(bad, 1).catch((e: unknown) => e);
+    const ac2 = new AbortController();
+    const q = WP.run(bad, 2, { signal: ac2.signal }).catch((e: unknown) => e);
+    const q2 = WP.run(bad, 3).catch((e: unknown) => e);
+    ac2.abort();
+    assert.equal(WP.pendingCount(bad), 1);
+    await Promise.all([first, q, q2]);
+    assert.equal(WP.pendingCount(bad), 0);
+    await within(WP.drain(bad), 5000, "drain");
+    await WP.destroy(bad);
+  });
+});

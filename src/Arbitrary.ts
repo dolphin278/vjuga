@@ -95,14 +95,105 @@ function mapTree<T, U>(tree: Tree<T>, fn: Fn1<T, U>): Tree<U> {
 }
 
 // ---------------------------------------------------------------------------
+// Arbitrary identity (internal) — used by gen() replay
+// ---------------------------------------------------------------------------
+
+/**
+ * Identity key of a built-in arbitrary: factory name plus the parameters that
+ * determine its output (bounds, lengths, inner arbitraries, mapping
+ * functions). Attached once at construction; read only by `gen` replay.
+ */
+const kArbKey: unique symbol = Symbol("arbKey");
+
+type ArbKey = readonly unknown[];
+
+interface Keyed {
+  [kArbKey]?: ArbKey;
+}
+
+/** Tags `arb` with its identity key and returns it. */
+function keyed<T>(arb: Arbitrary<T>, ...key: unknown[]): Arbitrary<T> {
+  (arb as Arbitrary<T> & Keyed)[kArbKey] = key;
+  return arb;
+}
+
+/**
+ * True when a pick recorded from `a` may be replayed where `b` is requested.
+ * Built-ins compare by identity key; untagged functions (user arbitraries,
+ * `map`/`filter` callbacks) by reference or by name and source, because `gen`
+ * bodies rebuild their inline arbitraries and lambdas on every replay.
+ */
+function sameArb(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  const ka = (a as Keyed)[kArbKey];
+  const kb = (b as Keyed)[kArbKey];
+  if (ka !== undefined || kb !== undefined) {
+    return ka !== undefined && kb !== undefined && sameKey(ka, kb);
+  }
+  const fa = a as (...args: never[]) => unknown;
+  const fb = b as (...args: never[]) => unknown;
+  return fa.name === fb.name && fa.toString() === fb.toString();
+}
+
+/** Comparison budget per key: past it (or past MAX_KEY_DEPTH) parts count as different. */
+const MAX_KEY_NODES = 1000;
+const MAX_KEY_DEPTH = 16;
+
+function sameKey(a: ArbKey, b: ArbKey): boolean {
+  return samePart(a, b, { nodes: MAX_KEY_NODES }, 0);
+}
+
+/**
+ * Key parts compare structurally so values rebuilt inline (`constant({ mode:
+ * "a" })` in a `gen` body) still match: primitives by `Object.is`, functions
+ * via sameArb, arrays and plain objects (same keys, same order) recursively.
+ * Other objects (Date, Map, class instances) compare by reference. Cyclic or
+ * huge values exhaust the bounded budget and count as different — only a
+ * missed reuse, never a wrong one.
+ */
+function samePart(x: unknown, y: unknown, budget: { nodes: number }, depth: number): boolean {
+  if (Object.is(x, y)) return true;
+  if (--budget.nodes < 0 || depth > MAX_KEY_DEPTH) return false;
+  if (typeof x === "function") return typeof y === "function" && sameArb(x, y);
+  if (Array.isArray(x)) {
+    if (!Array.isArray(y) || x.length !== y.length) return false;
+    for (let i = 0; i < x.length; i++) {
+      if (!samePart(x[i], y[i], budget, depth + 1)) return false;
+    }
+    return true;
+  }
+  if (!isPlainObject(x) || !isPlainObject(y)) return false;
+  // Same keys in the same order: key order is observable (Object.keys, JSON).
+  const keys = Object.keys(x);
+  const yKeys = Object.keys(y);
+  if (keys.length !== yKeys.length) return false;
+  for (let i = 0; i < keys.length; i++) {
+    const k = keys[i]!;
+    if (yKeys[i] !== k || !samePart(x[k], y[k], budget, depth + 1)) return false;
+  }
+  return true;
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  if (typeof v !== "object" || v === null) return false;
+  const proto: unknown = Object.getPrototypeOf(v);
+  return proto === Object.prototype || proto === null;
+}
+
+// ---------------------------------------------------------------------------
 // Combinators
 // ---------------------------------------------------------------------------
 
 /** Transforms the generated value while preserving the shrink tree structure. */
 export function map<T, U>(arb: Arbitrary<T>, fn: Fn1<T, U>): Arbitrary<U> {
-  return function mappedArb(prng: PRNG, size: number): Tree<U> {
-    return mapTree(arb(prng, size), fn);
-  };
+  return keyed(
+    function mappedArb(prng: PRNG, size: number): Tree<U> {
+      return mapTree(arb(prng, size), fn);
+    },
+    "map",
+    arb,
+    fn,
+  );
 }
 
 /**
@@ -110,15 +201,20 @@ export function map<T, U>(arb: Arbitrary<T>, fn: Fn1<T, U>): Arbitrary<U> {
  * arbitrary via `fn`. Shrinks the inner value first, then the outer.
  */
 export function chain<T, U>(arb: Arbitrary<T>, fn: Fn1<T, Arbitrary<U>>): Arbitrary<U> {
-  return function chainedArb(prng: PRNG, size: number): Tree<U> {
-    const prng2 = split(prng);
-    const outerTree = arb(prng, size);
-    const innerTree = fn(outerTree.value)(prng2, size);
-    return {
-      value: innerTree.value,
-      shrinks: chainShrinks(outerTree, innerTree, fn, nextBigInt(prng2), size),
-    };
-  };
+  return keyed(
+    function chainedArb(prng: PRNG, size: number): Tree<U> {
+      const prng2 = split(prng);
+      const outerTree = arb(prng, size);
+      const innerTree = fn(outerTree.value)(prng2, size);
+      return {
+        value: innerTree.value,
+        shrinks: chainShrinks(outerTree, innerTree, fn, nextBigInt(prng2), size),
+      };
+    },
+    "chain",
+    arb,
+    fn,
+  );
 }
 
 function chainShrinks<T, U>(
@@ -154,15 +250,21 @@ function chainShrinks<T, U>(
  * up to `maxRetries` (default 100) times before throwing.
  */
 export function filter<T>(arb: Arbitrary<T>, pred: Predicate<T>, maxRetries = 100): Arbitrary<T> {
-  return function filteredArb(prng: PRNG, size: number): Tree<T> {
-    for (let i = 0; i < maxRetries; i++) {
-      const tree = arb(split(prng), size);
-      if (pred(tree.value)) {
-        return { value: tree.value, shrinks: filterShrinks(tree.shrinks, pred) };
+  return keyed(
+    function filteredArb(prng: PRNG, size: number): Tree<T> {
+      for (let i = 0; i < maxRetries; i++) {
+        const tree = arb(split(prng), size);
+        if (pred(tree.value)) {
+          return { value: tree.value, shrinks: filterShrinks(tree.shrinks, pred) };
+        }
       }
-    }
-    throw new Error(`filter: failed to find a value after ${maxRetries} retries`);
-  };
+      throw new Error(`filter: failed to find a value after ${maxRetries} retries`);
+    },
+    "filter",
+    arb,
+    pred,
+    maxRetries,
+  );
 }
 
 function filterShrinks<T>(shrinks: Iterable<Tree<T>>, pred: Predicate<T>): Iterable<Tree<T>> {
@@ -334,10 +436,15 @@ export function integer(min = -0x7fff_ffff, max = 0x7fff_ffff): Arbitrary<number
   const target = min <= 0 && max >= 0 ? 0 : min > 0 ? min : max;
   const down = target - min;
   const up = max - target;
-  return function integerArb(prng: PRNG, size: number): Tree<number> {
-    const value = drawInt(prng, target - sizedWidth(down, size), target + sizedWidth(up, size));
-    return { value, shrinks: shrinkNumber(target, value) };
-  };
+  return keyed(
+    function integerArb(prng: PRNG, size: number): Tree<number> {
+      const value = drawInt(prng, target - sizedWidth(down, size), target + sizedWidth(up, size));
+      return { value, shrinks: shrinkNumber(target, value) };
+    },
+    "integer",
+    min,
+    max,
+  );
 }
 
 /** Generates non-negative integers in [0, max]. Shrinks toward 0. */
@@ -346,8 +453,10 @@ export function nat(max = 0x7fff_ffff): Arbitrary<number> {
 }
 
 /**
- * Generates floating-point numbers in [min, max). Shrinks toward 0 (or the
- * in-range value nearest to 0); shrink candidates never leave the range.
+ * Generates floating-point numbers in [min, max) (exactly `min` when
+ * min === max). Shrinks toward 0 (or the in-range value nearest to 0); shrink
+ * candidates never leave the range. Ranges wider than `Number.MAX_VALUE`
+ * (e.g. `float(-Number.MAX_VALUE, Number.MAX_VALUE)`) are supported.
  * Throws `RangeError` unless both bounds are finite with min <= max.
  */
 export function float(min = -1e10, max = 1e10): Arbitrary<number> {
@@ -355,10 +464,35 @@ export function float(min = -1e10, max = 1e10): Arbitrary<number> {
     throw new RangeError(`float: bounds must be finite with min <= max (got ${min}, ${max})`);
   }
   const target = min <= 0 && max > 0 ? 0 : min > 0 || min === max ? min : max;
-  return function floatArb(prng: PRNG, _size: number): Tree<number> {
-    const value = min + next(prng) * (max - min);
-    return { value, shrinks: shrinkFloat(target, value, min, max) };
-  };
+  const span = max - min;
+  // `max - min` overflows to Infinity past Number.MAX_VALUE; the lerp form
+  // cannot overflow there (min < 0 < max, so its terms have opposite signs)
+  // and stays >= min (min·(1 - r) >= min, max·r >= 0). Finite spans keep the
+  // `min + r·span` form so existing seeds generate the same values.
+  const wide = !Number.isFinite(span);
+  return keyed(
+    function floatArb(prng: PRNG, _size: number): Tree<number> {
+      const r = next(prng);
+      let value = wide ? min * (1 - r) + max * r : min + r * span;
+      // Rounding can land exactly on the excluded max (r close to 1).
+      if (value >= max && min < max) value = nextDown(max);
+      return { value, shrinks: shrinkFloat(target, value, min, max) };
+    },
+    "float",
+    min,
+    max,
+  );
+}
+
+const f64Scratch = new Float64Array(1);
+const u64Scratch = new BigUint64Array(f64Scratch.buffer);
+
+/** Largest double below finite `x` (rare path: rounding onto `max`). */
+function nextDown(x: number): number {
+  if (x === 0) return -Number.MIN_VALUE;
+  f64Scratch[0] = x;
+  u64Scratch[0] = x > 0 ? u64Scratch[0]! - 1n : u64Scratch[0]! + 1n;
+  return f64Scratch[0]!;
 }
 
 function shrinkFloat(
@@ -392,65 +526,116 @@ function shrinkFloat(
 export function boolean(): Arbitrary<boolean> {
   const falseTree = leaf(false);
   const trueTree: Tree<boolean> = { value: true, shrinks: [falseTree] };
-  return function booleanArb(prng: PRNG, _size: number): Tree<boolean> {
+  return keyed(function booleanArb(prng: PRNG, _size: number): Tree<boolean> {
     return next(prng) < 0.5 ? trueTree : falseTree;
-  };
+  }, "boolean");
 }
 
 /** Always produces the same value with no shrinks. */
 export function constant<T>(value: T): Arbitrary<T> {
   const tree = leaf(value);
-  return function constantArb(_prng: PRNG, _size: number): Tree<T> {
-    return tree;
-  };
+  return keyed(
+    function constantArb(_prng: PRNG, _size: number): Tree<T> {
+      return tree;
+    },
+    "constant",
+    value,
+  );
 }
 
 /** Picks one of the provided values uniformly. Shrinks toward the first value. */
 export function constantFrom<T>(...values: [T, ...T[]]): Arbitrary<T> {
-  return function constantFromArb(prng: PRNG, _size: number): Tree<T> {
-    const idx = nextInt(prng, 0, values.length - 1);
-    const value = values[idx]!;
-    if (idx === 0) return leaf(value);
-    return { value, shrinks: [leaf(values[0]!)] };
-  };
+  return keyed(
+    function constantFromArb(prng: PRNG, _size: number): Tree<T> {
+      const idx = nextInt(prng, 0, values.length - 1);
+      const value = values[idx]!;
+      if (idx === 0) return leaf(value);
+      return { value, shrinks: [leaf(values[0]!)] };
+    },
+    "constantFrom",
+    values,
+  );
 }
 
 /**
- * Generates strings of printable ASCII characters. Shrinks by removing
- * characters (down to `minLength`), then by replacing characters with 'a'.
+ * Validated `[minLength, maxLength]` for the collection arbitraries. An
+ * omitted `maxLength` defaults to `max(minLength, 10)`; `Infinity` means
+ * uncapped (length still bounded by the size parameter). Throws `RangeError`
+ * unless minLength is a non-negative safe integer and maxLength a safe
+ * integer or Infinity, with minLength <= maxLength.
  */
-export function string(opts?: { minLength?: number; maxLength?: number }): Arbitrary<string> {
-  /* node:coverage ignore next */
-  const minLen = opts?.minLength ?? 0;
-  const maxLen = opts?.maxLength ?? 10;
-  return function stringArb(prng: PRNG, size: number): Tree<string> {
-    const sizedMax = Math.min(maxLen, Math.max(minLen, size));
-    const len = nextInt(prng, minLen, sizedMax);
-    const chars: number[] = [];
-    for (let i = 0; i < len; i++) {
-      chars.push(nextInt(prng, 0x20, 0x7e));
-    }
-    const value = String.fromCharCode(...chars);
-    return { value, shrinks: shrinkString(value, minLen) };
-  };
+function lengthBounds(
+  fn: string,
+  minLength = 0,
+  maxLength = Math.max(minLength, 10),
+  names: readonly [string, string] = ["minLength", "maxLength"],
+): [number, number] {
+  if (
+    !Number.isSafeInteger(minLength) ||
+    !(Number.isSafeInteger(maxLength) || maxLength === Infinity) ||
+    minLength < 0 ||
+    minLength > maxLength
+  ) {
+    throw new RangeError(
+      `${fn}: ${names[0]} must be a non-negative safe integer and ${names[1]} a safe ` +
+        `integer or Infinity, with ${names[0]} <= ${names[1]} (got ${minLength}, ${maxLength})`,
+    );
+  }
+  return [minLength, maxLength];
 }
 
+/**
+ * Generates strings of printable ASCII characters. Shrinks by removing runs of
+ * characters at any position (down to `minLength`), then by replacing
+ * characters with 'a'. `maxLength` defaults to `max(minLength, 10)`; throws
+ * `RangeError` on invalid lengths (non-negative safe integers, maxLength may
+ * be Infinity, minLength <= maxLength).
+ */
+export function string(opts?: { minLength?: number; maxLength?: number }): Arbitrary<string> {
+  const [minLen, maxLen] = lengthBounds("string", opts?.minLength, opts?.maxLength);
+  return keyed(
+    function stringArb(prng: PRNG, size: number): Tree<string> {
+      const sizedMax = Math.min(maxLen, Math.max(minLen, size));
+      const len = nextInt(prng, minLen, sizedMax);
+      const chars: number[] = [];
+      for (let i = 0; i < len; i++) {
+        chars.push(nextInt(prng, 0x20, 0x7e));
+      }
+      const value = String.fromCharCode(...chars);
+      return { value, shrinks: shrinkString(value, minLen) };
+    },
+    "string",
+    minLen,
+    maxLen,
+  );
+}
+
+/** String counterpart of shrinkArray: chunk removal, then per-character simplification. */
 function shrinkString(current: string, minLength: number): Iterable<Tree<string>> {
   return lazy(function* shrinkStringGen() {
-    if (current.length > minLength) {
-      // Try empty string
-      if (minLength === 0) yield leaf("");
-      // Remove one character (from the end); the shrinker recurses for more.
-      const i = current.length - 1;
-      const shorter = current.slice(0, i) + current.slice(i + 1);
-      yield { value: shorter, shrinks: shrinkString(shorter, minLength) };
+    const len = current.length;
+    // Phase 1: remove runs — all removable characters first, then halves, …,
+    // down to single characters, at every offset (leading and interior too).
+    if (len > minLength) {
+      for (
+        let removeCount = len - minLength;
+        removeCount > 0;
+        removeCount = (removeCount / 2) | 0
+      ) {
+        for (let offset = 0; offset < len; offset += removeCount) {
+          const candidate = current.slice(0, offset) + current.slice(offset + removeCount);
+          if (candidate.length >= minLength) {
+            yield { value: candidate, shrinks: shrinkString(candidate, minLength) };
+          }
+        }
+        if (removeCount === 1) break;
+      }
     }
-    // Simplify the first non-'a' character toward 'a'
-    for (let i = 0; i < current.length; i++) {
+    // Phase 2: simplify each non-'a' character toward 'a'
+    for (let i = 0; i < len; i++) {
       if (current[i] !== "a") {
         const simplified = current.slice(0, i) + "a" + current.slice(i + 1);
         yield { value: simplified, shrinks: shrinkString(simplified, minLength) };
-        break;
       }
     }
   });
@@ -458,40 +643,50 @@ function shrinkString(current: string, minLength: number): Iterable<Tree<string>
 
 /**
  * Generates arrays of values from `arb`. Shrinks by removing elements, then
- * shrinking individual elements.
+ * shrinking individual elements. `maxLength` defaults to `max(minLength, 10)`;
+ * throws `RangeError` on invalid lengths (non-negative safe integers,
+ * maxLength may be Infinity, minLength <= maxLength).
  */
 export function array<T>(
   arb: Arbitrary<T>,
   opts?: { minLength?: number; maxLength?: number },
 ): Arbitrary<T[]> {
-  /* node:coverage ignore next */
-  const minLen = opts?.minLength ?? 0;
-  const maxLen = opts?.maxLength ?? 10;
-  return function arrayArb(prng: PRNG, size: number): Tree<T[]> {
-    const sizedMax = Math.min(maxLen, Math.max(minLen, size));
-    const len = nextInt(prng, minLen, sizedMax);
-    const trees: Tree<T>[] = [];
-    for (let i = 0; i < len; i++) {
-      trees.push(arb(split(prng), size));
-    }
-    return {
-      value: trees.map((t) => t.value),
-      shrinks: shrinkArray(trees, minLen),
-    };
-  };
+  const [minLen, maxLen] = lengthBounds("array", opts?.minLength, opts?.maxLength);
+  return keyed(
+    function arrayArb(prng: PRNG, size: number): Tree<T[]> {
+      const sizedMax = Math.min(maxLen, Math.max(minLen, size));
+      const len = nextInt(prng, minLen, sizedMax);
+      const trees: Tree<T>[] = [];
+      for (let i = 0; i < len; i++) {
+        trees.push(arb(split(prng), size));
+      }
+      return {
+        value: trees.map((t) => t.value),
+        shrinks: shrinkArray(trees, minLen),
+      };
+    },
+    "array",
+    arb,
+    minLen,
+    maxLen,
+  );
 }
 
 /** Generates tuples from a fixed list of arbitraries. Shrinks element-wise. */
 export function tuple<T extends readonly unknown[]>(
   ...arbs: { [K in keyof T]: Arbitrary<T[K]> }
 ): Arbitrary<T> {
-  return function tupleArb(prng: PRNG, size: number): Tree<T> {
-    const trees = arbs.map((arb) => (arb as Arbitrary<unknown>)(split(prng), size));
-    return {
-      value: trees.map((t) => t.value) as unknown as T,
-      shrinks: shrinkTuple(trees) as Iterable<Tree<T>>,
-    };
-  };
+  return keyed(
+    function tupleArb(prng: PRNG, size: number): Tree<T> {
+      const trees = arbs.map((arb) => (arb as Arbitrary<unknown>)(split(prng), size));
+      return {
+        value: trees.map((t) => t.value) as unknown as T,
+        shrinks: shrinkTuple(trees) as Iterable<Tree<T>>,
+      };
+    },
+    "tuple",
+    arbs,
+  );
 }
 
 function shrinkTuple(trees: Tree<unknown>[]): Iterable<Tree<unknown[]>> {
@@ -513,14 +708,19 @@ export function record<T extends Record<string, unknown>>(shape: {
   [K in keyof T]: Arbitrary<T[K]>;
 }): Arbitrary<T> {
   const keys = Object.keys(shape) as (keyof T & string)[];
-  return function recordArb(prng: PRNG, size: number): Tree<T> {
-    const treePairs: [string, Tree<unknown>][] = [];
-    for (const key of keys) {
-      treePairs.push([key, (shape[key] as Arbitrary<unknown>)(split(prng), size)]);
-    }
-    const value = Object.fromEntries(treePairs.map(([k, t]) => [k, t.value])) as T;
-    return { value, shrinks: shrinkRecord(treePairs) as Iterable<Tree<T>> };
-  };
+  return keyed(
+    function recordArb(prng: PRNG, size: number): Tree<T> {
+      const treePairs: [string, Tree<unknown>][] = [];
+      for (const key of keys) {
+        treePairs.push([key, (shape[key] as Arbitrary<unknown>)(split(prng), size)]);
+      }
+      const value = Object.fromEntries(treePairs.map(([k, t]) => [k, t.value])) as T;
+      return { value, shrinks: shrinkRecord(treePairs) as Iterable<Tree<T>> };
+    },
+    "record",
+    keys,
+    keys.map((k) => shape[k]),
+  );
 }
 
 function shrinkRecord(pairs: [string, Tree<unknown>][]): Iterable<Tree<Record<string, unknown>>> {
@@ -544,15 +744,19 @@ function shrinkRecord(pairs: [string, Tree<unknown>][]): Iterable<Tree<Record<st
  * arbitrary's shrink tree, then tries earlier arbitraries.
  */
 export function oneOf<T>(...arbs: [Arbitrary<T>, ...Arbitrary<T>[]]): Arbitrary<T> {
-  return function oneOfArb(prng: PRNG, size: number): Tree<T> {
-    const idx = nextInt(prng, 0, arbs.length - 1);
-    const tree = arbs[idx]!(split(prng), size);
-    if (idx === 0) return tree;
-    return {
-      value: tree.value,
-      shrinks: alternativeShrinks(tree, arbs, idx, nextBigInt(prng), size),
-    };
-  };
+  return keyed(
+    function oneOfArb(prng: PRNG, size: number): Tree<T> {
+      const idx = nextInt(prng, 0, arbs.length - 1);
+      const tree = arbs[idx]!(split(prng), size);
+      if (idx === 0) return tree;
+      return {
+        value: tree.value,
+        shrinks: alternativeShrinks(tree, arbs, idx, nextBigInt(prng), size),
+      };
+    },
+    "oneOf",
+    arbs,
+  );
 }
 
 /**
@@ -592,14 +796,19 @@ export function bigint(
   const target = min <= 0n && max >= 0n ? 0n : min > 0n ? min : max;
   const down = target - min;
   const up = max - target;
-  return function bigintArb(prng: PRNG, size: number): Tree<bigint> {
-    const value = drawBigInt(
-      prng,
-      target - sizedWidthBig(down, size),
-      target + sizedWidthBig(up, size),
-    );
-    return { value, shrinks: shrinkBigInt(target, value) };
-  };
+  return keyed(
+    function bigintArb(prng: PRNG, size: number): Tree<bigint> {
+      const value = drawBigInt(
+        prng,
+        target - sizedWidthBig(down, size),
+        target + sizedWidthBig(up, size),
+      );
+      return { value, shrinks: shrinkBigInt(target, value) };
+    },
+    "bigint",
+    min,
+    max,
+  );
 }
 
 /**
@@ -619,16 +828,33 @@ export function date(
  * Shrinks by removing elements, then shrinking individual elements; every
  * shrink candidate stays unique. On key collisions the element generator is
  * retried at growing sizes (up to 100); throws if `minLength` unique elements
- * still cannot be produced.
+ * still cannot be produced. `maxLength` defaults to `max(minLength, 10)`;
+ * throws `RangeError` on invalid lengths (non-negative safe integers,
+ * maxLength may be Infinity, minLength <= maxLength).
  */
 export function uniqueArray<T>(
   arb: Arbitrary<T>,
   opts?: { minLength?: number; maxLength?: number; key?: Fn1<T, unknown> },
 ): Arbitrary<T[]> {
-  /* node:coverage ignore next 3 */
-  const minLen = opts?.minLength ?? 0;
-  const maxLen = opts?.maxLength ?? 10;
+  const [minLen, maxLen] = lengthBounds("uniqueArray", opts?.minLength, opts?.maxLength);
+  /* node:coverage ignore next */
   const keyFn = opts?.key ?? ((x: T) => x);
+  return keyed(
+    uniqueArrayOf(arb, minLen, maxLen, keyFn),
+    "uniqueArray",
+    arb,
+    minLen,
+    maxLen,
+    keyFn,
+  );
+}
+
+function uniqueArrayOf<T>(
+  arb: Arbitrary<T>,
+  minLen: number,
+  maxLen: number,
+  keyFn: Fn1<T, unknown>,
+): Arbitrary<T[]> {
   return function uniqueArrayArb(prng: PRNG, size: number): Tree<T[]> {
     const sizedMax = Math.min(maxLen, Math.max(minLen, size));
     const targetLen = nextInt(prng, minLen, sizedMax);
@@ -664,18 +890,23 @@ export function uniqueArray<T>(
 
 /**
  * Generates objects with arbitrary string keys and values from `valueArb`.
- * Shrinks by removing entries, then shrinking values.
+ * Shrinks by removing entries, then shrinking values. Sizes are validated
+ * like `uniqueArray` lengths (`maxSize` defaults to `max(minSize, 10)`, may be
+ * Infinity); invalid sizes throw `RangeError`.
  */
 export function dictionary<V>(
   keyArb: Arbitrary<string>,
   valueArb: Arbitrary<V>,
   opts?: { minSize?: number; maxSize?: number },
 ): Arbitrary<Record<string, V>> {
+  const [minSize, maxSize] = lengthBounds("dictionary", opts?.minSize, opts?.maxSize, [
+    "minSize",
+    "maxSize",
+  ]);
   const pairArb = tuple<[string, V]>(keyArb, valueArb);
   const arrArb = uniqueArray(pairArb, {
-    /* node:coverage ignore next 2 */
-    minLength: opts?.minSize ?? 0,
-    maxLength: opts?.maxSize ?? 10,
+    minLength: minSize,
+    maxLength: maxSize,
     key: ([k]) => k,
   });
   return map(arrArb, (pairs) => Object.fromEntries(pairs) as Record<string, V>);
@@ -707,6 +938,21 @@ export function frequency<T>(
   const ranked = order.map((i) => entries[i]!.arb);
   const rank = new Map(order.map((entryIdx, r) => [entryIdx, r]));
   const lastPositive = order.reduce((a, b) => (a > b ? a : b));
+  return keyed(
+    frequencyOf(entries, totalWeight, lastPositive, ranked, rank),
+    "frequency",
+    entries.map((e) => e.weight),
+    entries.map((e) => e.arb),
+  );
+}
+
+function frequencyOf<T>(
+  entries: readonly { weight: number; arb: Arbitrary<T> }[],
+  totalWeight: number,
+  lastPositive: number,
+  ranked: Arbitrary<T>[],
+  rank: Map<number, number>,
+): Arbitrary<T> {
   return function frequencyArb(prng: PRNG, size: number): Tree<T> {
     const r = next(prng) * totalWeight;
     let cumulative = 0;
@@ -734,6 +980,10 @@ export function frequency<T>(
  * subsequence.
  */
 export function subarray<T>(items: readonly T[]): Arbitrary<T[]> {
+  return keyed(subarrayOf(items), "subarray", items);
+}
+
+function subarrayOf<T>(items: readonly T[]): Arbitrary<T[]> {
   return function subarrayArb(prng: PRNG, size: number): Tree<T[]> {
     const maxLen = Math.min(items.length, size);
     const len = nextInt(prng, 0, maxLen);
@@ -804,25 +1054,36 @@ export function letrec<Shape extends Record<string, Arbitrary<unknown>>>(
     }
   };
   const ref = (name: string): Arbitrary<unknown> => {
-    return function lazyArb(prng: PRNG, size: number): Tree<unknown> {
-      const resolved = cache.get(name);
-      /* node:coverage ignore next 2 */
-      if (!resolved) throw new Error(`letrec: unresolved reference "${name}"`);
-      // Entered outside a generation (e.g. re-derived during shrinking):
-      // start a fresh, bounded budget.
-      if (!active) return withBudget(lazyArb, prng, size);
-      if (remaining <= 0) return resolved(prng, 0);
-      remaining--;
-      return resolved(prng, Math.max(0, size - 1));
-    };
+    // Keyed by name only: comparing the resolved arbitrary would recurse
+    // through the cycle forever.
+    return keyed(
+      function lazyArb(prng: PRNG, size: number): Tree<unknown> {
+        const resolved = cache.get(name);
+        /* node:coverage ignore next 2 */
+        if (!resolved) throw new Error(`letrec: unresolved reference "${name}"`);
+        // Entered outside a generation (e.g. re-derived during shrinking):
+        // start a fresh, bounded budget.
+        if (!active) return withBudget(lazyArb, prng, size);
+        if (remaining <= 0) return resolved(prng, 0);
+        remaining--;
+        return resolved(prng, Math.max(0, size - 1));
+      },
+      "letrecRef",
+      name,
+    );
   };
   const shape = tie(ref);
   const out: Record<string, Arbitrary<unknown>> = {};
   for (const [name, arb] of Object.entries(shape)) {
     cache.set(name, arb);
-    out[name] = function letrecArb(prng: PRNG, size: number): Tree<unknown> {
-      return withBudget(arb, prng, size);
-    };
+    out[name] = keyed(
+      function letrecArb(prng: PRNG, size: number): Tree<unknown> {
+        return withBudget(arb, prng, size);
+      },
+      "letrec",
+      name,
+      arb,
+    );
   }
   return out as Shape;
 }
@@ -847,8 +1108,16 @@ interface Pick {
  * generated value. Shrinking works by shrinking the individual picks.
  *
  * Replay: when a shrunk pick changes control flow, a recorded pick is reused
- * only if it was drawn from the same arbitrary (same reference, or same
- * function name and source — so two `map(...)` arbs are indistinguishable).
+ * only if it was drawn from an equivalent arbitrary. Built-in arbitraries
+ * compare by factory and parameters, so `integer(0, 10)` never feeds a pick
+ * to `integer(100, 200)`: bounds, lengths and `constant`/`constantFrom`
+ * values structurally (primitives by `Object.is`, arrays and plain objects
+ * recursively with key order, other objects by reference; bounded size and
+ * depth), inner arbitraries recursively, and callbacks
+ * (`map`, `filter`, `chain`, `uniqueArray` keys) by reference or by name
+ * and source — so arbitraries rebuilt inline in `fn` still match, but two
+ * callbacks with the same source and different captured variables do too.
+ * Custom arbitraries compare by reference, or by function name and source.
  * From the first mismatch on, picks are drawn fresh at size 0.
  *
  * @example
@@ -860,20 +1129,20 @@ interface Pick {
  * ```
  */
 export function gen<T>(fn: (pick: GenPick) => T): Arbitrary<T> {
-  return function genArb(prng: PRNG, size: number): Tree<T> {
-    const picks: Pick[] = [];
-    const pick: GenPick = <U>(arb: Arbitrary<U>): U => {
-      const tree = arb(split(prng), size);
-      picks.push({ arb: arb as Arbitrary<unknown>, tree: tree as Tree<unknown> });
-      return tree.value;
-    };
-    const value = fn(pick);
-    return { value, shrinks: shrinkGen(fn, picks) };
-  };
-}
-
-function sameArb(a: Arbitrary<unknown>, b: Arbitrary<unknown>): boolean {
-  return a === b || (a.name === b.name && a.toString() === b.toString());
+  return keyed(
+    function genArb(prng: PRNG, size: number): Tree<T> {
+      const picks: Pick[] = [];
+      const pick: GenPick = <U>(arb: Arbitrary<U>): U => {
+        const tree = arb(split(prng), size);
+        picks.push({ arb: arb as Arbitrary<unknown>, tree: tree as Tree<unknown> });
+        return tree.value;
+      };
+      const value = fn(pick);
+      return { value, shrinks: shrinkGen(fn, picks) };
+    },
+    "gen",
+    fn,
+  );
 }
 
 function shrinkGen<T>(fn: (pick: GenPick) => T, picks: Pick[]): Iterable<Tree<T>> {

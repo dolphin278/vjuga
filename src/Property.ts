@@ -88,24 +88,43 @@ export interface CheckResult<T> {
 // Internal: stringify for counterexample formatting
 // ---------------------------------------------------------------------------
 
-function stringify(value: unknown, depth = 4, seen = new Set<unknown>()): string {
+/** Per-container state while formatting: true = on the current path, false = already printed. */
+type Seen = Map<unknown, boolean>;
+
+function stringify(value: unknown, depth = 4, seen: Seen = new Map()): string {
   if (value === null) return "null";
   if (value === undefined) return "undefined";
 
   const t = typeof value;
   if (t === "string") return JSON.stringify(value);
-  if (t === "number" || t === "boolean" || t === "bigint") return String(value);
-  if (t === "symbol") return String(value);
+  if (t === "number") return Object.is(value, -0) ? "-0" : String(value);
+  if (t === "bigint") return `${value as bigint}n`;
+  if (t === "boolean" || t === "symbol") return String(value);
   if (t === "function") return "[Function]";
 
   if (depth <= 0) return "[...]";
 
-  if (seen.has(value)) return "[Circular]";
-  seen.add(value);
-
-  if (value instanceof Date) return `Date(${value.toISOString()})`;
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? "Date(Invalid)" : `Date(${value.toISOString()})`;
+  }
   if (value instanceof RegExp) return String(value);
   if (value instanceof Error) return `${value.constructor.name}: ${value.message}`;
+
+  // A container on the current path is a cycle; one printed earlier is a
+  // shared (acyclic) reference — printed in full once, then as [Ref], which
+  // keeps DAG-shaped counterexamples from expanding exponentially.
+  const state = seen.get(value);
+  if (state === true) return "[Circular]";
+  if (state === false) return "[Ref]";
+  seen.set(value, true);
+  try {
+    return stringifyContainer(value as object, depth, seen);
+  } finally {
+    seen.set(value, false);
+  }
+}
+
+function stringifyContainer(value: object, depth: number, seen: Seen): string {
   if (value instanceof Map) {
     const entries = [...value.entries()]
       .slice(0, 10)
@@ -178,14 +197,35 @@ function decodePath(path: string): ParsedPath {
 /** Sentinel returned by `evalSync` when the predicate holds. */
 const PASSED: unique symbol = Symbol("passed");
 
-/** Runs the predicate; returns PASSED, or the thrown error (undefined for `false`). */
+/**
+ * Runs the predicate; returns PASSED, or the thrown error (undefined for
+ * `false`). A Promise result fails with a TypeError instead of passing: the
+ * sync runner cannot await it, and treating it as truthy would report a
+ * failing async property as `ok`.
+ */
 function evalSync<T>(predicate: Fn1<T, boolean | void>, value: T): unknown {
   try {
-    return predicate(value) === false ? undefined : PASSED;
+    const result: unknown = predicate(value);
+    if (result === false) return undefined;
+    // true/undefined first: the common outcomes skip the thenable probe.
+    if (result === true || result === undefined || !isThenable(result)) return PASSED;
+    // Handle the rejection so it does not also surface as an unhandled error.
+    result.then(undefined, ignoreRejection);
+    return new TypeError("Property: predicate returned a Promise; use checkAsync/assertAsync");
   } catch (e) {
     return e;
   }
 }
+
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return (
+    (typeof value === "object" || typeof value === "function") &&
+    value !== null &&
+    typeof (value as { then?: unknown }).then === "function"
+  );
+}
+
+function ignoreRejection(): void {}
 
 /* node:coverage disable */
 async function evalAsync<T>(
@@ -407,6 +447,8 @@ function failure<T>(
 
 /**
  * Runs a property check synchronously. Returns a detailed result object.
+ * A predicate that returns a Promise fails with a `TypeError` (use
+ * `checkAsync`); it is never counted as passing.
  *
  * With `config.path` set, regenerates exactly that counterexample (same
  * `seed` required), evaluates the predicate once and reports `ok: true` if it
@@ -527,6 +569,8 @@ function throwFailure<T>(result: CheckResult<T>): never {
   if (result.error !== undefined && result.error !== null) {
     const errMsg = result.error instanceof Error ? result.error.message : String(result.error);
     lines.push(`  Error: ${errMsg}`);
+    // Keep the predicate's own stack reachable from the assertion error.
+    throw new Error(lines.join("\n"), { cause: result.error });
   }
   throw new Error(lines.join("\n"));
 }

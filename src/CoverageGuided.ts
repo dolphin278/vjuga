@@ -17,10 +17,13 @@
  * mutator. Corpus seed values (plain values, no shrink tree) are run first and
  * kept as-is. Coverage keys are `function × which nested blocks ran`, so a
  * newly taken branch inside an already-covered function counts as new.
+ * Coverage of the harness (Arbitrary, PRNG, CoverageGuided) and of runtime
+ * internals is ignored.
  *
  * Design tradeoffs: uses `node:inspector` (Session API) for V8 precise
- * coverage; on runtimes without it (Bun) `fuzzAsync` degrades to random
- * fuzzing. Coverage collection costs ~5–10× per execution.
+ * coverage; on runtimes without it (Bun), and under a coverage tool
+ * (`NODE_V8_COVERAGE` set — precise coverage is process-wide), `fuzzAsync`
+ * degrades to random fuzzing. Coverage collection costs ~5–10× per execution.
  *
  * Prior art: jazzer.js, go-fuzz, AFL.
  *
@@ -106,16 +109,50 @@ interface CoverageRange {
   count: number;
 }
 
+interface ScriptCoverage {
+  scriptId: string;
+  url: string;
+  functions: { ranges: CoverageRange[] }[];
+}
+
+/** Directory of this module; the harness modules below live next to it. */
+const HARNESS_DIR = new URL(".", import.meta.url).href;
+
+/**
+ * Harness modules that run between two coverage snapshots (generation,
+ * mutation, PRNG draws). Their branches say nothing about the target, so
+ * counting them would admit inputs to the corpus that taught nothing.
+ */
+const HARNESS_FILES = new Set([
+  "Arbitrary.js",
+  "Arbitrary.ts",
+  "PRNG.js",
+  "PRNG.ts",
+  "CoverageGuided.js",
+  "CoverageGuided.ts",
+]);
+
+/** False for harness modules and runtime internals (`node:` or empty URLs). */
+function isTracked(url: string): boolean {
+  if (url === "" || url.startsWith("node:")) return false;
+  return !(url.startsWith(HARNESS_DIR) && HARNESS_FILES.has(url.slice(HARNESS_DIR.length)));
+}
+
 /**
  * Coverage keys for one execution. V8 block coverage reports a function's own
  * range first, then nested blocks whose count differs from their parent — so a
- * function's key includes the on/off pattern of its nested blocks.
+ * function's key includes the on/off pattern of its nested blocks. Scripts
+ * rejected by `isTracked` are skipped; the verdict is cached per scriptId.
  */
-function coverageKeys(
-  scripts: { scriptId: string; functions: { ranges: CoverageRange[] }[] }[],
-): CoverageSet {
+function coverageKeys(scripts: ScriptCoverage[], tracked: Map<string, boolean>): CoverageSet {
   const keys: CoverageSet = new Set();
   for (const script of scripts) {
+    let track = tracked.get(script.scriptId);
+    if (track === undefined) {
+      track = isTracked(script.url);
+      tracked.set(script.scriptId, track);
+    }
+    if (!track) continue;
     for (const fn of script.functions) {
       const ranges = fn.ranges;
       if (ranges.length === 0 || ranges[0]!.count === 0) continue;
@@ -127,6 +164,19 @@ function coverageKeys(
     }
   }
   return keys;
+}
+
+/**
+ * True when a coverage tool collects V8 coverage in this process:
+ * `NODE_V8_COVERAGE` is set by c8, by `node --test --experimental-test-coverage`
+ * (for its test processes) and by users directly. Precise coverage is
+ * process-wide, and `takePreciseCoverage` resets the shared counters, so
+ * coverage-guided fuzzing would erase the tool's data. Read per call so a
+ * caller can toggle it.
+ */
+function coverageToolActive(): boolean {
+  const env = globalThis.process?.env;
+  return env !== undefined && env.NODE_V8_COVERAGE !== undefined && env.NODE_V8_COVERAGE !== "";
 }
 
 /** Attempts to create a V8 inspector session for precise coverage. */
@@ -142,6 +192,7 @@ async function tryCreateInspector(): Promise<{
     session.connect();
 
     let connected = true;
+    const tracked = new Map<string, boolean>();
 
     return {
       start: async () => {
@@ -154,9 +205,9 @@ async function tryCreateInspector(): Promise<{
       take: async () => {
         // takePreciseCoverage also resets counters, so each call sees one execution.
         const result = (await session.post("Profiler.takePreciseCoverage")) as {
-          result: { scriptId: string; functions: { ranges: CoverageRange[] }[] }[];
+          result: ScriptCoverage[];
         };
-        return coverageKeys(result.result);
+        return coverageKeys(result.result, tracked);
       },
       stop: async () => {
         if (!connected) return;
@@ -345,8 +396,12 @@ export function fuzz<T>(
 /**
  * Async fuzzing with V8 coverage feedback. Runs `config.corpus` values first,
  * then alternates fresh inputs with mutations (shrink-tree walks) of corpus
- * entries that reached new coverage. Without an inspector it behaves like
- * `fuzz` (random fuzzing).
+ * entries that reached new coverage. Coverage of vjuga's own generator,
+ * PRNG and fuzzer modules and of runtime internals is ignored. Without an
+ * inspector (Bun), or while a coverage tool is collecting in this process
+ * (`NODE_V8_COVERAGE` set: c8, `node --test --experimental-test-coverage`),
+ * it behaves like `fuzz` (random fuzzing) — sharing V8's precise coverage
+ * would erase that tool's data.
  */
 export async function fuzzAsync<T>(
   arb: Arbitrary<T>,
@@ -358,7 +413,7 @@ export async function fuzzAsync<T>(
   const start = Date.now();
   let numRuns = 0;
 
-  const inspector = await tryCreateInspector();
+  const inspector = coverageToolActive() ? null : await tryCreateInspector();
   const seen: CoverageSet = new Set();
   const corpus: Tree<T>[] = [];
   if (inspector) {

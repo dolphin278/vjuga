@@ -144,7 +144,15 @@ function validUri(r: Rng): string {
         ? "[" + v6(r) + "]"
         : int(r, 5) === 0
           ? v4(r)
-          : run(r, UNRESERVED + SUB_DELIMS, 8);
+          : int(r, 6) === 0
+            ? // IPvFuture: "v" is case-insensitive in the ABNF
+              "[" +
+              pickOf(r, ["v", "V"]) +
+              chars(r, "0123456789abcdefABCDEF", 1, 3) +
+              "." +
+              chars(r, UNRESERVED + SUB_DELIMS + ":", 1, 6) +
+              "]"
+            : run(r, UNRESERVED + SUB_DELIMS, 8);
     const port = int(r, 3) === 0 ? ":" + chars(r, "0123456789", 0, 5) : "";
     rest = "//" + user + host + port + repeat(r, 0, 3, () => "/" + run(r, PCHAR, 5));
   } else {
@@ -202,6 +210,24 @@ test("a forbidden character anywhere fails email and uri (outside quoted email t
       const at = e.lastIndexOf("@");
       const bad = e.slice(0, at + 1) + corrupt(r, e.slice(at + 1));
       assert.equal(isEmail(bad), false, bad);
+      return true;
+    },
+    { numRuns: NUM_RUNS },
+  );
+});
+
+test("isEmail: the local part is capped at 64 octets (quotes included)", () => {
+  Prop.assert(
+    seeds,
+    (seed) => {
+      const r = rng(seed);
+      const quoted = int(r, 2) === 0;
+      const n = 1 + int(r, 90);
+      const local = quoted
+        ? '"' + chars(r, ALNUM + " .@", n, n) + '"'
+        : chars(r, ALNUM, 1, 1) + repeat(r, n - 1, n - 1, () => pickOf(r, ["a", "Z", "9", "!"]));
+      const s = local + "@" + domain(r);
+      assert.equal(isEmail(s), local.length <= 64, s);
       return true;
     },
     { numRuns: NUM_RUNS },

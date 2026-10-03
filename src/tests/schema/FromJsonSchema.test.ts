@@ -248,7 +248,16 @@ test("type arrays → nullable / union", () => {
   assert.match(lowerErr({ type: [] }), /type must not be an empty array/);
   assert.match(lowerErr({ type: "weird" }), /unsupported type "weird"/);
   assert.match(lowerErr({ type: [1] }), /unsupported type 1/);
-  verdicts({ type: ["null", "null"] }, [null], [1]);
+  // 2020-12: type array entries MUST be unique
+  assert.match(lowerErr({ type: ["null", "null"] }), /type must not repeat "null"/);
+  assert.match(lowerErr({ type: ["string", "number", "string"] }), /type must not repeat "string"/);
+  // JS-built values that JSON.stringify cannot serialize are described by kind
+  assert.match(lowerErr({ type: [1n] }), /unsupported type bigint/);
+  const cyc: unknown[] = [];
+  cyc.push(cyc);
+  assert.match(lowerErr({ type: cyc }), /unsupported type array/);
+  assert.match(lowerErr({ type: [{}] }), /unsupported type object/);
+  assert.match(lowerErr({ type: [null] }), /unsupported type null/);
 });
 
 test("untyped keyword groups only constrain their own type", () => {
@@ -411,6 +420,42 @@ test("malformed scalar keyword values are Err", () => {
   assert.match(lowerErr({ type: "string", pattern: "\\p{L}" }), /pattern needs unicode mode/);
   assert.match(lowerErr({ type: "string", pattern: "\\u{1F600}" }), /pattern needs unicode mode/);
   assert.match(lowerErr({ type: "string", pattern: "😀" }), /pattern needs unicode mode/);
+  // Escaped surrogates: one code point in unicode mode, two units without it
+  for (const pattern of [
+    "^[\\uD83D\\uDE00]$",
+    "^\\uD83D\\uDE00+$",
+    "\\uD83D", // lone: in unicode mode it never matches half a pair
+    "[\\uD800-\\uDFFF]",
+    "\\udbff",
+    "\\\\\\p{L}", // escaped backslash, then a real \p{L}
+    "\\\ud83d", // `\` + raw surrogate
+    "a\ude00",
+  ]) {
+    assert.match(lowerErr({ type: "string", pattern }), /pattern needs unicode mode/, pattern);
+  }
+  // An escaped backslash never starts an escape: `\\p{2}` is `\` then `p{2}`
+  verdicts({ type: "string", pattern: "^\\\\p{2}$" }, ["\\pp"], ["\\p", "pp"]);
+  verdicts({ type: "string", pattern: "^\\\\u{2}$" }, ["\\uu"], ["u"]);
+  verdicts({ type: "string", pattern: "^\\\\uD83D$" }, ["\\uD83D"], []);
+  // Non-surrogate \u escapes are fine; a brace-less \p or a trailing \ is invalid
+  verdicts({ type: "string", pattern: "^\\u00e9\\uE000\\u0D80$" }, ["\u00e9\uE000\u0D80"], ["e"]);
+  verdicts({ type: "string", pattern: "^\\uD7FF$" }, ["\uD7FF"], ["x"]);
+  assert.match(lowerErr({ type: "string", pattern: "\\p" }), /invalid pattern/);
+  assert.match(lowerErr({ type: "string", pattern: "a\\" }), /invalid pattern/);
+  // Lengths and item counts are non-negative integers
+  for (const [kw, type] of [
+    ["minLength", "string"],
+    ["maxLength", "string"],
+    ["minItems", "array"],
+    ["maxItems", "array"],
+  ] as const) {
+    for (const v of [-1, 1.5, -0.5, Infinity]) {
+      assert.match(lowerErr({ type, [kw]: v }), new RegExp(kw + " must be a non-negative integer"));
+    }
+    assert.equal(lower({ type, [kw]: 0 }).kind, type);
+    assert.equal(lower({ [kw]: 2 }).kind, "conditional"); // untyped group, same check
+  }
+  assert.match(lowerErr({ minLength: -1 }), /minLength must be a non-negative integer/);
   assert.match(lowerErr({ type: "string", format: 1 }), /format must be a string/);
   assert.match(lowerErr({ type: "number", minimum: "1" }), /minimum must be a number/);
   assert.match(lowerErr({ minimum: "1" }), /minimum must be a number/);
@@ -447,6 +492,64 @@ test("$ref fan-out beyond the expansion budget is Err", () => {
   const prefixItems = Array.from({ length: 2000 }, () => ({ type: "string" }));
   assert.match(lowerErr({ prefixItems, items: false }), /expands to more than/);
   lower({ prefixItems: prefixItems.slice(0, 50), items: false });
+});
+
+test("prefixItems without a fixed length is refused before its tuples are built", () => {
+  const items = (n: number): unknown[] => Array.from({ length: n }, () => ({}));
+  const tooBig = /prefixItems without a fixed length expands to more than 50000 nodes/;
+  // Exactly at the cap: 1 union + 315 tuples + Σ k items (k = 0..314) = 49771
+  const atCap = lower({ type: "array", prefixItems: items(314), items: false });
+  assert.equal(atCap.kind, "union");
+  assert.match(lowerErr({ type: "array", prefixItems: items(315), items: false }), tooBig);
+  // minItems / maxItems narrow the length range, and so the count
+  lower({ type: "array", prefixItems: items(2000), items: false, minItems: 1990 });
+  lower({ type: "array", prefixItems: items(2000), items: false, maxItems: 300 });
+  // a pinned length is one tuple, any size
+  lower({ type: "array", prefixItems: items(20_000), items: false, minItems: 20_000 });
+  // the budget is shared by every site: many sub-cap sites cannot each build ~50k
+  const two = { type: "array", prefixItems: items(250), items: false }; // 31,627 each
+  lower({ type: "object", properties: { a: two } });
+  assert.match(lowerErr({ type: "object", properties: { a: two, b: two } }), tooBig);
+  // a $ref target is lowered (and counted) once, however often it is used
+  // (two uses then exceed the expansion cap, reported as $ref fan-out)
+  const ref = { $ref: "#/$defs/t" };
+  lower({ $defs: { t: two }, type: "array", items: ref });
+  const twice = { $defs: { t: two }, type: "object", properties: { a: ref, b: ref } };
+  assert.match(lowerErr(twice), /\$ref fan-out/);
+  // sites whose result is thrown away do not count (but are still checked)
+  const keptOne = { type: "array", prefixItems: [two, two], items: false, maxItems: 1 };
+  assert.equal(lower({ ...keptOne, minItems: 1 }).kind, "tuple");
+  assert.equal(lower(keptOne).kind, "union");
+  const none = { type: "array", prefixItems: [two, two], items: false, maxItems: 0 };
+  assert.equal(lower({ type: "object", properties: { a: two, b: none } }).kind, "object");
+  const empty = { ...none, minItems: 1 }; // lo > hi: nothing is kept
+  assert.equal(lower({ type: "object", properties: { a: two, b: empty } }).kind, "object");
+  const unmet = { type: "object", properties: { x: two, y: two }, required: ["z"] };
+  assert.equal(lower({ ...unmet, additionalProperties: false }).kind, "not");
+  assert.match(lowerErr({ ...unmet, additionalProperties: true }), tooBig);
+  assert.match(
+    lowerErr({ ...none, prefixItems: [{ type: "string", minLength: -1 }] }),
+    /minLength must be a non-negative integer \(at #\/prefixItems\/0\)/,
+  );
+  // a $ref target first met in a discarded item is not memoized as a placeholder
+  const shared = {
+    $defs: { t: { type: "array", prefixItems: [{}, {}], items: false } },
+    type: "object",
+    properties: {
+      a: { type: "array", prefixItems: [{ $ref: "#/$defs/t" }], items: false, maxItems: 0 },
+      b: { $ref: "#/$defs/t" },
+    },
+    required: ["b"],
+  };
+  verdicts(
+    shared,
+    [{ b: [] }, { b: [1] }, { b: [1, 2] }, { a: [], b: [] }],
+    [{ b: [1, 2, 3] }, {}],
+  );
+  // 60 KB of JSON fails fast (it used to build ~2·10^8 nodes first)
+  const t = performance.now();
+  assert.match(lowerErr({ type: "array", prefixItems: items(20_000), items: false }), tooBig);
+  assert.ok(performance.now() - t < 2000);
 });
 
 test("lowered schema depth is capped where every code generator still works", () => {

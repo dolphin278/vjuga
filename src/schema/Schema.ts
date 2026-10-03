@@ -67,7 +67,8 @@ export interface StringConstraints {
   readonly pattern?: string;
   /**
    * Enforced format (see `schema/Formats`): RFC 3339 `date-time` / `date` /
-   * `time`, `email`, `uri`, `uuid`, `ipv4`, `ipv6`, and the legacy loose
+   * `time`, `email`, `uri`, `uuid` (any version and variant nibble — looser
+   * than `UUID.uuid`), `ipv4`, `ipv6`, and the legacy loose
    * `iso-datetime` prefix check. `fromJsonSchema` may also store other names
    * here; those are annotation-only.
    */
@@ -182,6 +183,15 @@ export type Schema =
  *
  * Required-by-default: all object properties are required unless wrapped in
  * `optional()`. OptionalSchema keys become `?:` in the inferred object type.
+ *
+ * Limitation: only a property that IS an `optional(T)` becomes `?:`. Other
+ * schemas that accept `undefined` — and so let the key be absent at runtime
+ * (`propertyMayBeAbsent`) — still infer a required key whose value type
+ * includes `undefined`: `nullable(optional(T))`, `union(optional(T), U)`, and
+ * `allOf` / `conditional` accepting `undefined` (e.g. `allOf(optional(T))`).
+ * `validate` accepts `{}` for `object({ a: nullable(optional(T)) })`, but the
+ * inferred type requires `a`. Wrap the outermost layer instead
+ * (`optional(nullable(T))`) when the key itself is optional.
  *
  * Pitfall: `Infer<Schema>` (the base union type) causes "excessively deep"
  * errors. Always infer from a specific schema constant.
@@ -464,25 +474,80 @@ export interface JsonSchemaObject {
  * Converts a Schema to a JSON Schema (2020-12) object.
  *
  * OptionalSchema is expressed via the parent object's `required` array — the
- * inner schema is emitted directly.
+ * inner schema is emitted directly; any property that accepts `undefined`
+ * (`propertyMayBeAbsent`) is left out of `required`. A non-leaf node shared by
+ * several parents is converted once and its output object is shared by those
+ * parents (leaves are rebuilt per use). Throws
+ * `TypeError` on a cyclic schema (recursive schemas are not supported).
  */
 export function toJsonSchema(root: Schema): JsonSchemaObject {
-  // Two-phase iterative traversal avoids recursion.
-  // Phase 1: collect all schema nodes in pre-order (DFS).
-  const nodes: Schema[] = [];
+  // Iterative memoized post-order walk: no recursion, and each distinct node
+  // is built once, so a DAG of shared subschemas stays linear. Expanding a
+  // node leaves it on the stack under a FRAME_END marker with its children
+  // above; popping the marker means every child is built. Siblings finish
+  // before anything below them pops, so without a cycle no node is expanded
+  // twice and the open frames are distinct nodes. Cycles are therefore found
+  // lazily (`openFrames` past a doubling threshold triggers an exact
+  // duplicate scan) instead of with an "in progress" Map write per node,
+  // which measured ~10-15% slower on plain trees in node and bun.
+  const built = new Map<Schema, JsonSchemaObject>();
   const stack: Schema[] = [root];
+  let openFrames = 0;
+  let checkAt = CYCLE_CHECK_DEPTH;
   while (stack.length > 0) {
     const s = stack.pop()!;
-    nodes.push(s);
+    if (s === FRAME_END) {
+      const done = stack.pop()!;
+      openFrames--;
+      built.set(done, buildJsonSchemaNode(done, built));
+      continue;
+    }
+    if (isLeafKind(s.kind)) {
+      // Rebuilding a shared leaf is O(1) and cheaper than a memo lookup
+      built.set(s, buildJsonSchemaNode(s, built));
+      continue;
+    }
+    if (built.has(s)) continue; // shared node, already built
+    stack.push(s, FRAME_END);
     collectSchemaChildren(s, stack);
-  }
-  // Phase 2: build JSON Schema objects bottom-up. Processing in reverse
-  // guarantees all children are built before their parent.
-  const built = new Map<Schema, JsonSchemaObject>();
-  for (let i = nodes.length - 1; i >= 0; i--) {
-    built.set(nodes[i], buildJsonSchemaNode(nodes[i], built));
+    if (++openFrames >= checkAt) {
+      throwOnRepeatedFrame(stack);
+      checkAt *= 2; // amortized: each scan is paid for by the frames it covers
+    }
   }
   return built.get(root)!;
+}
+
+/** Open `toJsonSchema` frames that trigger a cycle scan (doubled after each). */
+const CYCLE_CHECK_DEPTH = 1024;
+
+/** Throws if a node is open twice in the `toJsonSchema` stack — a cycle. */
+function throwOnRepeatedFrame(stack: readonly Schema[]): void {
+  const open = new Set<Schema>();
+  for (let i = 1; i < stack.length; i++) {
+    if (stack[i] !== FRAME_END) continue;
+    if (open.has(stack[i - 1])) throw new TypeError("toJsonSchema: cyclic schema");
+    open.add(stack[i - 1]);
+  }
+}
+/** `toJsonSchema` stack marker, with the `{ kind, meta }` shape of every node. */
+const FRAME_END: Schema = { kind: "unknown", meta: undefined };
+
+/** True for kinds without child schemas. */
+function isLeafKind(kind: Schema["kind"]): boolean {
+  switch (kind) {
+    case "string":
+    case "number":
+    case "integer":
+    case "boolean":
+    case "null":
+    case "literal":
+    case "enum":
+    case "unknown":
+      return true;
+    default:
+      return false;
+  }
 }
 
 /** Push child schemas onto the stack in reverse order (left-to-right processing). */
@@ -674,10 +739,15 @@ export interface FromJsonSchemaOptions {
  * (`patternProperties`, `propertyNames`, `contains`, `uniqueItems: true`,
  * `min/maxProperties`, `dependent*`, `unevaluated*`, `$dynamicRef`,
  * `prefixItems` unless `items: false`, `additionalProperties` as a schema
- * beside `properties`, object/array `const`/`enum`), malformed keyword values,
- * invalid `pattern` regexes, and results too big to compile safely (over
- * 50,000 nodes once every `$ref` use is expanded, or nested deeper than 256). Unknown `format` names are annotation-only
- * unless `options.formats` is `"strict"`, which returns `Err` for them.
+ * beside `properties`, object/array `const`/`enum`), malformed keyword values
+ * (lengths and item counts must be non-negative integers, `type` entries
+ * unique), invalid `pattern` regexes, and results too big to compile safely
+ * (over 50,000 nodes once every `$ref` use is expanded, or nested deeper than
+ * 256). `prefixItems` + `items: false` lowers to one tuple per allowed length,
+ * so without `minItems` = `maxItems` it is capped near 315 items (the cap is
+ * shared by every such site kept in the result, checked before building). Unknown
+ * `format` names are annotation-only unless `options.formats` is `"strict"`,
+ * which returns `Err` for them.
  *
  * Divergences from JSON Schema kept for speed: string lengths count UTF-16
  * code units, `integer` means a safe integer, `pattern` compiles without the
@@ -702,6 +772,8 @@ export function fromJsonSchema(
     registry: new Map(),
     rawRefs: options?.refs,
     strictFormats: options?.formats === "strict",
+    tupleNodes: 0,
+    discarding: 0,
     memo: new Map(),
     active: new Set(),
     path: [],
@@ -807,6 +879,14 @@ interface LowerCtx {
   readonly path: string[];
   /** `formats: "strict"` — unknown `format` names fail instead of annotating. */
   readonly strictFormats: boolean;
+  /** Nodes built so far by prefixItems length expansion, across all sites. */
+  tupleNodes: number;
+  /**
+   * > 0 while lowering a subschema whose result is thrown away (lowered only
+   * to report its errors): prefixItems sites skip expansion and budget, and
+   * `$ref` targets are not memoized with such a placeholder result.
+   */
+  discarding: number;
 }
 
 /** Internal failure carrier; converted to `Err` by `fromJsonSchema`. */
@@ -1025,6 +1105,16 @@ function lower(ctx: LowerCtx, js: unknown, base: string, viaRef: boolean): Schem
   }
 }
 
+/** `child()` for a subschema whose result is thrown away (see `LowerCtx.discarding`). */
+function discarded(ctx: LowerCtx, js: unknown, base: string, ...keys: string[]): Schema {
+  ctx.discarding++;
+  try {
+    return child(ctx, js, base, ...keys);
+  } finally {
+    ctx.discarding--;
+  }
+}
+
 /** Lower `js[key]` with `key` pushed onto the error path. */
 function child(ctx: LowerCtx, js: unknown, base: string, ...keys: string[]): Schema {
   for (let i = 0; i < keys.length; i++)
@@ -1048,7 +1138,7 @@ function lowerRef(ctx: LowerCtx, ref: unknown, base: string): Schema {
   ctx.path.push("$ref");
   try {
     const s = lower(ctx, node, target.base, true);
-    ctx.memo.set(node, s);
+    if (ctx.discarding === 0) ctx.memo.set(node, s);
     return s;
   } finally {
     ctx.path.pop();
@@ -1146,9 +1236,12 @@ function readTypes(ctx: LowerCtx, js: Record<string, unknown>): string[] | null 
   const list = Array.isArray(t) ? t : [t];
   if (list.length === 0) fail(ctx, "type must not be an empty array");
   for (let i = 0; i < list.length; i++) {
-    if (typeof list[i] !== "string" || !TYPE_NAMES.includes(list[i] as string)) {
-      fail(ctx, "unsupported type " + JSON.stringify(list[i]));
+    const v: unknown = list[i];
+    if (typeof v !== "string" || !TYPE_NAMES.includes(v)) {
+      // JS-built input may hold a BigInt or a cycle: never JSON.stringify those
+      fail(ctx, "unsupported type " + (isPrimitiveValue(v) ? JSON.stringify(v) : kindOfValue(v)));
     }
+    if (list.indexOf(v) !== i) fail(ctx, "type must not repeat " + JSON.stringify(v));
   }
   return list as string[];
 }
@@ -1172,12 +1265,9 @@ function groupOf(type: string): readonly string[] {
 /** `type: [...]` → nullable / union of the per-type schemas. */
 function combineTypes(variants: Schema[], types: readonly string[]): Schema {
   if (variants.length === 1) return variants[0];
-  if (variants.length === 2 && types[1] === "null" && types[0] !== "null") {
-    return nullable(variants[0]);
-  }
-  if (variants.length === 2 && types[0] === "null" && types[1] !== "null") {
-    return nullable(variants[1]);
-  }
+  // `type` entries are unique (readTypes), so the other one is not "null"
+  if (variants.length === 2 && types[1] === "null") return nullable(variants[0]);
+  if (variants.length === 2 && types[0] === "null") return nullable(variants[1]);
   return union(...variants);
 }
 
@@ -1295,6 +1385,15 @@ function readNumber(ctx: LowerCtx, js: Record<string, unknown>, key: string): nu
   return v;
 }
 
+/** A `minLength` / `maxLength` / `minItems` / `maxItems` value: a non-negative integer. */
+function readCount(ctx: LowerCtx, js: Record<string, unknown>, key: string): number | undefined {
+  const v = readNumber(ctx, js, key);
+  if (v !== undefined && !(Number.isInteger(v) && v >= 0)) {
+    fail(ctx, key + " must be a non-negative integer");
+  }
+  return v;
+}
+
 /** The schema for values of one JSON type, from that type's keyword group. */
 function lowerTyped(
   ctx: LowerCtx,
@@ -1326,18 +1425,41 @@ function lowerTyped(
   }
 }
 
-/** Pattern constructs that only mean the same thing in unicode mode. */
-const UNICODE_ONLY = /\\[pP]\{|\\u\{|[\uD800-\uDFFF]/;
+/**
+ * True if `pattern` uses a construct that only means the same thing in
+ * unicode mode: `\p{..}` / `\P{..}`, `\u{..}`, a surrogate written as an
+ * escape (`😀` is one code point in unicode mode, two units
+ * without it; a lone one stops matching half a pair) or as a raw character.
+ * Each backslash consumes the next character, so an escaped backslash
+ * (`\\p{2}`: a literal `\` then `p{2}`) never starts an escape.
+ */
+function needsUnicodeMode(pattern: string): boolean {
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern.charCodeAt(i);
+    if (c >= 0xd800 && c <= 0xdfff) return true;
+    if (c !== 0x5c /* \ */) continue;
+    const n = pattern.charCodeAt(++i);
+    if (n >= 0xd800 && n <= 0xdfff) return true; // `\` + raw surrogate
+    if (n === 0x70 /* p */ || n === 0x50 /* P */ || n === 0x75 /* u */) {
+      if (pattern.charCodeAt(i + 1) === 0x7b /* { */) return true;
+      if (n === 0x75 && SURROGATE_ESCAPE.test(pattern.slice(i + 1, i + 5))) return true;
+    }
+  }
+  return false;
+}
+
+/** The 4 hex digits of a `\uXXXX` escape that names a surrogate (D800–DFFF). */
+const SURROGATE_ESCAPE = /^[dD][89a-fA-F][0-9a-fA-F]{2}$/;
 
 function lowerString(ctx: LowerCtx, js: Record<string, unknown>): Schema {
   const c: Record<string, unknown> = {};
   let hasConstraints = false;
-  const minLength = readNumber(ctx, js, "minLength");
+  const minLength = readCount(ctx, js, "minLength");
   if (minLength !== undefined) {
     c.minLength = minLength;
     hasConstraints = true;
   }
-  const maxLength = readNumber(ctx, js, "maxLength");
+  const maxLength = readCount(ctx, js, "maxLength");
   if (maxLength !== undefined) {
     c.maxLength = maxLength;
     hasConstraints = true;
@@ -1350,8 +1472,11 @@ function lowerString(ctx: LowerCtx, js: Record<string, unknown>): Schema {
     // unicode mode. Still divergent on strings containing astral characters:
     // `.`, negated classes, `\S` / `\W` / `\D` match one UTF-16 unit, not one
     // code point (documented on fromJsonSchema).
-    if (UNICODE_ONLY.test(pattern)) {
-      fail(ctx, "pattern needs unicode mode (\\p{..}, \\u{..} or astral characters)");
+    if (needsUnicodeMode(pattern)) {
+      fail(
+        ctx,
+        "pattern needs unicode mode (\\p{..}, \\u{..}, astral characters or surrogate escapes)",
+      );
     }
     try {
       new RegExp(pattern, "u");
@@ -1393,10 +1518,15 @@ function lowerObjectKeywords(ctx: LowerCtx, js: Record<string, unknown>, base: s
 
   const addlProps = ap !== false;
   const requiredSet = new Set(required);
+  // Required but undeclared under additionalProperties:false: no object
+  // passes, and the lowered properties are thrown away
+  const impossible = !addlProps && required.some((k) => !Object.hasOwn(props, k));
   const objProps: Record<string, Schema> = {};
   // Insert in declaration order; setOwn keeps a "__proto__" key as data
   for (let i = 0; i < keys.length; i++) {
-    const s = child(ctx, js, base, "properties", keys[i]);
+    const s = impossible
+      ? discarded(ctx, js, base, "properties", keys[i])
+      : child(ctx, js, base, "properties", keys[i]);
     setOwn(objProps, keys[i], requiredSet.has(keys[i]) ? s : optional(s));
   }
   for (let i = 0; i < required.length; i++) {
@@ -1416,8 +1546,8 @@ function requiredKeys(required: readonly string[]): Record<string, Schema> {
 }
 
 function lowerArrayKeywords(ctx: LowerCtx, js: Record<string, unknown>, base: string): Schema {
-  const min = readNumber(ctx, js, "minItems");
-  const max = readNumber(ctx, js, "maxItems");
+  const min = readCount(ctx, js, "minItems");
+  const max = readCount(ctx, js, "maxItems");
   const items = own(js, "items");
   if (Array.isArray(items)) {
     fail(ctx, "array-form items is not supported (use prefixItems with items: false)");
@@ -1427,13 +1557,40 @@ function lowerArrayKeywords(ctx: LowerCtx, js: Record<string, unknown>, base: st
     const prefix = js.prefixItems;
     if (!Array.isArray(prefix)) fail(ctx, "prefixItems must be an array");
     if (items !== false) fail(ctx, "prefixItems is only supported with items: false");
-    const lowered = prefix.map((_, i) => child(ctx, js, base, "prefixItems", String(i)));
-    const n = lowered.length;
-    const lo = Math.max(0, Math.ceil(min ?? 0));
-    const hi = Math.min(n, Math.floor(max ?? n));
-    if (lo > hi) return not(unknown());
+    const n = prefix.length;
+    const lo = min ?? 0;
+    const hi = Math.min(n, max ?? n);
+    // Items past the longest allowed length (all of them when no length is
+    // allowed) never reach the result: lowered for their errors only
+    const keep = lo > hi ? 0 : hi;
+    const lowered: Schema[] = [];
+    for (let i = 0; i < n; i++) {
+      const key = String(i);
+      lowered.push(
+        i < keep
+          ? child(ctx, js, base, "prefixItems", key)
+          : discarded(ctx, js, base, "prefixItems", key),
+      );
+    }
+    if (lo > hi || ctx.discarding > 0) return not(unknown()); // (placeholder if discarded)
     if (lo === hi) return tuple(...lowered.slice(0, lo));
-    // prefixItems does not require presence: accept every allowed length
+    // prefixItems does not require presence: accept every allowed length.
+    // That is quadratic in the prefix length — refuse before building it:
+    // the union, one tuple per length k and its k items, summed over every
+    // site (many sub-cap sites would otherwise each build ~50k nodes). Only
+    // sites whose result is kept count, each once (a `$ref` target is
+    // lowered once), so the sum is a lower bound on what checkExpansion
+    // counts and nothing it accepts is refused.
+    const count = hi - lo + 1;
+    ctx.tupleNodes += 1 + count + (count * (lo + hi)) / 2;
+    if (ctx.tupleNodes > MAX_EXPANDED_NODES) {
+      fail(
+        ctx,
+        "prefixItems without a fixed length expands to more than " +
+          MAX_EXPANDED_NODES +
+          " nodes (pin it: minItems equal to maxItems)",
+      );
+    }
     const lengths: Schema[] = [];
     for (let k = lo; k <= hi; k++) lengths.push(tuple(...lowered.slice(0, k)));
     return union(...lengths);
@@ -1454,38 +1611,118 @@ function lowerArrayKeywords(ctx: LowerCtx, js: Record<string, unknown>, base: st
 // ---------------------------------------------------------------------------
 
 /**
- * True if an object property with this schema may be absent: `optional(T)`,
- * or an `allOf` / `conditional` that accepts `undefined` (e.g.
+ * True if an object property with this schema may be absent — exactly when
+ * the schema accepts `undefined` (an absent key reads as `undefined`):
+ * `optional(T)`, `nullable(optional(T))`, a union with an optional variant
+ * (`oneOf`: exactly one), or an `allOf` / `conditional` that accepts it (e.g.
  * `allOf(optional(T), ...)`). Serializers use it to omit absent keys and
  * `toJsonSchema` to leave the key out of `required`.
  */
 export function propertyMayBeAbsent(schema: Schema): boolean {
-  if (schema.kind === "optional") return true;
-  return (
-    (schema.kind === "allOf" || schema.kind === "conditional") && acceptsUndefinedExact(schema)
-  );
+  return acceptsUndefinedExact(schema);
 }
 
-/** Exactly whether `schema` accepts the value `undefined`. */
-function acceptsUndefinedExact(s: Schema): boolean {
-  switch (s.kind) {
-    case "optional":
-      return true;
-    case "nullable":
-      return acceptsUndefinedExact(s.meta.inner);
-    case "union": {
-      const matches = (s.meta.variants as readonly Schema[]).filter(acceptsUndefinedExact).length;
-      return s.meta.exclusive === true ? matches === 1 : matches > 0;
+/**
+ * Exactly whether `schema` accepts the value `undefined`. Only the
+ * nullable / union / allOf / conditional wrappers are walked (every other
+ * kind decides on its own), iteratively and memoized per call: wrapper chains
+ * of any depth cannot overflow the call stack, and a shared DAG such as
+ * `d_i = union(d_{i-1}, d_{i-1})` is linear, not 2^depth. Throws `TypeError`
+ * on a cycle (recursive schemas are not supported).
+ */
+function acceptsUndefinedExact(schema: Schema): boolean {
+  // Fast paths without the memo Map (measured ~25% of toJsonSchema on
+  // objects of nullable(union(...)) fields): a nullable chain just forwards,
+  // and a union / allOf of non-wrappers decides from its variants' kinds
+  let root = schema;
+  while (root.kind === "nullable") root = root.meta.inner;
+  if (!isUndefinedWrapper(root.kind)) return root.kind === "optional";
+  if (root.kind === "union" || root.kind === "allOf") {
+    const vs = root.meta.variants as readonly Schema[];
+    let flat = true;
+    let matches = 0;
+    for (let i = 0; i < vs.length && flat; i++) {
+      if (isUndefinedWrapper(vs[i].kind)) flat = false;
+      else if (vs[i].kind === "optional") matches++;
     }
-    case "allOf":
-      return (s.meta.variants as readonly Schema[]).every(acceptsUndefinedExact);
+    if (flat) {
+      if (root.kind === "allOf") return matches === vs.length;
+      return root.meta.exclusive === true ? matches === 1 : matches > 0;
+    }
+  }
+  const memo = new Map<Schema, number>(); // UNDEF_OPEN | UNDEF_NO | UNDEF_YES
+  const stack: Schema[] = [root];
+  while (stack.length > 0) {
+    const s = stack[stack.length - 1];
+    const state = memo.get(s);
+    if (state !== undefined && state !== UNDEF_OPEN) {
+      stack.pop(); // shared node, already decided
+      continue;
+    }
+    if (!isUndefinedWrapper(s.kind)) {
+      stack.pop();
+      memo.set(s, s.kind === "optional" ? UNDEF_YES : UNDEF_NO);
+      continue;
+    }
+    // Push undecided children; decide `s` once all of them are known
+    const kids = undefinedWrapperChildren(s);
+    let pending = false;
+    for (let i = 0; i < kids.length; i++) {
+      const k = memo.get(kids[i]);
+      if (k === UNDEF_OPEN) throw new TypeError("propertyMayBeAbsent: cyclic schema");
+      if (k === undefined) {
+        stack.push(kids[i]);
+        pending = true;
+      }
+    }
+    if (pending) {
+      memo.set(s, UNDEF_OPEN);
+      continue;
+    }
+    stack.pop();
+    memo.set(s, decideUndefined(s, memo) ? UNDEF_YES : UNDEF_NO);
+  }
+  return memo.get(root) === UNDEF_YES;
+}
+
+const UNDEF_OPEN = 0;
+const UNDEF_NO = 1;
+const UNDEF_YES = 2;
+
+/** Kinds whose `undefined` verdict depends on child schemas. */
+function isUndefinedWrapper(kind: Schema["kind"]): boolean {
+  return kind === "nullable" || kind === "union" || kind === "allOf" || kind === "conditional";
+}
+
+function undefinedWrapperChildren(s: Schema): readonly Schema[] {
+  switch (s.kind) {
+    case "nullable":
+      return [s.meta.inner];
     case "conditional":
-      return acceptsUndefinedExact(s.meta.if)
-        ? acceptsUndefinedExact(s.meta.then)
-        : acceptsUndefinedExact(s.meta.else);
+      return [s.meta.if, s.meta.then, s.meta.else];
     default:
-      // literal values are never undefined; unknown / not reject it
-      return false;
+      // union / allOf
+      return (s as Schema & { readonly kind: "union" | "allOf" }).meta
+        .variants as readonly Schema[];
+  }
+}
+
+/** Verdict of a wrapper whose children are all decided in `memo`. */
+function decideUndefined(s: Schema, memo: Map<Schema, number>): boolean {
+  const yes = (c: Schema): boolean => memo.get(c) === UNDEF_YES;
+  switch (s.kind) {
+    case "nullable":
+      return yes(s.meta.inner);
+    case "conditional":
+      return yes(s.meta.if) ? yes(s.meta.then) : yes(s.meta.else);
+    case "allOf":
+      return (s.meta.variants as readonly Schema[]).every(yes);
+    default: {
+      // union: literal values are never undefined; unknown / not reject it
+      const u = s as Schema & { readonly kind: "union" };
+      const matches = (u.meta.variants as readonly Schema[]).filter(yes).length;
+      return u.meta.exclusive === true ? matches === 1 : matches > 0;
+    }
   }
 }
 

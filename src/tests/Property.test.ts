@@ -641,3 +641,112 @@ test("check() rejects malformed or diverging paths", () => {
     /diverged/,
   );
 });
+
+// ---------------------------------------------------------------------------
+// Failure formatting (G5-7)
+// ---------------------------------------------------------------------------
+
+/** The counterexample line of the error thrown by `assert` for a failing constant. */
+function counterexampleLine(value: unknown): string {
+  try {
+    Prop.assert(Arb.constant(value), () => false, { seed: fixedSeed, numRuns: 1 });
+  } catch (e) {
+    return (e as Error).message.split("\n")[1]!.replace("  Counterexample: ", "");
+  }
+  throw new Error("assert did not throw");
+}
+
+test("assert() reports an Invalid Date counterexample instead of throwing RangeError", () => {
+  assert.equal(counterexampleLine(new Date(NaN)), "Date(Invalid)");
+  assert.equal(counterexampleLine(new Date(0)), "Date(1970-01-01T00:00:00.000Z)");
+});
+
+test("assert() prints shared acyclic references in full and only cycles as [Circular]", () => {
+  const a = { k: 1 };
+  const d = new Date(0);
+  assert.equal(counterexampleLine([a, a]), "[{k: 1}, {k: 1}]");
+  assert.equal(counterexampleLine({ x: a, y: a }), "{x: {k: 1}, y: {k: 1}}");
+  assert.equal(
+    counterexampleLine(
+      new Map([
+        [1, a],
+        [2, a],
+      ]),
+    ),
+    "Map(1 => {k: 1}, 2 => {k: 1})",
+  );
+  assert.equal(counterexampleLine(new Set([[a], [a]])), "Set([{k: 1}], [{k: 1}])");
+  assert.equal(
+    counterexampleLine([d, d]),
+    "[Date(1970-01-01T00:00:00.000Z), Date(1970-01-01T00:00:00.000Z)]",
+  );
+  const cyclic: unknown[] = [1];
+  cyclic.push(cyclic);
+  assert.equal(counterexampleLine(cyclic), "[1, [Circular]]");
+});
+
+test("assert() distinguishes -0 and bigint counterexamples", () => {
+  assert.equal(counterexampleLine(-0), "-0");
+  assert.equal(counterexampleLine(0), "0");
+  assert.equal(counterexampleLine(5n), "5n");
+  assert.equal(counterexampleLine([-0, 1n]), "[-0, 1n]");
+});
+
+test("assert() attaches the predicate's error as cause", () => {
+  const boom = new Error("boom");
+  assert.throws(
+    () =>
+      Prop.assert(
+        Arb.constant(1),
+        () => {
+          throw boom;
+        },
+        { seed: fixedSeed, numRuns: 1 },
+      ),
+    (err: Error) => err.cause === boom && err.message.includes("Error: boom"),
+  );
+  assert.throws(
+    () => Prop.assert(Arb.constant(1), () => false, { seed: fixedSeed, numRuns: 1 }),
+    (err: Error) => !("cause" in err),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Promise-returning predicates in the sync runner (G5-10)
+// ---------------------------------------------------------------------------
+
+test("check() fails a Promise-returning predicate with a TypeError instead of passing", async () => {
+  let unhandled = 0;
+  const onUnhandled = (): void => {
+    unhandled++;
+  };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const asyncPred = (async (_n: number) => {
+      throw new Error("boom");
+    }) as unknown as (n: number) => boolean;
+    const r = Prop.check(Arb.integer(0, 10), asyncPred, { seed: fixedSeed, numRuns: 20 });
+    assert.equal(r.ok, false);
+    assert.equal(r.numRuns, 1);
+    assert.ok(r.error instanceof TypeError);
+    assert.match((r.error as Error).message, /returned a Promise; use checkAsync/);
+    // A resolving promise and a bare thenable fail the same way.
+    const resolving = (async () => true) as unknown as () => boolean;
+    assert.equal(Prop.check(Arb.constant(1), resolving, { seed: fixedSeed }).ok, false);
+    // eslint-disable-next-line unicorn/no-thenable -- a bare thenable is the case under test
+    const thenable = (() => ({ then: () => {} })) as unknown as () => boolean;
+    assert.equal(Prop.check(Arb.constant(1), thenable, { seed: fixedSeed }).ok, false);
+    // Non-thenable objects and functions still count as passing.
+    // eslint-disable-next-line unicorn/no-thenable -- non-callable then is not a thenable
+    const obj = (() => ({ then: 1 })) as unknown as () => boolean;
+    assert.equal(Prop.check(Arb.constant(1), obj, { seed: fixedSeed }).ok, true);
+    const fn = (() => () => {}) as unknown as () => boolean;
+    assert.equal(Prop.check(Arb.constant(1), fn, { seed: fixedSeed }).ok, true);
+    const nul = (() => null) as unknown as () => boolean;
+    assert.equal(Prop.check(Arb.constant(1), nul, { seed: fixedSeed }).ok, true);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(unhandled, 0);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});

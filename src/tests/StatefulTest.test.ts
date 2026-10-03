@@ -755,3 +755,84 @@ test("checkStateful() re-checks preconditions when replaying shrunk sequences", 
     ["arm", "fire"],
   );
 });
+
+// ---------------------------------------------------------------------------
+// A precondition that throws during shrink replay counts as false (G5-4)
+// ---------------------------------------------------------------------------
+
+type KeyModel = Map<number, { v: number }>;
+interface BuggyMap {
+  set(k: number): void;
+  del(k: number): boolean;
+}
+
+/** Map whose delete fails once it holds >= 3 keys. */
+function buggyMap(): BuggyMap {
+  const m = new Map<number, number>();
+  return { set: (k) => void m.set(k, k), del: (k) => (m.size >= 3 ? false : m.delete(k)) };
+}
+
+/** `del(k)` only ever picks a live key, so its `check` is safe at generation
+ *  time but throws on replays where the `add(k)` was shrunk away. */
+function keyCommands(): {
+  add: ST.CommandArbitrary<KeyModel, BuggyMap>;
+  del: ST.CommandArbitrary<KeyModel, BuggyMap>;
+} {
+  return {
+    add: () =>
+      Arb.map(Arb.nat(1000), (k) => ({
+        name: `add(${k})`,
+        run: (m: KeyModel, r: BuggyMap) => {
+          m.set(k, { v: k });
+          r.set(k);
+        },
+      })),
+    del: (model) =>
+      model.size === 0
+        ? Arb.constant({ name: "noop", run: () => {} })
+        : Arb.map(Arb.constantFrom(...(model.keys() as unknown as [number])), (k) => ({
+            name: `del(${k})`,
+            check: (m: KeyModel) => m.get(k)!.v >= 0,
+            run: (m: KeyModel, r: BuggyMap) => {
+              m.delete(k);
+              if (!r.del(k)) throw new Error(`delete(${k}) failed`);
+            },
+          })),
+  };
+}
+
+test("checkStateful() survives a check that throws on shrink replay", () => {
+  const { add, del } = keyCommands();
+  const r = ST.checkStateful<KeyModel, BuggyMap>({
+    initialModel: () => new Map(),
+    initialReal: buggyMap,
+    commands: [add, del],
+    seed: PRNG.seed(5n),
+    numRuns: 200,
+  });
+  assert.equal(r.ok, false);
+  assert.match((r.error as Error).message, /^delete\(\d+\) failed$/);
+  // Minimal: three adds, then a delete of one of them.
+  const names = r.counterexample!.map((c) => c.name);
+  assert.equal(names.length, 4);
+  assert.ok(names.slice(0, 3).every((n) => n.startsWith("add(")));
+  assert.ok(names[3]!.startsWith("del("));
+});
+
+test("checkStatefulAsync() survives a check that throws on shrink replay", async () => {
+  const { add, del } = keyCommands();
+  const toAsync =
+    (g: ST.CommandArbitrary<KeyModel, BuggyMap>): ST.AsyncCommandArbitrary<KeyModel, BuggyMap> =>
+    (model) =>
+      Arb.map(g(model), (c) => ({ ...c, run: async (m: KeyModel, r: BuggyMap) => c.run(m, r) }));
+  const r = await ST.checkStatefulAsync<KeyModel, BuggyMap>({
+    initialModel: () => new Map(),
+    initialReal: buggyMap,
+    commands: [toAsync(add), toAsync(del)],
+    seed: PRNG.seed(5n),
+    numRuns: 200,
+  });
+  assert.equal(r.ok, false);
+  assert.match((r.error as Error).message, /^delete\(\d+\) failed$/);
+  assert.equal(r.counterexample!.length, 4);
+});

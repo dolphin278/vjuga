@@ -418,6 +418,10 @@ test("prefixItems without a fixed length: Ok iff its tuple expansion fits the no
       const expectOk = lo >= hi || 1 + count + (count * (lo + hi)) / 2 <= 50_000;
       if (res[0] !== expectOk) throw new Error(`n=${n} min=${min} max=${max}: ${String(res[1])}`);
       if (!res[0] && !res[1].startsWith("prefixItems without a fixed length")) return false;
+      // The same site where its result is thrown away never counts
+      const site = { ...js, minItems: min, maxItems: max };
+      const outer = { type: "array", prefixItems: [site, site], items: false, maxItems: 0 };
+      if (!S.fromJsonSchema(outer)[0]) throw new Error(`discarded n=${n} min=${min} max=${max}`);
       return true;
     },
     { numRuns: 2_000 },

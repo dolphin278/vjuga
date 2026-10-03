@@ -745,7 +745,7 @@ export interface FromJsonSchemaOptions {
  * (over 50,000 nodes once every `$ref` use is expanded, or nested deeper than
  * 256). `prefixItems` + `items: false` lowers to one tuple per allowed length,
  * so without `minItems` = `maxItems` it is capped near 315 items (the cap is
- * shared by every such site and checked before building). Unknown
+ * shared by every such site kept in the result, checked before building). Unknown
  * `format` names are annotation-only unless `options.formats` is `"strict"`,
  * which returns `Err` for them.
  *
@@ -773,6 +773,7 @@ export function fromJsonSchema(
     rawRefs: options?.refs,
     strictFormats: options?.formats === "strict",
     tupleNodes: 0,
+    discarding: 0,
     memo: new Map(),
     active: new Set(),
     path: [],
@@ -880,6 +881,12 @@ interface LowerCtx {
   readonly strictFormats: boolean;
   /** Nodes built so far by prefixItems length expansion, across all sites. */
   tupleNodes: number;
+  /**
+   * > 0 while lowering a subschema whose result is thrown away (lowered only
+   * to report its errors): prefixItems sites skip expansion and budget, and
+   * `$ref` targets are not memoized with such a placeholder result.
+   */
+  discarding: number;
 }
 
 /** Internal failure carrier; converted to `Err` by `fromJsonSchema`. */
@@ -1098,6 +1105,16 @@ function lower(ctx: LowerCtx, js: unknown, base: string, viaRef: boolean): Schem
   }
 }
 
+/** `child()` for a subschema whose result is thrown away (see `LowerCtx.discarding`). */
+function discarded(ctx: LowerCtx, js: unknown, base: string, ...keys: string[]): Schema {
+  ctx.discarding++;
+  try {
+    return child(ctx, js, base, ...keys);
+  } finally {
+    ctx.discarding--;
+  }
+}
+
 /** Lower `js[key]` with `key` pushed onto the error path. */
 function child(ctx: LowerCtx, js: unknown, base: string, ...keys: string[]): Schema {
   for (let i = 0; i < keys.length; i++)
@@ -1121,7 +1138,7 @@ function lowerRef(ctx: LowerCtx, ref: unknown, base: string): Schema {
   ctx.path.push("$ref");
   try {
     const s = lower(ctx, node, target.base, true);
-    ctx.memo.set(node, s);
+    if (ctx.discarding === 0) ctx.memo.set(node, s);
     return s;
   } finally {
     ctx.path.pop();
@@ -1501,10 +1518,15 @@ function lowerObjectKeywords(ctx: LowerCtx, js: Record<string, unknown>, base: s
 
   const addlProps = ap !== false;
   const requiredSet = new Set(required);
+  // Required but undeclared under additionalProperties:false: no object
+  // passes, and the lowered properties are thrown away
+  const impossible = !addlProps && required.some((k) => !Object.hasOwn(props, k));
   const objProps: Record<string, Schema> = {};
   // Insert in declaration order; setOwn keeps a "__proto__" key as data
   for (let i = 0; i < keys.length; i++) {
-    const s = child(ctx, js, base, "properties", keys[i]);
+    const s = impossible
+      ? discarded(ctx, js, base, "properties", keys[i])
+      : child(ctx, js, base, "properties", keys[i]);
     setOwn(objProps, keys[i], requiredSet.has(keys[i]) ? s : optional(s));
   }
   for (let i = 0; i < required.length; i++) {
@@ -1535,17 +1557,29 @@ function lowerArrayKeywords(ctx: LowerCtx, js: Record<string, unknown>, base: st
     const prefix = js.prefixItems;
     if (!Array.isArray(prefix)) fail(ctx, "prefixItems must be an array");
     if (items !== false) fail(ctx, "prefixItems is only supported with items: false");
-    const lowered = prefix.map((_, i) => child(ctx, js, base, "prefixItems", String(i)));
-    const n = lowered.length;
+    const n = prefix.length;
     const lo = min ?? 0;
     const hi = Math.min(n, max ?? n);
-    if (lo > hi) return not(unknown());
+    // Items past the longest allowed length (all of them when no length is
+    // allowed) never reach the result: lowered for their errors only
+    const keep = lo > hi ? 0 : hi;
+    const lowered: Schema[] = [];
+    for (let i = 0; i < n; i++) {
+      const key = String(i);
+      lowered.push(
+        i < keep
+          ? child(ctx, js, base, "prefixItems", key)
+          : discarded(ctx, js, base, "prefixItems", key),
+      );
+    }
+    if (lo > hi || ctx.discarding > 0) return not(unknown()); // (placeholder if discarded)
     if (lo === hi) return tuple(...lowered.slice(0, lo));
     // prefixItems does not require presence: accept every allowed length.
     // That is quadratic in the prefix length — refuse before building it:
     // the union, one tuple per length k and its k items, summed over every
-    // site (many sub-cap sites would otherwise each build ~50k nodes). Each
-    // site is built once, so the sum is a lower bound on what checkExpansion
+    // site (many sub-cap sites would otherwise each build ~50k nodes). Only
+    // sites whose result is kept count, each once (a `$ref` target is
+    // lowered once), so the sum is a lower bound on what checkExpansion
     // counts and nothing it accepts is refused.
     const count = hi - lo + 1;
     ctx.tupleNodes += 1 + count + (count * (lo + hi)) / 2;
@@ -1588,26 +1622,107 @@ export function propertyMayBeAbsent(schema: Schema): boolean {
   return acceptsUndefinedExact(schema);
 }
 
-/** Exactly whether `schema` accepts the value `undefined`. */
-function acceptsUndefinedExact(s: Schema): boolean {
-  switch (s.kind) {
-    case "optional":
-      return true;
-    case "nullable":
-      return acceptsUndefinedExact(s.meta.inner);
-    case "union": {
-      const matches = (s.meta.variants as readonly Schema[]).filter(acceptsUndefinedExact).length;
-      return s.meta.exclusive === true ? matches === 1 : matches > 0;
+/**
+ * Exactly whether `schema` accepts the value `undefined`. Only the
+ * nullable / union / allOf / conditional wrappers are walked (every other
+ * kind decides on its own), iteratively and memoized per call: wrapper chains
+ * of any depth cannot overflow the call stack, and a shared DAG such as
+ * `d_i = union(d_{i-1}, d_{i-1})` is linear, not 2^depth. Throws `TypeError`
+ * on a cycle (recursive schemas are not supported).
+ */
+function acceptsUndefinedExact(schema: Schema): boolean {
+  // Fast paths without the memo Map (measured ~25% of toJsonSchema on
+  // objects of nullable(union(...)) fields): a nullable chain just forwards,
+  // and a union / allOf of non-wrappers decides from its variants' kinds
+  let root = schema;
+  while (root.kind === "nullable") root = root.meta.inner;
+  if (!isUndefinedWrapper(root.kind)) return root.kind === "optional";
+  if (root.kind === "union" || root.kind === "allOf") {
+    const vs = root.meta.variants as readonly Schema[];
+    let flat = true;
+    let matches = 0;
+    for (let i = 0; i < vs.length && flat; i++) {
+      if (isUndefinedWrapper(vs[i].kind)) flat = false;
+      else if (vs[i].kind === "optional") matches++;
     }
-    case "allOf":
-      return (s.meta.variants as readonly Schema[]).every(acceptsUndefinedExact);
+    if (flat) {
+      if (root.kind === "allOf") return matches === vs.length;
+      return root.meta.exclusive === true ? matches === 1 : matches > 0;
+    }
+  }
+  const memo = new Map<Schema, number>(); // UNDEF_OPEN | UNDEF_NO | UNDEF_YES
+  const stack: Schema[] = [root];
+  while (stack.length > 0) {
+    const s = stack[stack.length - 1];
+    const state = memo.get(s);
+    if (state !== undefined && state !== UNDEF_OPEN) {
+      stack.pop(); // shared node, already decided
+      continue;
+    }
+    if (!isUndefinedWrapper(s.kind)) {
+      stack.pop();
+      memo.set(s, s.kind === "optional" ? UNDEF_YES : UNDEF_NO);
+      continue;
+    }
+    // Push undecided children; decide `s` once all of them are known
+    const kids = undefinedWrapperChildren(s);
+    let pending = false;
+    for (let i = 0; i < kids.length; i++) {
+      const k = memo.get(kids[i]);
+      if (k === UNDEF_OPEN) throw new TypeError("propertyMayBeAbsent: cyclic schema");
+      if (k === undefined) {
+        stack.push(kids[i]);
+        pending = true;
+      }
+    }
+    if (pending) {
+      memo.set(s, UNDEF_OPEN);
+      continue;
+    }
+    stack.pop();
+    memo.set(s, decideUndefined(s, memo) ? UNDEF_YES : UNDEF_NO);
+  }
+  return memo.get(root) === UNDEF_YES;
+}
+
+const UNDEF_OPEN = 0;
+const UNDEF_NO = 1;
+const UNDEF_YES = 2;
+
+/** Kinds whose `undefined` verdict depends on child schemas. */
+function isUndefinedWrapper(kind: Schema["kind"]): boolean {
+  return kind === "nullable" || kind === "union" || kind === "allOf" || kind === "conditional";
+}
+
+function undefinedWrapperChildren(s: Schema): readonly Schema[] {
+  switch (s.kind) {
+    case "nullable":
+      return [s.meta.inner];
     case "conditional":
-      return acceptsUndefinedExact(s.meta.if)
-        ? acceptsUndefinedExact(s.meta.then)
-        : acceptsUndefinedExact(s.meta.else);
+      return [s.meta.if, s.meta.then, s.meta.else];
     default:
-      // literal values are never undefined; unknown / not reject it
-      return false;
+      // union / allOf
+      return (s as Schema & { readonly kind: "union" | "allOf" }).meta
+        .variants as readonly Schema[];
+  }
+}
+
+/** Verdict of a wrapper whose children are all decided in `memo`. */
+function decideUndefined(s: Schema, memo: Map<Schema, number>): boolean {
+  const yes = (c: Schema): boolean => memo.get(c) === UNDEF_YES;
+  switch (s.kind) {
+    case "nullable":
+      return yes(s.meta.inner);
+    case "conditional":
+      return yes(s.meta.if) ? yes(s.meta.then) : yes(s.meta.else);
+    case "allOf":
+      return (s.meta.variants as readonly Schema[]).every(yes);
+    default: {
+      // union: literal values are never undefined; unknown / not reject it
+      const u = s as Schema & { readonly kind: "union" };
+      const matches = (u.meta.variants as readonly Schema[]).filter(yes).length;
+      return u.meta.exclusive === true ? matches === 1 : matches > 0;
+    }
   }
 }
 

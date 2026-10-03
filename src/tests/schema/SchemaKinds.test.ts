@@ -574,6 +574,28 @@ test("nullable(optional(T)) / union(optional(T), U) properties may be absent", (
     str({ r: "a", n: null, u: 1, x: null } as never),
     '{"n":null,"u":1,"x":null,"r":"a"}',
   );
+  // Deep wrapper chains do not overflow the stack; shared union DAGs are linear
+  let deep: S.Schema = S.optional(S.string());
+  let chain: S.Schema = S.string();
+  for (let i = 0; i < 20_000; i++) {
+    deep = S.nullable(deep);
+    chain = S.union(chain, S.number());
+  }
+  assert.equal(S.propertyMayBeAbsent(deep), true);
+  assert.equal(S.propertyMayBeAbsent(chain), false);
+  assert.deepEqual(S.toJsonSchema(S.object({ a: deep, b: chain })).required, ["b"]);
+  let dag: S.Schema = S.optional(S.string());
+  for (let i = 0; i < 40; i++) dag = i % 2 === 0 ? S.union(dag, dag) : S.allOf(dag, dag);
+  const t = performance.now();
+  assert.equal(S.propertyMayBeAbsent(dag), true);
+  assert.equal(S.propertyMayBeAbsent(S.oneOf(dag, dag)), false);
+  assert.equal(S.propertyMayBeAbsent(S.conditional(dag, S.string(), dag)), false);
+  assert.deepEqual(S.toJsonSchema(S.object({ a: dag, b: S.number() })).required, ["b"]);
+  assert.ok(performance.now() - t < 1000);
+  // A cycle through the wrappers is a TypeError, not a hang
+  const loop = S.union(S.string());
+  (loop.meta.variants as unknown as S.Schema[]).push(S.nullable(loop));
+  assert.throws(() => S.propertyMayBeAbsent(loop), TypeError);
   // G3-4(a): union(optional(T), U) used to emit "u":null, which its own parse rejected
   const su = S.object({ a: S.union(S.optional(S.string()), S.number()), b: S.number() });
   assert.equal(SJ.stringify(su)({ b: 1 } as never), '{"b":1}');

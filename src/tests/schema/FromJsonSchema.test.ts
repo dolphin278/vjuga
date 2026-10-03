@@ -516,6 +516,36 @@ test("prefixItems without a fixed length is refused before its tuples are built"
   lower({ $defs: { t: two }, type: "array", items: ref });
   const twice = { $defs: { t: two }, type: "object", properties: { a: ref, b: ref } };
   assert.match(lowerErr(twice), /\$ref fan-out/);
+  // sites whose result is thrown away do not count (but are still checked)
+  const keptOne = { type: "array", prefixItems: [two, two], items: false, maxItems: 1 };
+  assert.equal(lower({ ...keptOne, minItems: 1 }).kind, "tuple");
+  assert.equal(lower(keptOne).kind, "union");
+  const none = { type: "array", prefixItems: [two, two], items: false, maxItems: 0 };
+  assert.equal(lower({ type: "object", properties: { a: two, b: none } }).kind, "object");
+  const empty = { ...none, minItems: 1 }; // lo > hi: nothing is kept
+  assert.equal(lower({ type: "object", properties: { a: two, b: empty } }).kind, "object");
+  const unmet = { type: "object", properties: { x: two, y: two }, required: ["z"] };
+  assert.equal(lower({ ...unmet, additionalProperties: false }).kind, "not");
+  assert.match(lowerErr({ ...unmet, additionalProperties: true }), tooBig);
+  assert.match(
+    lowerErr({ ...none, prefixItems: [{ type: "string", minLength: -1 }] }),
+    /minLength must be a non-negative integer \(at #\/prefixItems\/0\)/,
+  );
+  // a $ref target first met in a discarded item is not memoized as a placeholder
+  const shared = {
+    $defs: { t: { type: "array", prefixItems: [{}, {}], items: false } },
+    type: "object",
+    properties: {
+      a: { type: "array", prefixItems: [{ $ref: "#/$defs/t" }], items: false, maxItems: 0 },
+      b: { $ref: "#/$defs/t" },
+    },
+    required: ["b"],
+  };
+  verdicts(
+    shared,
+    [{ b: [] }, { b: [1] }, { b: [1, 2] }, { a: [], b: [] }],
+    [{ b: [1, 2, 3] }, {}],
+  );
   // 60 KB of JSON fails fast (it used to build ~2·10^8 nodes first)
   const t = performance.now();
   assert.match(lowerErr({ type: "array", prefixItems: items(20_000), items: false }), tooBig);

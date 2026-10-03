@@ -364,7 +364,8 @@ export function record<V extends Schema>(values: V): RecordSchema<V> {
 /**
  * Validates that value fully matches at least one of the given schemas (an
  * empty union matches nothing). Object variants sharing a literal-valued key
- * are dispatched on that key in O(1).
+ * are dispatched on that key with a single `switch` (V8 compares string tags
+ * sequentially).
  */
 export function union<const V extends readonly Schema[]>(...variants: V): UnionSchema<V> {
   return { kind: "union", meta: { variants } };
@@ -387,7 +388,8 @@ export function nullable<I extends Schema>(inner: I): NullableSchema<I> {
  * Validates that value fully matches EXACTLY one of the given schemas (JSON
  * Schema `oneOf`). A `"union"` node with `meta.exclusive: true`, so
  * serializers treat it like `union()`. Discriminated object variants keep the
- * O(1) `switch`; otherwise every variant is tried and matches are counted.
+ * single-`switch` dispatch; otherwise every variant is tried and matches are
+ * counted.
  *
  * @example
  * ```ts

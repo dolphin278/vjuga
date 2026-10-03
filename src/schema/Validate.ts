@@ -69,6 +69,12 @@ import {
  * `received` holds the raw offending input value (not truncated) — be careful
  * logging it for large payloads. `path` is dot-separated (`"user.tags.0"`);
  * `""` means the root value failed.
+ *
+ * Segments are not escaped, so `path` is for display, not for addressing:
+ * `"a.b"` is either key `a.b` or key `b` under `a`, `"tags.0"` either index 0
+ * or key `"0"`, and an empty key at the root reports `""` like the root itself.
+ * Compare against the schema shape (or build a JSON Pointer yourself) when the
+ * exact location matters.
  */
 export interface SchemaError {
   readonly path: string;
@@ -130,6 +136,19 @@ export function emitStandardRefs(buf: CodeBuffer, okFn: unknown, errFn: unknown)
  *
  * Throws `SyntaxError` for an invalid `pattern` regex and `TypeError` if a
  * schema constraint/literal is not a primitive (malformed hand-built schema).
+ *
+ * The validator reads the input with ordinary property access and `for...in`,
+ * so accessor properties and Proxy traps run, and anything they throw
+ * propagates out of the call as an exception — it is not turned into an
+ * `err` result. Validate plain data (parsed JSON, structured clones); wrap the
+ * call in `try` if the input may carry getters or be a Proxy.
+ *
+ * Object properties are read as own properties even if `Object.prototype` is
+ * polluted after compilation, but array / tuple elements are read directly:
+ * a hole in a sparse array reads through to `Array.prototype` /
+ * `Object.prototype`, so an index polluted there (data-only pollution such as
+ * `Object.prototype[0] = x`) is validated as the element. JSON input never
+ * has holes; a per-element own check measured 2–10× slower on arrays.
  *
  * @example
  * ```ts
@@ -366,7 +385,7 @@ export function emitValidation(
       break;
     case "allOf": {
       // Sequential inline checks: the first failing variant reports its error
-      const variants = schema.meta.variants as readonly Schema[];
+      const variants = distinctVariants(schema.meta.variants as readonly Schema[]);
       for (let i = 0; i < variants.length; i++) {
         emitValidation(buf, variants[i], accessor, pathExpr);
       }
@@ -384,6 +403,14 @@ export function emitValidation(
       break;
     }
     case "conditional":
+      if (schema.meta.then === schema.meta.else) {
+        // Same branch either way (a shared `$ref`): `if` is irrelevant, and
+        // emitting the branch twice would double the code at every level.
+        // `if` is still checked, so a malformed one throws as it would emitted.
+        checkConstants(schema.meta.if);
+        emitValidation(buf, schema.meta.then, accessor, pathExpr);
+        break;
+      }
       emit(buf, `if (${booleanCheck(buf, schema.meta.if, accessor)}) {`);
       buf.indent++;
       // The branch is already chosen by `if`: it collects like any value
@@ -601,23 +628,40 @@ function emitObjectTypeCheck(buf: CodeBuffer, accessor: string, pathExpr: string
 /**
  * Own-property read strategy for one object value.
  *
- * Keys that exist on Object.prototype (`constructor`, `toString`,
- * `__proto__`, ...) are always read via `_own` (hasOwn + get). Other keys are
- * read directly when the object's prototype is exactly `Object.prototype` —
- * then a defined result can only be an own property — and via `_own`
- * otherwise (class instances, null-prototype objects). The prototype check is
- * emitted once per object value; `v.__proto__` is inlined by V8, unlike
- * `Object.getPrototypeOf` (~10ns/call when the latter goes through a ref).
+ * Keys that exist on Object.prototype at compile time (`constructor`,
+ * `toString`, `__proto__`, ...) are always read via `_own` (hasOwn + get).
+ * Other keys are read directly when the flag emitted here is true: the
+ * object's prototype is exactly `Object.prototype` AND `Object.prototype[k]`
+ * is `undefined` for every such key — then a defined direct read can only be
+ * an own property. Otherwise (class instances, null-prototype objects, or an
+ * `Object.prototype` polluted after compilation) every key goes via `_own`.
+ * The flag is computed once per object value (`base`, when given, replaces
+ * the prototype check); `v.__proto__` is inlined by V8, unlike
+ * `Object.getPrototypeOf` (~10ns/call when the latter goes through a ref),
+ * and V8 folds the `_OP[k]` loads (free on node, ~0.6ns/key on bun).
+ *
+ * Residual (not defended): an object whose own chain defines a lying
+ * `__proto__` getter returning `Object.prototype` gets direct reads, so a
+ * property inherited from its real prototype counts as present; likewise a
+ * getter installed on `Object.prototype` that returns `undefined` only when
+ * the receiver is `Object.prototype` itself. Neither arises from JSON input
+ * or from data-only prototype pollution (`o[a][b] = c`). Array and tuple
+ * elements are not covered by this flag at all — see `validate()`.
  */
-function emitPlainFlag(buf: CodeBuffer, accessor: string, keys: readonly string[]): string | null {
+function emitPlainFlag(
+  buf: CodeBuffer,
+  accessor: string,
+  keys: readonly string[],
+  base: string | null = null,
+): string | null {
+  let cond = "";
   for (let i = 0; i < keys.length; i++) {
-    if (!(keys[i] in Object.prototype)) {
-      const flag = freshVar(buf);
-      emit(buf, `var ${flag} = ${accessor}.__proto__ === _OP;`);
-      return flag;
-    }
+    if (!(keys[i] in Object.prototype)) cond += ` && _OP[${jsLiteral(keys[i])}] === undefined`;
   }
-  return null;
+  if (cond === "") return base;
+  const flag = freshVar(buf);
+  emit(buf, `var ${flag} = ${base ?? `${accessor}.__proto__ === _OP`}${cond};`);
+  return flag;
 }
 
 /** Emit `var x = <own read of accessor[key]>;` and return `x`. */
@@ -637,6 +681,102 @@ function emitOwnRead(
   return local;
 }
 
+/**
+ * Variants without identity duplicates (`allOf[X, X]` is `X`), in
+ * first-occurrence order; the input array itself when it has none. A `$ref`
+ * used twice resolves to one shared node, and checking it twice adds nothing
+ * but doubles the emitted code at every nesting level (a DAG of depth d would
+ * otherwise emit 2^d copies). For `allOf` and `anyOf` only — a repeat changes
+ * a `oneOf` match count.
+ */
+function distinctVariants(variants: readonly Schema[]): readonly Schema[] {
+  const seen = new Set(variants);
+  if (seen.size === variants.length) return variants;
+  return [...seen];
+}
+
+/** Schemas whose compile-time checks (`checkConstants`) already passed. */
+const checkedConstants = new WeakSet<Schema>();
+
+/**
+ * Run the compile-time checks emission would run on `schema` — `new RegExp`
+ * for every `pattern`, `jsLiteral` for every constraint, literal and enum
+ * value — without emitting code. Used where emission skips a subtree (the
+ * `if` of a `conditional` whose branches are identical), so a malformed
+ * schema still throws `SyntaxError` / `TypeError` from `validate()`. Nodes are
+ * marked only after their whole subtree passed, so a shared node is walked
+ * once (linear on `$ref` DAGs) and a failing one throws on every compile.
+ */
+function checkConstants(schema: Schema): void {
+  if (checkedConstants.has(schema)) return;
+  switch (schema.kind) {
+    case "string": {
+      const meta = schema.meta as StringMeta;
+      if (meta !== undefined) {
+        jsLiteral(meta.minLength);
+        jsLiteral(meta.maxLength);
+        if (meta.pattern !== undefined) RegExp(meta.pattern);
+      }
+      break;
+    }
+    case "number":
+    case "integer": {
+      const meta = schema.meta as NumericMeta;
+      if (meta !== undefined) {
+        jsLiteral(meta.minimum);
+        jsLiteral(meta.maximum);
+        jsLiteral(meta.exclusiveMinimum);
+        jsLiteral(meta.exclusiveMaximum);
+        jsLiteral(meta.multipleOf);
+      }
+      break;
+    }
+    case "boolean":
+    case "null":
+    case "unknown":
+      break;
+    case "literal":
+      jsLiteral(schema.meta.value);
+      break;
+    case "enum":
+      for (const value of schema.meta.values as readonly unknown[]) jsLiteral(value);
+      break;
+    case "object": {
+      const properties = schema.meta.properties as Readonly<Record<string, Schema>>;
+      for (const key of Object.keys(properties)) checkConstants(properties[key]);
+      break;
+    }
+    case "array":
+      jsLiteral(schema.meta.minItems);
+      jsLiteral(schema.meta.maxItems);
+      checkConstants(schema.meta.items);
+      break;
+    case "tuple":
+      for (const item of schema.meta.items as readonly Schema[]) checkConstants(item);
+      break;
+    case "record":
+      checkConstants(schema.meta.values);
+      break;
+    case "union":
+    case "allOf":
+      for (const variant of schema.meta.variants as readonly Schema[]) checkConstants(variant);
+      break;
+    case "optional":
+    case "nullable":
+    case "not":
+      checkConstants(schema.meta.inner);
+      break;
+    case "conditional":
+      checkConstants(schema.meta.if);
+      checkConstants(schema.meta.then);
+      checkConstants(schema.meta.else);
+      break;
+    default:
+      unreachable(schema);
+  }
+  checkedConstants.add(schema);
+}
+
 /** True if `schema` can accept `undefined` (so a required key may be absent). */
 function acceptsUndefined(schema: Schema): boolean {
   switch (schema.kind) {
@@ -647,13 +787,16 @@ function acceptsUndefined(schema: Schema): boolean {
     case "literal":
       return schema.meta.value === undefined;
     case "union":
-      return (schema.meta.variants as readonly Schema[]).some(acceptsUndefined);
+      return distinctVariants(schema.meta.variants as readonly Schema[]).some(acceptsUndefined);
     case "allOf":
-      return (schema.meta.variants as readonly Schema[]).every(acceptsUndefined);
+      return distinctVariants(schema.meta.variants as readonly Schema[]).every(acceptsUndefined);
     case "conditional":
       // Conservative (either branch): over-approximating only costs the
       // extra-key fast path, under-approximating would let an extra key pass.
-      return acceptsUndefined(schema.meta.then) || acceptsUndefined(schema.meta.else);
+      return (
+        acceptsUndefined(schema.meta.then) ||
+        (schema.meta.else !== schema.meta.then && acceptsUndefined(schema.meta.else))
+      );
     default:
       // unknown / not reject undefined; leaf kinds never accept it
       return false;
@@ -962,6 +1105,13 @@ function compileBooleanValidator(schema: Schema): (v: unknown) => boolean {
   return fn;
 }
 
+/**
+ * Discriminated union: read the tag once, then a single `switch` dispatch to
+ * the matching variant's inline checks. Not constant-time in the number of
+ * variants: V8 compiles a `switch` on string tags to sequential `===`
+ * comparisons, so a late tag pays for every earlier case (still far cheaper
+ * than trying each variant as an untagged union does).
+ */
 function emitDiscriminatedValidation(
   buf: CodeBuffer,
   variants: readonly Schema[],
@@ -970,16 +1120,10 @@ function emitDiscriminatedValidation(
   pathExpr: string,
 ): void {
   emitObjectTypeCheck(buf, accessor, pathExpr);
-  // Plain-prototype flag is computed before the switch so every case shares it
-  const allKeys: string[] = [];
-  for (let i = 0; i < variants.length; i++) {
-    const v = variants[i];
-    /* node:coverage ignore next 2 */
-    if (v.kind !== "object") continue; // guaranteed by findDiscriminant
-    allKeys.push(...Object.keys(v.meta.properties));
-  }
-  const plainFlag = emitPlainFlag(buf, accessor, allKeys);
-  const tag = emitOwnRead(buf, accessor, discriminant, plainFlag);
+  // The flag for the tag read is computed before the switch; each case extends
+  // it with its own keys, so only the matched variant's keys are checked
+  const tagFlag = emitPlainFlag(buf, accessor, [discriminant]);
+  const tag = emitOwnRead(buf, accessor, discriminant, tagFlag);
   emit(buf, `switch (${tag}) {`);
   buf.indent++;
   const tagLabels: string[] = [];
@@ -995,6 +1139,12 @@ function emitDiscriminatedValidation(
     emit(buf, `case ${tagLiteral}: {`);
     buf.indent++;
     const keys = Object.keys(properties);
+    const plainFlag = emitPlainFlag(
+      buf,
+      accessor,
+      keys.filter((k) => k !== discriminant),
+      tagFlag,
+    );
     const present = emitProperties(
       buf,
       properties,
@@ -1063,16 +1213,21 @@ function exactCheck(schema: Schema, accessor: string): string | null {
     }
     case "union": {
       const variants = schema.meta.variants as readonly Schema[];
-      const checks = exactChecks(variants, accessor);
+      // A repeated variant changes a `oneOf` count, but never an `anyOf` result
+      const exclusive = schema.meta.exclusive === true;
+      const checks = exactChecks(exclusive ? variants : distinctVariants(variants), accessor);
       if (checks === null) return null;
       if (checks.length === 0) return "false";
-      if (schema.meta.exclusive === true) {
+      if (exclusive) {
         return `((${checks.map((c) => `(${c} ? 1 : 0)`).join(" + ")}) === 1)`;
       }
       return `(${checks.join(" || ")})`;
     }
     case "allOf": {
-      const checks = exactChecks(schema.meta.variants as readonly Schema[], accessor);
+      const checks = exactChecks(
+        distinctVariants(schema.meta.variants as readonly Schema[]),
+        accessor,
+      );
       if (checks === null) return null;
       return checks.length > 0 ? `(${checks.join(" && ")})` : "true";
     }
@@ -1083,6 +1238,10 @@ function exactCheck(schema: Schema, accessor: string): string | null {
       return inner === null ? null : `(${accessor} !== undefined && !${inner})`;
     }
     case "conditional": {
+      if (schema.meta.then === schema.meta.else) {
+        checkConstants(schema.meta.if);
+        return exactCheck(schema.meta.then, accessor);
+      }
       const checks = exactChecks(
         [schema.meta.if, schema.meta.then, schema.meta.else] as readonly Schema[],
         accessor,

@@ -158,6 +158,74 @@ test("SOA stateful model-based test", () => {
   });
 });
 
+// Same model, but the SOA inherits an enumerable column-like key. Every
+// operation must treat only own keys as columns (G6-6): the inherited array is
+// never touched and never shows up in rows or views.
+const inheritedProto = { z: [7, 8, 9] };
+
+const inheritedIntactCmd: ST.CommandArbitrary<Model, PointSOA> = (_model) =>
+  Arb.constant<ST.Command<Model, PointSOA>>({
+    name: "inheritedIntact",
+    check: () => true,
+    run: (model, soa) => {
+      assert.deepEqual(inheritedProto.z, [7, 8, 9], "inherited array mutated");
+      assert.equal(SOA.length(soa), model.items.length, "length mismatch");
+      if (model.items.length > 0) {
+        assert.deepEqual(Object.keys(SOA.get(soa, 0)), ["x", "y"], "row has inherited key");
+        assert.deepEqual(Object.keys(SOA.createView(soa, 0)), ["x", "y"], "view has inherited key");
+      }
+    },
+  });
+
+test("SOA stateful model-based test with inherited enumerable keys", () => {
+  ST.assertStateful({
+    initialModel: () => ({ items: [] }),
+    initialReal: (): PointSOA => {
+      const soa = Object.create(inheritedProto) as PointSOA;
+      soa.x = [];
+      soa.y = [];
+      return soa;
+    },
+    commands: [
+      pushCmd,
+      popCmd,
+      getCmd,
+      setCmd,
+      lengthCmd,
+      swapRemoveCmd,
+      clearCmd,
+      getSliceCmd,
+      inheritedIntactCmd,
+    ],
+    numRuns: 1_000_000,
+    maxCommands: 50,
+    timeoutMs: 300_000,
+    seed: fixedSeed,
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Property: createView normalizes a fractional initial index like the setter
+// ---------------------------------------------------------------------------
+
+test("SOA createView initial index equals index | 0 (same as the setter)", () => {
+  Prop.assert(
+    Arb.tuple(Arb.integer(1, 20), Arb.float(-2, 25)),
+    ([len, index]) => {
+      const soa = freshSOA();
+      for (let i = 0; i < len; i++) SOA.push(soa, { x: i, y: -i });
+      const view = SOA.createView(soa, index);
+      const other = SOA.createView(soa, 0);
+      other.index = index;
+      assert.equal(view.index, index | 0, "initial index not normalized");
+      assert.equal(view.index, other.index, "initial index differs from setter");
+      assert.equal(view.x, soa.x[index | 0], "view reads a non-integer slot");
+      return true;
+    },
+    { numRuns: 1_000_000 },
+  );
+});
+
 // ---------------------------------------------------------------------------
 // Property: push N items then get each returns same item
 // ---------------------------------------------------------------------------

@@ -177,3 +177,39 @@ test("throwing comparator leaves the heap untouched (push, pop, heapify)", () =>
   }
   assert.ok(threw > 20);
 });
+
+const itemsLength = (pq: object): number => {
+  const sym = Object.getOwnPropertySymbols(pq).find((s) => s.description === "items")!;
+  return ((pq as Record<symbol, unknown[]>)[sym] as unknown[]).length;
+};
+
+test("pop shrinks a large drained heap (G6-4 regression)", () => {
+  const pq = PQ.make(numCmp);
+  const N = 100_000;
+  for (let i = N - 1; i >= 0; i--) PQ.push(pq, i);
+  assert.equal(itemsLength(pq), N);
+  for (let i = 0; i < N - 10; i++) assert.equal(PQ.pop(pq), i);
+  assert.ok(itemsLength(pq) <= 10_000, `items.length ${itemsLength(pq)}`);
+  // Still correct after shrinking: interleave pushes and pops.
+  PQ.push(pq, -5);
+  assert.equal(PQ.pop(pq), -5);
+  for (let i = N - 10; i < N; i++) assert.equal(PQ.pop(pq), i);
+  assert.equal(PQ.pop(pq), void 0);
+  assert.equal(PQ.size(pq), 0);
+});
+
+test("pop shrink keeps every live element (heapify-built heap)", () => {
+  const N = 50_000;
+  const input: number[] = [];
+  for (let i = 0; i < N; i++) input.push((i * 7919) % N);
+  const pq = PQ.make(numCmp, input);
+  for (let i = 0; i < N; i++) assert.equal(PQ.pop(pq), i);
+  assert.ok(itemsLength(pq) <= 10_000);
+});
+
+test("pop does not shrink small heaps", () => {
+  const pq = PQ.make(numCmp);
+  for (let i = 0; i < 1000; i++) PQ.push(pq, i);
+  for (let i = 0; i < 999; i++) PQ.pop(pq);
+  assert.equal(itemsLength(pq), 1000);
+});

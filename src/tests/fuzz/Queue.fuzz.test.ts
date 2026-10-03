@@ -73,6 +73,55 @@ test("size equals pushes minus pops and shifts", () => {
 });
 
 // ---------------------------------------------------------------------------
+// dumpToArray on large queues (G6-3): returns the contents in order, releases
+// the > 10 000-slot buffer, and leaves a fully working queue. numRuns is
+// intentionally below 1M: each run pushes 10k-40k items (~1 ms per run).
+// ---------------------------------------------------------------------------
+
+const capacityOf = (q: object): number => {
+  const sym = Object.getOwnPropertySymbols(q).find((s) => s.description === "list")!;
+  return ((q as Record<symbol, unknown[]>)[sym] as unknown[]).length;
+};
+
+test("dumpToArray on a large (possibly wrapped) queue resets capacity and stays usable", () => {
+  Prop.assert(
+    Arb.tuple(
+      Arb.integer(10_001, 40_000),
+      Arb.integer(0, 40_000),
+      Arb.array(Arb.tuple(Arb.integer(0, 3), Arb.integer(0, 10000)), { maxLength: 40 }),
+    ),
+    ([n, rotate, ops]) => {
+      const q = Queue.make<number>();
+      for (let i = 0; i < n; i++) Queue.push(q, i);
+      // Rotate so head/tail wrap around the ring before the dump. The model is
+      // the contiguous range [rotate, n + rotate).
+      for (let i = 0; i < rotate; i++) Queue.push(q, Queue.shift(q)! + n);
+      const wasLarge = capacityOf(q) > 10_000;
+      const out = Queue.dumpToArray(q);
+      if (out.length !== n) return false;
+      for (let i = 0; i < n; i++) if (out[i] !== i + rotate) return false;
+      if (Queue.size(q) !== 0) return false;
+      if (wasLarge && capacityOf(q) !== 4) return false;
+      const m: number[] = [];
+      for (const [op, v] of ops) {
+        if (op === 0) {
+          Queue.push(q, v);
+          m.push(v);
+        } else if (op === 1) {
+          Queue.unshift(q, v);
+          m.unshift(v);
+        } else if (op === 2) {
+          if (Queue.shift(q) !== m.shift()) return false;
+        } else if (Queue.pop(q) !== m.pop()) return false;
+      }
+      assert.deepEqual(Queue.toArray(q), m);
+      return true;
+    },
+    { numRuns: 2000 },
+  );
+});
+
+// ---------------------------------------------------------------------------
 // Stateful model-based fuzz test
 // ---------------------------------------------------------------------------
 
@@ -221,6 +270,18 @@ test("stateful: Queue matches array model under random operations", () => {
           check: () => true,
           run: (m: Model, r: Real) => {
             assert.deepEqual(Queue.toArray(r), m.arr, "toArray mismatch");
+          },
+        }),
+
+      // dumpToArray
+      (_model) =>
+        Arb.constant({
+          name: "dumpToArray",
+          check: () => true,
+          run: (m: Model, r: Real) => {
+            assert.deepEqual(Queue.dumpToArray(r), m.arr, "dumpToArray mismatch");
+            m.arr = [];
+            assert.equal(Queue.size(r), 0, "dumpToArray must empty the queue");
           },
         }),
     ],

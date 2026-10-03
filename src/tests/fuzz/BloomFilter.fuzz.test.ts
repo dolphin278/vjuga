@@ -245,3 +245,23 @@ test("BloomFilter property: measured FPR <= theoretical FPR (+noise) across key 
     { numRuns: 5000 },
   );
 });
+
+test("BloomFilter property: make rejects capacities outside [1, 2^31-1] with a range message", () => {
+  const invalid = Arb.oneOf(
+    Arb.map(Arb.float(2 ** 31, 2 ** 53), Math.floor),
+    Arb.integer(-0x7fff_ffff, 0),
+    Arb.map(Arb.float(1, 2 ** 31), (x) => (Number.isInteger(x) ? x + 0.5 : x)),
+    Arb.constantFrom(NaN, Infinity, -Infinity),
+  );
+  Prop.assert(
+    Arb.tuple(invalid, Arb.constantFrom(0.5, 0.01)),
+    ([cap, fpr]) => {
+      assert.throws(() => BF.make(cap, fpr), {
+        name: "RangeError",
+        message: /capacity must be an integer in \[1, 2\^31-1\]/,
+      });
+      return true;
+    },
+    { numRuns: 1_000_000 },
+  );
+});

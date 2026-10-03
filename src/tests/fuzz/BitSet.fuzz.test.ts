@@ -351,3 +351,23 @@ test("BitSet property: algebra and tail masking match a boolean[] oracle at rand
     { numRuns: 1_000_000 },
   );
 });
+
+test("BitSet property: make rejects capacities outside [1, 2^31-1] with a range message", () => {
+  const invalid = Arb.oneOf(
+    Arb.map(Arb.float(2 ** 31, 2 ** 53), Math.floor),
+    Arb.integer(-0x7fff_ffff, 0),
+    Arb.map(Arb.float(1, 2 ** 31), (x) => (Number.isInteger(x) ? x + 0.5 : x)),
+    Arb.constantFrom(NaN, Infinity, -Infinity),
+  );
+  Prop.assert(
+    invalid,
+    (cap) => {
+      assert.throws(() => BitSet.make(cap), {
+        name: "RangeError",
+        message: /capacity must be an integer in \[1, 2\^31-1\]/,
+      });
+      return true;
+    },
+    { numRuns: 1_000_000 },
+  );
+});

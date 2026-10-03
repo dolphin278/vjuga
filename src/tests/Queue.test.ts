@@ -374,3 +374,35 @@ test("peekBack is correct after ring buffer wraps", () => {
   assert.equal(peekBack(queue), 6);
   assert.equal(size(queue), 4, "peekBack must not mutate");
 });
+
+test("dumpToArray releases a large backing array (G6-3 regression)", () => {
+  const queue = make<number>();
+  for (let i = 0; i < 1 << 16; i++) push(queue, i);
+  assert.ok(capacityOf(queue) > 10000);
+  const out = dumpToArray(queue);
+  assert.equal(out.length, 1 << 16);
+  assert.equal(out[12345], 12345);
+  assert.equal(size(queue), 0);
+  assert.equal(capacityOf(queue), 4, "backing array reset to initial capacity");
+  // Still fully usable after the reset: grow past the reset capacity, wrap.
+  for (let i = 0; i < 10; i++) push(queue, i);
+  assert.equal(shift(queue), 0);
+  unshift(queue, -1);
+  assert.equal(pop(queue), 9);
+  assert.deepEqual(toArray(queue), [-1, 1, 2, 3, 4, 5, 6, 7, 8]);
+});
+
+test("dumpToArray keeps a small backing array for reuse", () => {
+  const queue = make<number>();
+  for (let i = 0; i < 100; i++) push(queue, i);
+  const cap = capacityOf(queue);
+  dumpToArray(queue);
+  assert.equal(capacityOf(queue), cap);
+});
+
+test("draining a large queue to empty via shift releases memory", () => {
+  const queue = make<number>();
+  for (let i = 0; i < 1 << 20; i++) push(queue, i);
+  while (size(queue) > 0) shift(queue);
+  assert.ok(capacityOf(queue) <= 1 << 14, `capacity ${capacityOf(queue)}`);
+});

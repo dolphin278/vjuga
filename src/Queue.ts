@@ -18,6 +18,7 @@
  * Growth doubles the buffer; shrink reclaims memory when utilization drops
  * below 25% of a buffer larger than 10 000 slots (contiguous or wrapped, and
  * also when empty), compacting the live range to the start and halving.
+ * `dumpToArray` resets a buffer larger than 10 000 slots to the initial 4.
  *
  * The double-write of `kCapacityMask` in `make()` forces V8 to mark the field
  * mutable from the first allocation — without it, the first `growList` resize
@@ -231,6 +232,11 @@ export function toArray<T>(queue: Queue<T>): Array<T> {
   return result as Array<T>;
 }
 
+/**
+ * Removes every element and returns them front-to-back, leaving the queue
+ * empty. A backing buffer larger than 10 000 slots is released (reset to the
+ * initial 4-slot capacity); smaller buffers are kept for reuse.
+ */
 export function dumpToArray<T>(queue: Queue<T>): Array<T> {
   const list = queue[kList];
   const head = queue[kHead];
@@ -255,5 +261,13 @@ export function dumpToArray<T>(queue: Queue<T>): Array<T> {
   }
   queue[kHead] = 0;
   queue[kTail] = 0;
+  // The queue is now empty, so shift/pop never reach tryToShrinkList; release a
+  // large backing array here instead (same 10 000-slot threshold). Truncating
+  // in place keeps the kList field's value (no new field write) and V8 trims
+  // the backing store; 4 slots matches make().
+  if (list.length > 10000) {
+    list.length = 4;
+    queue[kCapacityMask] = 0x3;
+  }
   return result;
 }

@@ -13,6 +13,12 @@ test("make() throws for invalid capacity", () => {
   assert.throws(() => BitSet.make(-0.5), RangeError);
 });
 
+test("make() capacity error states the [1, 2^31-1] range (G6-5 regression)", () => {
+  const msg = /capacity must be an integer in \[1, 2\^31-1\], got 2147483648/;
+  assert.throws(() => BitSet.make(2 ** 31), { name: "RangeError", message: msg });
+  assert.throws(() => BitSet.make(0), /integer in \[1, 2\^31-1\]/);
+});
+
 test("make() creates a BitSet with all bits 0", () => {
   const bs = BitSet.make(64);
   assert.equal(BitSet.popcount(bs), 0);

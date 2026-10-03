@@ -19,7 +19,9 @@
  * O(n + k log n) — faster than sorting the full array.
  *
  * Internal design:
- *   kItems: Array<T | undefined>  — heap array, first kSize slots are live
+ *   kItems: Array<T | undefined>  — heap array, first kSize slots are live;
+ *                                   `pop` shrinks it below 25% use (> 10 000
+ *                                   slots; checked every 1024th size)
  *   kSize:  number                — number of live elements
  *   kCmp:   (a, b) => number      — comparator, called directly (no Reflect)
  *
@@ -107,7 +109,10 @@ export function push<T>(pq: PriorityQueue<T>, value: T): void {
 
 /**
  * Removes and returns the minimum element in O(log n).
- * Returns `undefined` if the heap is empty.
+ * Returns `undefined` if the heap is empty. When the backing array exceeds
+ * 10 000 slots and fewer than a quarter are live, it is truncated to twice
+ * the live size (amortized O(1)). The check runs only when the new size is a
+ * multiple of 1024, so truncation can lag by up to 1023 pops.
  */
 export function pop<T>(pq: PriorityQueue<T>): T | undefined {
   const n = pq[kSize];
@@ -131,6 +136,15 @@ export function pop<T>(pq: PriorityQueue<T>): T | undefined {
       pq[kSize] = n;
       throw e;
     }
+  }
+  // Shrink: once a large heap (> 10 000 slots) drops below 25% utilization,
+  // truncate the array to twice the live size so drained heaps release memory.
+  // Checked only every 1024th size (a register-only AND, no `items.length`
+  // load on the other 1023 pops) so the common pop path stays unchanged; the
+  // truncation lags by < 1024 pops. Halving at <25% keeps it amortized O(1);
+  // slots past kSize already hold undefined, so no live element is dropped.
+  if ((newSize & 1023) === 0 && items.length > 10000 && newSize < items.length >> 2) {
+    items.length = newSize << 1;
   }
   return min;
 }

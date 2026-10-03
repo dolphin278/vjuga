@@ -74,8 +74,10 @@ test("size equals pushes minus pops and shifts", () => {
 
 // ---------------------------------------------------------------------------
 // dumpToArray on large queues (G6-3): returns the contents in order, releases
-// the > 10 000-slot buffer, and leaves a fully working queue. numRuns is
-// intentionally below 1M: each run pushes 10k-40k items (~1 ms per run).
+// oversized buffers with hysteresis (room for the larger of the two previous
+// dumps is kept, so steady batches never regrow) and stays fully usable.
+// numRuns is intentionally
+// below 1M: each run pushes up to 4 × 40k items (~1 ms per run).
 // ---------------------------------------------------------------------------
 
 const capacityOf = (q: object): number => {
@@ -83,25 +85,40 @@ const capacityOf = (q: object): number => {
   return ((q as Record<symbol, unknown[]>)[sym] as unknown[]).length;
 };
 
-test("dumpToArray on a large (possibly wrapped) queue resets capacity and stays usable", () => {
+test("dumpToArray on large (possibly wrapped) queues releases with hysteresis and stays usable", () => {
   Prop.assert(
     Arb.tuple(
-      Arb.integer(10_001, 40_000),
-      Arb.integer(0, 40_000),
+      Arb.array(Arb.tuple(Arb.integer(0, 40_000), Arb.integer(0, 40_000)), {
+        minLength: 1,
+        maxLength: 4,
+      }),
       Arb.array(Arb.tuple(Arb.integer(0, 3), Arb.integer(0, 10000)), { maxLength: 40 }),
     ),
-    ([n, rotate, ops]) => {
+    ([rounds, ops]) => {
       const q = Queue.make<number>();
-      for (let i = 0; i < n; i++) Queue.push(q, i);
-      // Rotate so head/tail wrap around the ring before the dump. The model is
-      // the contiguous range [rotate, n + rotate).
-      for (let i = 0; i < rotate; i++) Queue.push(q, Queue.shift(q)! + n);
-      const wasLarge = capacityOf(q) > 10_000;
-      const out = Queue.dumpToArray(q);
-      if (out.length !== n) return false;
-      for (let i = 0; i < n; i++) if (out[i] !== i + rotate) return false;
-      if (Queue.size(q) !== 0) return false;
-      if (wasLarge && capacityOf(q) !== 4) return false;
+      let last = 0;
+      let prev = 0;
+      for (const [n, rot] of rounds) {
+        for (let i = 0; i < n; i++) Queue.push(q, i);
+        // Rotate so head/tail wrap around the ring before the dump. The model
+        // is the contiguous range [rotate, n + rotate).
+        const rotate = n > 0 ? rot : 0;
+        for (let i = 0; i < rotate; i++) Queue.push(q, Queue.shift(q)! + n);
+        const before = capacityOf(q);
+        const out = Queue.dumpToArray(q);
+        if (out.length !== n) return false;
+        for (let i = 0; i < n; i++) if (out[i] !== i + rotate) return false;
+        if (Queue.size(q) !== 0) return false;
+        const after = capacityOf(q);
+        const keep = Math.max(last, prev);
+        prev = last;
+        last = n;
+        if (after > before || (after & (after - 1)) !== 0) return false;
+        // Never shrinks below what the two previous dumps needed (no regrowth)...
+        if (after !== before && after <= keep) return false;
+        // ...and a large buffer never keeps more than 2× that.
+        if (before > 10_000 && after > Math.max(4, 2 * keep)) return false;
+      }
       const m: number[] = [];
       for (const [op, v] of ops) {
         if (op === 0) {
@@ -115,7 +132,9 @@ test("dumpToArray on a large (possibly wrapped) queue resets capacity and stays 
         } else if (Queue.pop(q) !== m.pop()) return false;
       }
       assert.deepEqual(Queue.toArray(q), m);
-      return true;
+      // Once the history holds only small dumps, a large buffer is released.
+      for (let i = 0; i < 3; i++) Queue.dumpToArray(q);
+      return capacityOf(q) <= 10_000;
     },
     { numRuns: 2000 },
   );

@@ -375,21 +375,65 @@ test("peekBack is correct after ring buffer wraps", () => {
   assert.equal(size(queue), 4, "peekBack must not mutate");
 });
 
-test("dumpToArray releases a large backing array (G6-3 regression)", () => {
+test("dumpToArray releases a burst larger than recent dumps (G6-3 regression)", () => {
   const queue = make<number>();
   for (let i = 0; i < 1 << 16; i++) push(queue, i);
-  assert.ok(capacityOf(queue) > 10000);
+  assert.equal(capacityOf(queue), 1 << 17);
   const out = dumpToArray(queue);
   assert.equal(out.length, 1 << 16);
   assert.equal(out[12345], 12345);
   assert.equal(size(queue), 0);
-  assert.equal(capacityOf(queue), 4, "backing array reset to initial capacity");
-  // Still fully usable after the reset: grow past the reset capacity, wrap.
-  for (let i = 0; i < 10; i++) push(queue, i);
+  // No earlier dumps: keep = max(0, 0) → reset to the initial 4 slots.
+  assert.equal(capacityOf(queue), 4);
+  // shift/pop on the empty queue stay cheap no-ops.
+  assert.equal(shift(queue), undefined);
+  assert.equal(pop(queue), undefined);
+  // Still fully usable after the release: grow, wrap.
+  for (let i = 0; i < 20; i++) push(queue, i);
   assert.equal(shift(queue), 0);
   unshift(queue, -1);
-  assert.equal(pop(queue), 9);
-  assert.deepEqual(toArray(queue), [-1, 1, 2, 3, 4, 5, 6, 7, 8]);
+  assert.equal(pop(queue), 19);
+  assert.deepEqual(toArray(queue), [-1, ...Array.from({ length: 18 }, (_, i) => i + 1)]);
+});
+
+test("dumpToArray keeps room for the larger of the two previous dumps", () => {
+  const queue = make<number>();
+  const fill = (n: number): void => {
+    for (let i = 0; i < n; i++) push(queue, i);
+  };
+  fill(20000);
+  dumpToArray(queue); // keep = max(0, 0) → 4
+  assert.equal(capacityOf(queue), 4);
+  fill(20000);
+  dumpToArray(queue); // keep = max(20000, 0) → kept
+  assert.equal(capacityOf(queue), 32768);
+  fill(10);
+  dumpToArray(queue); // keep = max(20000, 20000) → kept
+  fill(10);
+  dumpToArray(queue); // keep = max(10, 20000) → kept
+  assert.equal(capacityOf(queue), 32768);
+  fill(10);
+  dumpToArray(queue); // keep = max(10, 10) → 16 slots
+  assert.equal(capacityOf(queue), 16);
+  // A burst during a stream of 3k dumps is released right away.
+  fill(3000);
+  dumpToArray(queue);
+  fill(3000);
+  dumpToArray(queue);
+  fill(100_000);
+  assert.equal(dumpToArray(queue).length, 100_000);
+  assert.equal(capacityOf(queue), 4096); // keep = max(3000, 3000)
+});
+
+test("steady large dumps never shrink-then-regrow (BufferizedFunction pattern)", () => {
+  const queue = make<number>();
+  for (let cycle = 0; cycle < 8; cycle++) {
+    const n = cycle & 1 ? 3000 : 20000; // alternating batch sizes
+    for (let i = 0; i < n; i++) push(queue, i);
+    assert.equal(dumpToArray(queue).length, n);
+    // The first two dumps have no history; from then on capacity is stable.
+    if (cycle >= 2) assert.equal(capacityOf(queue), 32768, `cycle ${cycle}`);
+  }
 });
 
 test("dumpToArray keeps a small backing array for reuse", () => {

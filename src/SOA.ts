@@ -269,8 +269,10 @@ export function getSlice<T, K extends keyof T>(soa: SOA<T>, sliceName: K): T[K][
  * Returns 0 for an empty SOA (no own keys).
  */
 export function length<T>(soa: SOA<T>): number {
+  // `for…in` visits own keys before inherited ones, so if the first key is
+  // inherited there are no own columns: one hasOwn check per call, no loop.
   for (const key in soa) {
-    if (hasOwn.call(soa, key)) return (soa as Record<string, unknown[]>)[key].length;
+    return hasOwn.call(soa, key) ? (soa as Record<string, unknown[]>)[key].length : 0;
   }
   return 0;
 }

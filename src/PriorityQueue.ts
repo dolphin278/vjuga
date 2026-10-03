@@ -110,9 +110,9 @@ export function push<T>(pq: PriorityQueue<T>, value: T): void {
 /**
  * Removes and returns the minimum element in O(log n).
  * Returns `undefined` if the heap is empty. When the backing array exceeds
- * 10 000 slots and fewer than a quarter are live, it is truncated to twice
- * the live size (amortized O(1)). The check runs only when the new size is a
- * multiple of 1024, so truncation can lag by up to 1023 pops.
+ * 10 000 slots and fewer than a quarter are live, it is replaced by a copy of
+ * twice the live size (amortized O(1)). The check runs only when the new size
+ * is a nonzero multiple of 1024, so shrinking can lag by up to 1023 pops.
  */
 export function pop<T>(pq: PriorityQueue<T>): T | undefined {
   const n = pq[kSize];
@@ -136,17 +136,28 @@ export function pop<T>(pq: PriorityQueue<T>): T | undefined {
       pq[kSize] = n;
       throw e;
     }
-  }
-  // Shrink: once a large heap (> 10 000 slots) drops below 25% utilization,
-  // truncate the array to twice the live size so drained heaps release memory.
-  // Checked only every 1024th size (a register-only AND, no `items.length`
-  // load on the other 1023 pops) so the common pop path stays unchanged; the
-  // truncation lags by < 1024 pops. Halving at <25% keeps it amortized O(1);
-  // slots past kSize already hold undefined, so no live element is dropped.
-  if ((newSize & 1023) === 0 && items.length > 10000 && newSize < items.length >> 2) {
-    items.length = newSize << 1;
+    // Shrink check only when newSize is a nonzero multiple of 1024: the other
+    // pops pay one register-only AND (no `items.length` load) and the
+    // pop-to-empty branch above pays nothing. A drain always passes size
+    // 1024, so it ends bounded.
+    if ((newSize & 1023) === 0) maybeShrink(pq, items, newSize);
   }
   return min;
+}
+
+// Once a large heap (> 10 000 slots) drops below 25% utilization, replace the
+// array with a copy of twice the live size so drained heaps release memory.
+// Halving at <25% keeps it amortized O(1); slots past kSize already hold
+// undefined, so no live element is dropped. A fresh `slice` (kItems is
+// double-written in make(), so the field store is cheap) beat truncating via
+// `items.length = …`: the copy is a right-sized packed array on both engines,
+// and small push/pop after a shrinking drain stayed within ~2% of the
+// no-shrink baseline (truncation: +3-4%). Kept out of line on purpose: with
+// the shrink inlined in pop, small push/pop after a shrinking drain measured
+// ~+20% on node.
+function maybeShrink<T>(pq: PriorityQueue<T>, items: (T | undefined)[], newSize: number): void {
+  if (items.length > 10000 && newSize < items.length >> 2)
+    pq[kItems] = items.slice(0, newSize << 1);
 }
 
 /**

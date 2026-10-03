@@ -10,6 +10,8 @@
  *   kHead:         number               — index of the front element
  *   kTail:         number               — index past the last element
  *   kList:         Array<T | undefined>  — backing storage (always power-of-2 length)
+ *   kLastDump:     number               — size of the previous `dumpToArray` result
+ *   kPrevDump:     number               — size of the one before that
  *
  * Capacity is always a power of 2 so modular index arithmetic reduces to a
  * single bitwise AND with `capacityMask`. Size is computed branchlessly:
@@ -18,7 +20,9 @@
  * Growth doubles the buffer; shrink reclaims memory when utilization drops
  * below 25% of a buffer larger than 10 000 slots (contiguous or wrapped, and
  * also when empty), compacting the live range to the start and halving.
- * `dumpToArray` resets a buffer larger than 10 000 slots to the initial 4.
+ * `dumpToArray` shrinks with hysteresis: it keeps room for the larger of the
+ * two previous dumps, so steady large batches never regrow, while a one-off
+ * burst is released by the dump that empties it.
  *
  * The double-write of `kCapacityMask` in `make()` forces V8 to mark the field
  * mutable from the first allocation — without it, the first `growList` resize
@@ -38,12 +42,16 @@ const kCapacityMask: unique symbol = Symbol("capacityMask");
 const kHead: unique symbol = Symbol("head");
 const kTail: unique symbol = Symbol("tail");
 const kList: unique symbol = Symbol("list");
+const kLastDump: unique symbol = Symbol("lastDump");
+const kPrevDump: unique symbol = Symbol("prevDump");
 
 export interface Queue<T> {
   [kCapacityMask]: number;
   [kHead]: number;
   [kTail]: number;
   [kList]: Array<T | undefined>;
+  [kLastDump]: number;
+  [kPrevDump]: number;
 }
 
 export function make<T>(items?: Iterable<T>): Queue<T> {
@@ -52,7 +60,12 @@ export function make<T>(items?: Iterable<T>): Queue<T> {
     [kHead]: 0,
     [kTail]: 0,
     [kList]: Array(4),
+    [kLastDump]: 0,
+    [kPrevDump]: 0,
   };
+  // dumpToArray writes kLastDump/kPrevDump; same double-write rationale as below.
+  queue[kLastDump] = 0;
+  queue[kPrevDump] = 0;
   // Write kCapacityMask a second time so V8 marks it as a mutable field from
   // the very first make() call. growList() writes to kCapacityMask on every
   // resize; without this, the first resize triggers a cascade deoptimization
@@ -234,8 +247,13 @@ export function toArray<T>(queue: Queue<T>): Array<T> {
 
 /**
  * Removes every element and returns them front-to-back, leaving the queue
- * empty. A backing buffer larger than 10 000 slots is released (reset to the
- * initial 4-slot capacity); smaller buffers are kept for reuse.
+ * empty. Buffers up to 10 000 slots are kept for reuse. A larger buffer is
+ * shrunk to the smallest power of 2 above the larger of the two previous
+ * dumps' sizes, if that is under half its size. Repeated large dumps of
+ * similar size therefore regrow at most during the first two dumps, and a
+ * burst larger than the recent dumps is released by the dump that empties
+ * it. Remaining retention: up to ~2× the larger of the last two dump sizes
+ * stays allocated while the queue is idle.
  */
 export function dumpToArray<T>(queue: Queue<T>): Array<T> {
   const list = queue[kList];
@@ -261,13 +279,29 @@ export function dumpToArray<T>(queue: Queue<T>): Array<T> {
   }
   queue[kHead] = 0;
   queue[kTail] = 0;
-  // The queue is now empty, so shift/pop never reach tryToShrinkList; release a
-  // large backing array here instead (same 10 000-slot threshold). Truncating
-  // in place keeps the kList field's value (no new field write) and V8 trims
-  // the backing store; 4 slots matches make().
+  // Release with hysteresis: a buffer larger than 10 000 slots is truncated to
+  // the smallest power of 2 above max(previous two dumps) when that is under
+  // half the current size. A steady stream of equal (or alternating) large
+  // batches — BufferizedFunction flushes via dumpToArray — therefore never
+  // shrinks-then-regrows after its first two flushes, while a burst larger
+  // than recent dumps is released by the very dump that empties it. The
+  // check lives here, not on the empty-return path of shift/pop: a length
+  // check there measured ~+90% on bun for poll-on-empty loops.
+  // `keep < length / 2` also bounds keep below 2^30, so `1 << n` cannot wrap.
+  const count = result.length;
   if (list.length > 10000) {
-    list.length = 4;
-    queue[kCapacityMask] = 0x3;
+    const last = queue[kLastDump];
+    const prev = queue[kPrevDump];
+    const keep = last > prev ? last : prev;
+    if (keep < list.length >> 1) {
+      const cap = keep < 4 ? 4 : 1 << (32 - Math.clz32(keep));
+      // Truncating in place keeps the kList value (no field write); V8 trims
+      // the backing store.
+      list.length = cap;
+      queue[kCapacityMask] = cap - 1;
+    }
   }
+  queue[kPrevDump] = queue[kLastDump];
+  queue[kLastDump] = count;
   return result;
 }

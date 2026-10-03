@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as UUID from "../UUID.js";
+import { resetV7State } from "../UUID.v7.js";
 import { ValidationError } from "../schema/ValidationError.js";
 
 // --- uuid (throwing constructor) ---
@@ -122,11 +123,11 @@ function withFakeClock(clock: () => number, body: () => void): void {
   const realNow = Date.now;
   Date.now = clock;
   try {
-    UUID.resetV7State();
+    resetV7State();
     body();
   } finally {
     Date.now = realNow;
-    UUID.resetV7State();
+    resetV7State();
   }
 }
 

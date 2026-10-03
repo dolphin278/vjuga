@@ -12,7 +12,7 @@
  *   - Async results are cached as promises, so a rejection is cached forever;
  *     `this` is not forwarded to `fn`.
  *   - `once` retries after a throw and releases `fn` after the first success;
- *     a re-entrant call while the first run is in progress throws TypeError.
+ *     a re-entrant call during the first run throws TypeError (see `once`).
  *
  * When to use: pure functions with repeated identical arguments (with a
  * bounded cache for large key spaces); `once` for argument-free lazy init.
@@ -107,8 +107,11 @@ function defaultCacheKeyFn<T extends readonly unknown[]>(...args: T): string {
  * Throws TypeError if the wrapper is called again (directly or indirectly)
  * from inside `fn` while that first run is still in progress: there is no
  * result to return yet, and running `fn` again would break the "once"
- * guarantee. (An async `fn` returns its promise synchronously, so it is
- * not affected.)
+ * guarantee. An async `fn` that re-enters after its first `await` gets the
+ * cached promise. One that re-enters before its first `await` (still inside
+ * the first run) gets the TypeError thrown into its body: unless it catches
+ * it, the returned promise rejects with it, and that promise is cached like
+ * any other result (`once` does not inspect results).
  */
 export function once<T extends readonly unknown[], R>(fn: Fn<T, R>): Fn<T, R> {
   // definite assignment: result is always set before first read (guarded by `f`)

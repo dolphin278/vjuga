@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as UUID from "../../UUID.js";
+import { resetV7State } from "../../UUID.v7.js";
 import * as Arb from "../../Arbitrary.js";
 import * as Prop from "../../Property.js";
 
@@ -44,7 +45,7 @@ test("v7 (model): strictly increasing under random clock jumps, stalls and step-
         Date.now = fakeNow;
         try {
           clock = start;
-          UUID.resetV7State();
+          resetV7State();
           // Model: the embedded timestamp is the running max of the clock; the
           // counter increments by exactly 1 while that max does not move.
           let modelMs = clock;
@@ -73,7 +74,7 @@ test("v7 (model): strictly increasing under random clock jumps, stalls and step-
     );
   } finally {
     Date.now = realNow;
-    UUID.resetV7State();
+    resetV7State();
   }
 });
 

@@ -13,6 +13,8 @@
     "./WorkerPool.worker": null,
     "./WorkerPool.protocol.js": null,
     "./WorkerPool.protocol": null,
+    "./UUID.v7.js": null,
+    "./UUID.v7": null,
     "./benchmarks/*.js": null,
     "./benchmarks/*": null,
     "./tests/*.js": null,

@@ -12,7 +12,7 @@ const ROOT = new URL("..", import.meta.url).pathname;
 const CANONICAL_GUIDE = "CONTRIBUTING-AGENTS.md";
 
 // Internal modules that must stay unavailable through package subpath exports.
-const INTERNAL_MODULES = ["WorkerPool.worker", "WorkerPool.protocol"];
+const INTERNAL_MODULES = ["WorkerPool.worker", "WorkerPool.protocol", "UUID.v7"];
 const EXCLUDED = new Set(INTERNAL_MODULES.map((m) => `${m}.ts`));
 const ALLOWED_SRC_SUBDIRS = new Set(["benchmarks", "schema", "tests"]);
 const SHARED_UNIT_COVERAGE = new Map([
@@ -132,6 +132,18 @@ for (const module of INTERNAL_MODULES) {
       process.exit(1);
     }
   }
+}
+
+// Tools read a dependency's metadata via `<pkg>/package.json`; the "./*"
+// pattern would otherwise map it to src/package.json.js.
+if (packageJson.exports?.["./package.json"] !== "./package.json") {
+  console.error('lint-docs: package.json exports["./package.json"] must be "./package.json"');
+  process.exit(1);
+}
+const exportKeys = Object.keys(packageJson.exports ?? {});
+if (exportKeys.indexOf("./package.json") > exportKeys.indexOf("./*")) {
+  console.error('lint-docs: package.json exports["./package.json"] must come before "./*"');
+  process.exit(1);
 }
 
 for (const specifier of ["./benchmarks/*.js", "./benchmarks/*", "./tests/*.js", "./tests/*"]) {

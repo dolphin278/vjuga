@@ -48,7 +48,7 @@ Add that paragraph to your app's `AGENTS.md`. In a monorepo, resolve `node_modul
 | Cache with bounded memory, keep hottest items | `LRUCache` | Evicts least-recently-used. Always set `capacity`. |
 | Cache large objects, let GC reclaim them | `WeakCache` | `make`, `get`, `set`, `has`, `remove`, `size`. Values must be objects. `size()` may lag GC. |
 | Cache pure function results | `Memoization` | `memoize(fn)`. Default cache is unbounded: pass a bounded `opts.cache` (`get`/`has`/`set`, e.g. an `LRUCache` adapter) for large key spaces. Default key `JSON.stringify(args)` collides for `null`/`undefined`/`NaN`/Maps/Sets and throws on BigInt: pass `cacheKeyFn`. Rejected promises are cached. |
-| One-time lazy initialization (ignore arguments) | `Memoization` | `once(fn)` — calls `fn` until it succeeds once (retries after a throw); a re-entrant call while the first run is in progress throws `TypeError`. |
+| One-time lazy initialization (ignore arguments) | `Memoization` | `once(fn)` — calls `fn` until it succeeds once (retries after a throw); a re-entrant call while the first run is in progress throws `TypeError` (in an async `fn` before its first `await`, that rejects the returned promise, which is then cached like any result). |
 | Pool same-shape objects to avoid GC pressure | `MemoryPool` | `make`, `acquire`, `release`, `withAcquire(pool, fn)` (if `fn` returns a promise, the instance is released when it settles). For hot loops allocating thousands of objects per tick. `make` throws `RangeError` on invalid `maxSize`/`minSize`. Overhead not worth it for < ~10 items. |
 
 ### Data structures
@@ -59,7 +59,7 @@ Add that paragraph to your app's `AGENTS.md`. In a monorepo, resolve `node_modul
 | Priority-ordered extraction (min first) | `PriorityQueue` | Binary min-heap, not stable. `make`, `push`, `pop`, `peek`, `heapify`, `size`. Supply comparator at construction; a throwing comparator leaves the heap unchanged. |
 | Prefix-keyed lookup / URL routing / autocomplete | `RadixTree` | `insert`, `lookup`, `prefixMatch` (results in lexicographic key order). `insert(k, undefined)` removes. Outperforms `Map` for prefix scans. |
 | Cache-friendly iteration over many records | `SOA` | Structure of Arrays. `index` is a reserved column name; `set` throws `RangeError` unless `0 <= i < length`; don't change the column set after the first `get`/`pop`. Use for tight loops, ECS, columnar data. |
-| Sorted key-value map with floor/ceiling/range | `OrderedMap` | AVL tree. `make(compare?)`, `set`, `get`, `has`, `del`, `min`, `max`, `floor`, `ceiling`, `range`, `keys`, `values`, `entries`, `forRange(m, lo, hi, fn)` (hot-path range scan), `size`. The default comparator is a total order only for all-number or all-string keys (NaN last, `-0` equals `0`); mixed key types collide, so pass `compare`. Use when sorted order or range queries matter; for unordered lookup use plain `Map`. |
+| Sorted key-value map with floor/ceiling/range | `OrderedMap` | AVL tree. `make(compare?)`, `set`, `get`, `has`, `del`, `min`, `max`, `floor`, `ceiling`, `range`, `keys`, `values`, `entries`, `forRange(m, lo, hi, fn)` (hot-path range scan), `size`. Default comparator is a total order for keys that compare consistently with `<`/`>` (numbers, bigints, or strings — not strings mixed with numbers; NaN last, `-0` equals `0`); objects, `null`/`undefined`, booleans or number/string mixes like `1` and `"1"` collide — pass `compare`. Don't `set`/`del` inside `forRange`. Use when sorted order or range queries matter; for unordered lookup use plain `Map`. |
 | Compact dense boolean vector or set algebra | `BitSet` | `Uint32Array`-backed. `make(capacity)`, `set`, `clear`, `toggle`, `get`, `capacity`, `popcount` (SWAR), `toArray`, `and`, `or`, `xor`, `not`. Use for SOA row flags, graph adjacency, or bit-parallel set operations. |
 | Fast "definitely absent" pre-filter | `BloomFilter` | Probabilistic. `make(capacity, fpr?)`, `add`, `mightContain`, `clear`, `count`, `bitCount`, `hashCount`. Strings only; no false negatives; `make` throws `RangeError` unless 0 < `fpr` < 1 (NaN included), or if `fpr` is unreachable within 2^32 bits. Use before expensive DB or cache lookups to skip work when item is definitely absent. |
 
@@ -93,7 +93,7 @@ Add that paragraph to your app's `AGENTS.md`. In a monorepo, resolve `node_modul
 |---|---|---|
 | Define a schema once, use many ways | `schema/Schema` | 18 kinds (`S.null_()`, `S.enum_()`, `S.unknown()`, `S.allOf()`, `S.not()`, `S.conditional()`; `S.oneOf()` = exclusive union). `S.Infer<typeof schema>` for TypeScript type; `toJsonSchema`, `fromJsonSchema(js, { refs, formats })` (JSON Schema 2020-12 incl. `$ref`/`oneOf`/`allOf`/`not`/`if`; `Err` for anything it cannot express, recursive `$ref` included; `formats: "strict"` = `Err` on unknown `format` names). `S.object()` rejects undeclared own keys unless `{ additionalProperties: true }`; `S.number()` rejects NaN/±Infinity. Source of truth for Validate, JSON, TOON. |
 | Validate unknown input at runtime | `schema/Validate` | `validate(schema)` compiles once at init; returns `Result<T, SchemaError>`. `validate(schema, { allErrors: true })` returns every failure as `SchemaError[]`. Unions accept a value only if some variant fully validates it; `oneOf` only if exactly one does. Formats `date-time`/`date`/`time` (RFC 3339), `email`, `uri`, `uuid`, `ipv4`, `ipv6` are enforced; legacy `iso-datetime` is a loose prefix check; other names are ignored. |
-| Check a string `format` / list enforced names | `schema/Formats` | `isEmail`, `isUri`, `isUuid`, `isIPv4`, `isIPv6`, `KNOWN_FORMATS`, `isKnownFormat`, `formatTester`. |
+| Check a string `format` / list enforced names | `schema/Formats` | `isEmail`, `isUri`, `isUuid` (format `uuid`: any version and variant nibble — looser than `UUID.uuid()`), `isIPv4`, `isIPv6`, `KNOWN_FORMATS`, `isKnownFormat`, `formatTester`. |
 | Fast JSON serialization / deserialization | `schema/JSON` | Typed one-pass parse+validate (`parse(schema)`); `stringify(schema)` emits only declared keys (`unknown` / `not` values as-is), non-finite → `null`, and is not faster than native `JSON.stringify` once output is consumed. Compile at module scope. |
 | Token-efficient serialization (LLM / config) | `schema/TOON` | ~50% smaller than JSON for tabular arrays (~20% flat objects, little for nested). Nested list items and discriminated unions supported; unsupported shapes throw at compile time. |
 | Custom validator with structured errors | `schema/ValidationError` | `ValidationError`, `Validator<T>` type. |
@@ -114,7 +114,7 @@ Add that paragraph to your app's `AGENTS.md`. In a monorepo, resolve `node_modul
 | Generate typed random test data | `Arbitrary` | `integer`, `nat`, `float`, `bigint`, `date`, `string`, `array`, `uniqueArray`, `dictionary`, `oneOf`, `frequency`, `constantFrom`, `map`, `chain`, `letrec`. Shrinking is built in; `Tree.shrinks` must be re-iterable. |
 | Run property-based tests | `Property` | `assert(arb, predicate, { numRuns: 500 })`; also `maxShrinkEvaluations`, `timeoutMs`, `path` replay (`run@size:idx…`, same `seed`). Use inside `node:test`. |
 | Test stateful APIs via command sequences | `StatefulTest` | `assertStateful({ initialModel, initialReal, commands })`; generators receive the live model. Also `assertStatefulAsync`, `checkStateful*`; `maxShrinkEvaluations`, `timeoutMs`. |
-| Find crash inputs in parsers / validators | `CoverageGuided` | `fuzz(arb, fn)` (random, time-boxed) / `fuzzAsync` (V8 coverage feedback; ~5–10x slower than PBT; falls back to random fuzzing when `NODE_V8_COVERAGE` is set). `config.corpus` runs first; `maxCorpus` default 256. |
+| Find crash inputs in parsers / validators | `CoverageGuided` | `fuzz(arb, fn)` (random, time-boxed) / `fuzzAsync` (V8 coverage feedback; ~5–10x slower than PBT; falls back to random fuzzing when `NODE_V8_COVERAGE` is set to a non-empty value). `config.corpus` runs first; `maxCorpus` default 256. |
 | Reproducible / splittable randomness | `PRNG` | `seed(bigint)`, `randomSeed()`, `make`, `next`, `nextInt`, `nextBigInt` (raw 64 bits), `split`. Not cryptographic. |
 
 ### Functional
@@ -288,8 +288,8 @@ test("encode/decode roundtrip", () => {
    and `node:net` respectively. Not available in browsers or edge runtimes.
 10. **Internal exports are not API** — exported only for tests or for the
     schema code generators; they may change in any release: `WeakCache.cleanupStaleEntry`,
-    `UUID.resetV7State`, `schema/Validate` `emitStandardRefs` / `emitValidation` /
-    `makeError`, `schema/Schema` `findDiscriminant` / `isPrimitive`.
+    `schema/Validate` `emitStandardRefs` / `emitValidation` / `makeError`,
+    `schema/Schema` `findDiscriminant` / `isPrimitive`.
 
 ---
 

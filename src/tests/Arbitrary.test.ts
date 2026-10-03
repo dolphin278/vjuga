@@ -1389,6 +1389,12 @@ const swapCases: [string, Arb.Arbitrary<unknown>, Arb.Arbitrary<unknown>, (v: an
     (v) => v.mode === "b",
   ],
   ["constant object keys", Arb.constant({ a: 1 }), Arb.constant({ b: 1 }), (v) => "b" in v],
+  [
+    "constant key order",
+    Arb.constant({ x: 1, y: 2 }),
+    Arb.constant({ y: 2, x: 1 }),
+    (v) => Object.keys(v)[0] === "y",
+  ],
   ["constant object size", Arb.constant({ a: 1 }), Arb.constant({ a: 1, b: 2 }), (v) => "b" in v],
   ["constant array length", Arb.constant([1]), Arb.constant([1, 2]), (v) => v.length === 2],
   ["constant array vs object", Arb.constant([1]), Arb.constant({ 0: 1 }), (v) => !Array.isArray(v)],

@@ -146,10 +146,10 @@ function sameKey(a: ArbKey, b: ArbKey): boolean {
 /**
  * Key parts compare structurally so values rebuilt inline (`constant({ mode:
  * "a" })` in a `gen` body) still match: primitives by `Object.is`, functions
- * via sameArb, arrays and plain objects recursively. Other objects (Date, Map,
- * class instances) compare by reference. Cyclic or huge values exhaust the
- * bounded budget and count as different — only a missed reuse, never a
- * wrong one.
+ * via sameArb, arrays and plain objects (same keys, same order) recursively.
+ * Other objects (Date, Map, class instances) compare by reference. Cyclic or
+ * huge values exhaust the bounded budget and count as different — only a
+ * missed reuse, never a wrong one.
  */
 function samePart(x: unknown, y: unknown, budget: { nodes: number }, depth: number): boolean {
   if (Object.is(x, y)) return true;
@@ -163,10 +163,13 @@ function samePart(x: unknown, y: unknown, budget: { nodes: number }, depth: numb
     return true;
   }
   if (!isPlainObject(x) || !isPlainObject(y)) return false;
+  // Same keys in the same order: key order is observable (Object.keys, JSON).
   const keys = Object.keys(x);
-  if (keys.length !== Object.keys(y).length) return false;
-  for (const k of keys) {
-    if (!Object.hasOwn(y, k) || !samePart(x[k], y[k], budget, depth + 1)) return false;
+  const yKeys = Object.keys(y);
+  if (keys.length !== yKeys.length) return false;
+  for (let i = 0; i < keys.length; i++) {
+    const k = keys[i]!;
+    if (yKeys[i] !== k || !samePart(x[k], y[k], budget, depth + 1)) return false;
   }
   return true;
 }
@@ -1109,8 +1112,8 @@ interface Pick {
  * compare by factory and parameters, so `integer(0, 10)` never feeds a pick
  * to `integer(100, 200)`: bounds, lengths and `constant`/`constantFrom`
  * values structurally (primitives by `Object.is`, arrays and plain objects
- * recursively, other objects by reference), inner arbitraries recursively,
- * and callbacks
+ * recursively with key order, other objects by reference; bounded size and
+ * depth), inner arbitraries recursively, and callbacks
  * (`map`, `filter`, `chain`, `uniqueArray` keys) by reference or by name
  * and source — so arbitraries rebuilt inline in `fn` still match, but two
  * callbacks with the same source and different captured variables do too.

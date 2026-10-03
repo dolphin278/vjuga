@@ -178,6 +178,42 @@ test("string/array: lengths validate at construction and bound generated lengths
   );
 });
 
+/** Plain JSON-like data for constant() payloads. */
+const plain = Arb.letrec((tie) => ({
+  v: Arb.oneOf<unknown>(
+    Arb.constantFrom<unknown>(0, -0, 1, "a", null, true),
+    Arb.array(tie("v"), { maxLength: 3 }),
+    Arb.dictionary(Arb.constantFrom("x", "y", "z"), tie("v"), { maxSize: 3 }),
+  ),
+})).v;
+
+test("gen: inline constants replay iff structurally equal, never crossing", () => {
+  Prop.assert(
+    Arb.tuple(plain, plain, Arb.nat(100), seedArb),
+    ([a, b, size, prng]) => {
+      const sa = JSON.stringify(a);
+      const sb = JSON.stringify(b);
+      // Constants are rebuilt from clones on every replay, as an inline
+      // literal in a gen body would be.
+      const arb = Arb.gen((pick) =>
+        pick(Arb.boolean())
+          ? { s: sa, c: pick(Arb.constant(structuredClone(a))), n: pick(Arb.nat(1000)) }
+          : { s: sb, c: pick(Arb.constant(structuredClone(b))), n: pick(Arb.nat(1000)) },
+      );
+      const tree = arb(prng, size);
+      for (const v of walk(tree, 2, 6, [])) {
+        if (JSON.stringify(v.c) !== v.s) return false;
+      }
+      // Shrinking only `n` keeps the (re-cloned) constant pick: no divergence.
+      for (const child of tree.shrinks) {
+        if (child.value.s === tree.value.s && child.value.n > tree.value.n) return false;
+      }
+      return true;
+    },
+    { numRuns: 1_000_000 },
+  );
+});
+
 test("gen: replayed picks never cross between same-factory arbitraries", () => {
   const range = Arb.map(Arb.tuple(Arb.integer(-1000, 1000), Arb.nat(50)), ([lo, w]) => ({
     lo,

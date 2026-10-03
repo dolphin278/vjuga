@@ -12,6 +12,12 @@ test("make() throws for invalid capacity", () => {
   assert.throws(() => BF.make(1.5), RangeError);
 });
 
+test("make() capacity error states the [1, 2^31-1] range (G6-5 regression)", () => {
+  const msg = /capacity must be an integer in \[1, 2\^31-1\], got 2147483648/;
+  assert.throws(() => BF.make(2 ** 31, 0.5), { name: "RangeError", message: msg });
+  assert.throws(() => BF.make(0), /integer in \[1, 2\^31-1\]/);
+});
+
 test("make() throws for invalid fpr", () => {
   assert.throws(() => BF.make(100, 0), RangeError);
   assert.throws(() => BF.make(100, 1), RangeError);

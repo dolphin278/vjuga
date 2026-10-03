@@ -52,11 +52,13 @@ function popcount32(v: number): number {
  * Creates a new BitSet with the given `capacity` (number of addressable bit
  * indices, 0..capacity-1). All bits are initially 0.
  *
- * Throws `RangeError` if `capacity` is not a positive integer.
+ * Throws `RangeError` unless `capacity` is an integer in [1, 2^31-1].
  */
 export function make(capacity: number): BitSet {
   if (capacity < 1 || (capacity | 0) !== capacity) {
-    throw new RangeError(`BitSet.make: capacity must be a positive integer, got ${capacity}`);
+    throw new RangeError(
+      `BitSet.make: capacity must be an integer in [1, 2^31-1], got ${capacity}`,
+    );
   }
   const words = Math.ceil(capacity / 32);
   const bits = new Uint32Array(words);

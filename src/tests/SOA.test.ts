@@ -321,3 +321,53 @@ test("SOA-get shape-keyed row factory cache stays bounded and correct", () => {
   const again = { col0: [5, 6] };
   assert.deepEqual(SOA.get(again, 0), { col0: 5 });
 });
+
+test("SOA operations ignore inherited enumerable keys (G6-6 regression)", () => {
+  type Row = { ihx: number; ihy: number };
+  const proto = { inh: [99, 98] };
+  const make = (): SOA.SOA<Row> => {
+    const soa = Object.create(proto) as SOA.SOA<Row>;
+    soa.ihx = [1, 2];
+    soa.ihy = [3, 4];
+    return soa;
+  };
+  const soa = make();
+  SOA.push(soa, { ihx: 5, ihy: 6, inh: 97 } as Row);
+  assert.deepEqual(proto.inh, [99, 98], "push must not touch inherited arrays");
+  assert.equal(SOA.length(soa), 3);
+  assert.deepEqual(SOA.get(soa, 2), { ihx: 5, ihy: 6 });
+  SOA.set(soa, 0, { ihx: 10, ihy: 30, inh: 0 } as Row);
+  assert.deepEqual(proto.inh, [99, 98], "set must not touch inherited arrays");
+  assert.deepEqual(SOA.pop(soa), { ihx: 5, ihy: 6 });
+  assert.deepEqual(proto.inh, [99, 98], "pop must not touch inherited arrays");
+  SOA.swapRemove(soa, 0);
+  assert.deepEqual([soa.ihx, soa.ihy, proto.inh], [[2], [4], [99, 98]]);
+  SOA.swapRemove(soa, 0);
+  assert.deepEqual(proto.inh, [99, 98], "swapRemove must not touch inherited arrays");
+  const s2 = make();
+  const view = SOA.createView(s2, 1) as Row & { index: number } & Record<string, unknown>;
+  assert.deepEqual(Object.keys(view), ["ihx", "ihy"]);
+  assert.equal(Object.hasOwn(view, "inh"), false);
+  // Second view hits the (own-keys-only) cache and still binds the own arrays.
+  assert.equal(SOA.createView(s2, 0).ihy, 3);
+  SOA.clear(s2);
+  assert.deepEqual(proto.inh, [99, 98], "clear must not touch inherited arrays");
+  assert.equal(SOA.length(s2), 0);
+  // Only inherited keys: behaves as an SOA with no columns.
+  const bare = Object.create(proto) as SOA.SOA<Record<never, never>>;
+  assert.equal(SOA.length(bare), 0);
+  assert.throws(() => SOA.set(bare, 0, {}), RangeError);
+});
+
+test("SOA-createView normalizes the initial index with |0 (G6-7 regression)", () => {
+  const soa = { x: [10, 20, 30] };
+  const v = SOA.createView(soa, 1.5);
+  assert.equal(v.index, 1);
+  assert.equal(v.x, 20);
+  v.x = 21;
+  assert.deepEqual(soa.x, [10, 21, 30]);
+  assert.deepEqual(Object.keys(soa.x), ["0", "1", "2"], "no stray '1.5' property");
+  assert.equal(SOA.createView(soa, -0.5).index, 0);
+  assert.equal(SOA.createView(soa, NaN).index, 0);
+  assert.equal(SOA.createView(soa).index, 0);
+});

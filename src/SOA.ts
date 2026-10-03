@@ -8,6 +8,7 @@
  * changing it repoints all property accesses without copying data.
  *
  * Notes:
+ *   - Columns are the SOA's own enumerable keys; inherited keys are ignored.
  *   - `index` is reserved on views: `createView` throws a TypeError if the SOA
  *     has a column named `index`.
  *   - Views bind the column arrays that exist when the view is created. If a
@@ -41,6 +42,13 @@ export type SOA<T> = { [K in keyof T]: T[K][] };
 
 const idxSymbol: unique symbol = Symbol("index");
 
+// Columns are the SOA's own enumerable keys; `for…in` also visits enumerable
+// keys inherited from the prototype chain, so every loop skips those with
+// `hasOwn.call(soa, key)`. Inside a `for…in` over the same object TurboFan
+// reduces `Object.prototype.hasOwnProperty.call` to an enum-cache check
+// (measured free on push); `Object.hasOwn` is not reduced (~2× on push).
+const hasOwn = Object.prototype.hasOwnProperty;
+
 /**
  * Cached per-SOA property descriptors. Sharing getter/setter function objects across
  * all views from the same SOA instance ensures their hidden classes are identical,
@@ -60,6 +68,7 @@ const viewDescriptorCache = new WeakMap<object, ViewCacheEntry>();
 function isFresh(entry: ViewCacheEntry, soa: Record<string, unknown[]>): boolean {
   let n = 0;
   for (const key in soa) {
+    if (!hasOwn.call(soa, key)) continue;
     if (entry.keys[n] !== key || entry.arrays[n] !== soa[key]) return false;
     n++;
   }
@@ -75,6 +84,7 @@ function getOrCreateDescriptors<T>(soa: SOA<T>): PropertyDescriptorMap {
   const keys: string[] = [];
   const arrays: unknown[][] = [];
   for (const key in cols) {
+    if (!hasOwn.call(cols, key)) continue;
     if (key === "index") {
       throw new TypeError("SOA.createView: column name 'index' is reserved by views");
     }
@@ -144,7 +154,7 @@ function getRowFactory<T>(soa: SOA<T>): RowFactory {
   let factory = rowFactoryCache.get(soa as object);
   if (factory === undefined) {
     const keys: string[] = [];
-    for (const key in soa) keys.push(key);
+    for (const key in soa) if (hasOwn.call(soa, key)) keys.push(key);
     const signature = JSON.stringify(keys);
     factory = sharedRowFactories.get(signature);
     if (factory === undefined) {
@@ -178,8 +188,12 @@ const indexDescriptor: PropertyDescriptor = {
  *
  * Getter/setter functions are shared across all views from the same SOA instance
  * (via WeakMap cache), keeping V8 ICs monomorphic across views.
+ *
+ * The initial `index` is normalized with `| 0`, exactly like the `view.index`
+ * setter (so `createView(soa, 1.5).index === 1`).
  */
 export function createView<T extends object>(soa: SOA<T>, index = 0): T & { index: number } {
+  index |= 0;
   const view = {
     [idxSymbol]: index,
   } as T & { [idxSymbol]: number; index: number };
@@ -197,6 +211,7 @@ export function createView<T extends object>(soa: SOA<T>, index = 0): T & { inde
 
 export function push<T>(soa: SOA<T>, item: T): void {
   for (const key in soa) {
+    if (!hasOwn.call(soa, key)) continue;
     const k = key as keyof T & string;
     (soa as Record<string, unknown[]>)[k].push((item as Record<string, unknown>)[k]);
   }
@@ -205,6 +220,7 @@ export function push<T>(soa: SOA<T>, item: T): void {
 export function pop<T>(soa: SOA<T>): T {
   const item = getRowFactory(soa)(soa, length(soa) - 1) as T;
   for (const key in soa) {
+    if (!hasOwn.call(soa, key)) continue;
     (soa as Record<string, unknown[]>)[key].pop();
   }
   return item;
@@ -225,6 +241,7 @@ export function set<T>(soa: SOA<T>, index: number, item: T): void {
   // negatives, fractions, NaN and Infinity.
   let checked = false;
   for (const key in soa) {
+    if (!hasOwn.call(soa, key)) continue;
     const arr = (soa as Record<string, unknown[]>)[key];
     if (!checked) {
       if (index >>> 0 !== index || index >= arr.length) throw setRangeError(index, arr.length);
@@ -249,11 +266,13 @@ export function getSlice<T, K extends keyof T>(soa: SOA<T>, sliceName: K): T[K][
 /**
  * Returns the number of elements currently stored in the SOA.
  * All slices are co-length, so the length of the first slice is authoritative.
- * Returns 0 for an empty SOA (no keys).
+ * Returns 0 for an empty SOA (no own keys).
  */
 export function length<T>(soa: SOA<T>): number {
+  // `for…in` visits own keys before inherited ones, so if the first key is
+  // inherited there are no own columns: one hasOwn check per call, no loop.
   for (const key in soa) {
-    return (soa as Record<string, unknown[]>)[key].length;
+    return hasOwn.call(soa, key) ? (soa as Record<string, unknown[]>)[key].length : 0;
   }
   return 0;
 }
@@ -273,11 +292,13 @@ export function swapRemove<T>(soa: SOA<T>, index: number): void {
   }
   if (index !== last) {
     for (const key in soa) {
+      if (!hasOwn.call(soa, key)) continue;
       const arr = (soa as Record<string, unknown[]>)[key];
       arr[index] = arr[last];
     }
   }
   for (const key in soa) {
+    if (!hasOwn.call(soa, key)) continue;
     (soa as Record<string, unknown[]>)[key].pop();
   }
 }
@@ -287,6 +308,7 @@ export function swapRemove<T>(soa: SOA<T>, index: number): void {
  */
 export function clear<T>(soa: SOA<T>): void {
   for (const key in soa) {
+    if (!hasOwn.call(soa, key)) continue;
     (soa as Record<string, unknown[]>)[key].length = 0;
   }
 }

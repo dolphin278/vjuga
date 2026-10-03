@@ -274,6 +274,50 @@ describe("safeParse \\u-escaped dangerous keys (G6-6)", () => {
   });
 });
 
+describe("safeParse \\u trigger covers every escaped spelling (G3-5)", () => {
+  /** Every spelling of `word`: each char raw, or \u-escaped with lower/upper hex. */
+  const spellings = (word: string): string[] => {
+    let out = [""];
+    for (const ch of word) {
+      const hex = ch.charCodeAt(0).toString(16).padStart(4, "0");
+      const forms = new Set([ch, "\\u" + hex, "\\u" + hex.toUpperCase()]);
+      const next: string[] = [];
+      for (const prefix of out) for (const f of forms) next.push(prefix + f);
+      out = next;
+    }
+    return out;
+  };
+
+  for (const word of ["__proto__", "constructor"]) {
+    it(`strips and rejects all ${word} spellings`, () => {
+      const all = spellings(word);
+      // 3 forms for chars whose hex has a letter (_ o n), 2 otherwise
+      assert.equal(all.length, word === "__proto__" ? 3 ** 6 * 2 ** 3 : 3 ** 3 * 2 ** 8);
+      for (const key of all) {
+        const text = `{"${key}":{"x":1},"a":2}`;
+        assert.deepEqual(safeParse(text), [true, { a: 2 }], key);
+        assert.deepEqual(
+          safeParse(text, { onDangerousKey: "reject" }),
+          [false, `dangerous JSON key "${word}" (prototype-pollution risk)`],
+          key,
+        );
+      }
+    });
+  }
+
+  it("escapes of other characters do not hide a dangerous key", () => {
+    // Every \u00XX that is not a letter of either token
+    for (let c = 0x20; c < 0x7f; c++) {
+      if ("_protoconstructor".includes(String.fromCharCode(c))) continue;
+      const esc = "\\u" + c.toString(16).padStart(4, "0");
+      const v = c === 0x22 || c === 0x5c ? "x" : String.fromCharCode(c);
+      const text = `{"k${esc}":1,"\\u005f_proto__":{"x":1}}`;
+      assert.deepEqual(safeParse(text), [true, { ["k" + String.fromCharCode(c)]: 1 }], esc);
+      assert.deepEqual(safeParse(`{"${esc}":"${v}"}`), [true, JSON.parse(`{"${esc}":"${v}"}`)]);
+    }
+  });
+});
+
 describe("safeParse onDangerousKey (5b)", () => {
   const poisoned = '{"a":{"__proto__":{"x":1}},"constructor":{"y":1},"b":1}';
 

@@ -744,6 +744,9 @@ class FakeSocket extends EventEmitter {
   timeout = -1;
   writableNeedDrain = false;
   writableLength = 0;
+  get writable(): boolean {
+    return !this.ended && !this.destroyed;
+  }
   setNoDelay(): void {}
   setTimeout(ms: number): void {
     this.timeout = ms;
@@ -1108,7 +1111,7 @@ test("close() destroys idle connections and closes busy ones once idle (G6-7)", 
   await closed;
 });
 
-test("close() leaves a paused connection to finish after drain", async () => {
+test("close() lets a paused connection answer its next request, with Connection: close", async () => {
   const { server, seen, connect } = fakeServer(undefined, (_req, socket) => {
     HttpServer.respond(socket, 200, "{}");
     (socket as unknown as FakeSocket).writableNeedDrain = true;
@@ -1116,18 +1119,19 @@ test("close() leaves a paused connection to finish after drain", async () => {
   await HttpServer.listen(server, 0);
   const s = connect().feed("GET /1 HTTP/1.1\r\n\r\nGET /2 HTTP/1.1\r\n\r\nGET /3");
   const closed = HttpServer.close(server);
-  assert.equal(s.destroyed, false);
+  assert.equal(s.destroyed || s.ended, false);
   s.writableNeedDrain = false;
-  s.emit("drain"); // dispatches /2, pauses again with /3 partial
-  assert.equal(s.ended, false);
-  s.writableNeedDrain = false;
-  s.emit("drain");
-  s.feed(" HTTP/1.1\r\n\r\n");
-  assert.equal(s.ended, false); // paused after /3
-  s.writableNeedDrain = false;
-  s.emit("drain");
+  s.emit("drain"); // dispatches /2, the last response on this connection
   assert.equal(s.ended, true);
-  assert.equal(seen.length, 3);
+  assert.deepEqual(
+    seen.map((r) => r.url),
+    ["/1", "/2"],
+  );
+  const responses = s.text().split("HTTP/1.1 200").slice(1);
+  assert.ok(responses[0].includes("Connection: keep-alive"));
+  assert.ok(responses[1].includes("Connection: close"));
+  s.feed(" HTTP/1.1\r\n\r\n"); // ignored
+  assert.equal(seen.length, 2);
   await closed;
 });
 
@@ -1214,40 +1218,23 @@ test("close() ends a connection right after its in-flight response", async () =>
   const s = connect().feed("GET /a HTTP/1.1\r\n\r\nGET /b HTTP/1.1\r\n\r\nGET /c");
   const closed = HttpServer.close(server);
   assert.equal(s.destroyed || s.ended, false);
-  pending.shift()!(); // /a answered, /b still in flight
-  assert.equal(s.ended, false);
-  pending.shift()!(); // /b answered, but /c is partially received
-  assert.equal(s.ended, false);
-  s.feed(" HTTP/1.1\r\n\r\n");
-  assert.equal(s.ended, false); // /c dispatched and in flight
-  pending.shift()!();
+  assert.equal(pending.length, 1); // /b and /c are held back while /a is in flight
+  pending.shift()!(); // /a answered: last response, pipelined /b dropped
   assert.equal(s.ended, true);
-  assert.equal(s.text().split("HTTP/1.1 200").length - 1, 3);
+  assert.ok(s.text().includes("Connection: close"));
+  await tick();
+  assert.equal(pending.length, 0);
   await closed;
 });
 
-test("close() with in-flight responses on paused or rejected connections", async () => {
-  const pending: Array<() => void> = [];
-  const { server, connect } = fakeServer(undefined, (_req, socket) => {
-    pending.push(() => HttpServer.respond(socket, 200, "{}"));
-    (socket as unknown as FakeSocket).writableNeedDrain = true;
-  });
-  await HttpServer.listen(server, 0);
-  const paused = connect().feed("GET / HTTP/1.1\r\n\r\n");
-  const rejected = connect().feed("GET / HTTP/1.1\r\n\r\n");
-  rejected.writableNeedDrain = false;
-  rejected.emit("drain");
-  rejected.feed("BAD\r\n\r\n");
-  assert.equal(statusOf(rejected), 400);
-  const closed = HttpServer.close(server);
-  pending[0]!(); // still paused: end waits for drain
-  assert.equal(paused.ended, false);
-  paused.writableNeedDrain = false;
-  paused.emit("drain");
-  assert.equal(paused.ended, true);
-  pending[1]!(); // already rejected and ended: no second end
-  assert.equal(rejected.ends, 1);
-  await closed;
+test("a late response on a connection that already closed does not end it again", async () => {
+  const { pending, connect } = deferredServer();
+  const s = connect().feed("GET /a HTTP/1.1\r\n\r\nGET /b HTTP/1.1\r\n\r\n");
+  s.destroy(); // client went away while /a was in flight
+  pending.shift()!();
+  await tick();
+  assert.equal(s.ends, 0);
+  assert.equal(pending.length, 0); // /b never dispatched
 });
 
 test("keepAliveTimeout over TCP: a slow async handler is not cut off (G6-7)", async () => {
@@ -1290,6 +1277,441 @@ test("close() over TCP waits for an in-flight async response (G6-7)", async () =
   await ended;
   assert.equal(parseBody(data), '{"late":true}');
   c.destroy();
+});
+
+// ── G4: request-line / header hygiene, one request in flight, Connection ──
+
+/** Let process.nextTick / setImmediate callbacks run. */
+function tick(): Promise<void> {
+  return new Promise((r) => setImmediate(r));
+}
+
+test("bare CR, NUL and colon-less header lines → 400 + close (G4-1)", () => {
+  const bad = [
+    "GET / HTTP/1.1\r\nHost: a\r\nX-Pad: a\r\rX-User: admin\r\nX-User: alice\r\n\r\n",
+    "GET / HTTP/1.1\r\nX: a\rb\r\n\r\n", // bare CR inside a value
+    "GET / HTTP/1.1\r\nX: a\r\r\n\r\n", // CR CR LF
+    "GET / HTTP/1.1\r\nX\r: a\r\n\r\n", // bare CR inside a name
+    "GET / HTTP/1.1\r\nX: \x00\r\n\r\n", // NUL in a value
+    "GET / HTTP/1.1\r\n\x00X: 1\r\n\r\n", // NUL in a name
+    "GET / HTTP/1.1\r\nno-colon-line\r\n\r\n",
+    "GET / HTTP/1.1\r\nHost: h\r\n: empty-name\r\n\r\n",
+    "GET /a\rb HTTP/1.1\r\n\r\n", // bare CR in the URL
+    "GET /a\x00 HTTP/1.1\r\n\r\n", // NUL in the URL
+    "GE\x00T / HTTP/1.1\r\n\r\n", // NUL in the method
+    "GET /a\tb HTTP/1.1\r\n\r\n", // HTAB in the URL
+    "GET / HTTP/1.1\r\r\n\r\n", // bare CR ends the request line
+    "GET / HTTP/1.1 x\r\n\r\n", // space inside the version
+    "GET / HTTP/\x001.1\r\n\r\n",
+    "GET / HTTP/1.1\r\nConnection : close\r\n\r\n", // SP before the colon
+    "GET / HTTP/1.1\r\nX-A\t: 1\r\n\r\n",
+  ];
+  for (const req of bad) {
+    const { seen, connect } = fakeServer();
+    const s = connect().feed(req, "GET /after HTTP/1.1\r\n\r\n");
+    assert.equal(statusOf(s), 400, JSON.stringify(req));
+    assert.equal(s.ended, true);
+    assert.equal(seen.length, 0, JSON.stringify(req));
+  }
+  // Bare CR cannot hide a Content-Length from the framing parser (smuggling)
+  const smuggled = "GET /smuggled HTTP/1.1\r\n\r\n";
+  const { seen, connect } = fakeServer();
+  const s = connect().feed(
+    `POST / HTTP/1.1\r\nX: a\rContent-Length: ${smuggled.length}\r\n\r\n${smuggled}`,
+  );
+  assert.equal(statusOf(s), 400);
+  assert.equal(seen.length, 0);
+  // Still accepted: HTAB / other bytes in values, ':' in values, obs-text
+  const ok = fakeServer();
+  ok.connect().feed("GET /é HTTP/1.1\r\nHost: h:80\r\nX: a\tb\x01\xff\r\nY:\r\n\r\n");
+  assert.equal(ok.seen.length, 1);
+});
+
+test("bare-LF header terminators are rejected without waiting for CRLFCRLF (G4-6)", () => {
+  for (const req of [
+    "GET / HTTP/1.1\n\n",
+    "GET / HTTP/1.1\r\nHost: a\n\n",
+    "GET / HTTP/1.1\r\nHost: a\r\n\n",
+    "GET / HTTP/1.1\nHost: a",
+  ]) {
+    const { connect } = fakeServer();
+    const s = connect().feed(req);
+    assert.equal(statusOf(s), 400, JSON.stringify(req));
+    assert.equal(s.ended, true);
+  }
+  // Split across chunks: the LF and its predecessor arrive separately
+  const { connect } = fakeServer();
+  const s = connect().feed("GET / HTTP/1.1\r\nHost: a", "\n", "\r\n");
+  assert.equal(statusOf(s), 400);
+  // Leading empty lines (bare LF allowed there) and a CR split from its LF
+  const ok = fakeServer();
+  ok.connect().feed("\n\nGET / HTTP/1.1\r", "\nHost: a\r", "\n\r", "\n");
+  assert.equal(ok.seen.length, 1);
+});
+
+test("a bare LF below maxHeaderSize is a 400 even when the block is oversized (G4-6)", () => {
+  // Same verdict whether the block arrives whole or byte by byte
+  const early = `GET / HTTP/1.1\nX: ${"a".repeat(100)}\r\n\r\n`;
+  const late = `GET / HTTP/1.1\r\nX: ${"a".repeat(100)}\n\r\n\r\n`;
+  for (const [req, status] of [
+    [early, 400],
+    [late, 431],
+  ] as const) {
+    const whole = fakeServer({ maxHeaderSize: 48 }).connect().feed(req);
+    assert.equal(statusOf(whole), status);
+    const split = fakeServer({ maxHeaderSize: 48 }).connect();
+    for (const ch of req) split.feed(ch);
+    assert.equal(statusOf(split), status);
+  }
+});
+
+test("Transfer-Encoding followed by a malformed line is a 400, not a 501", () => {
+  const { connect } = fakeServer();
+  const s = connect().feed("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\nX\r\n\r\n");
+  assert.equal(statusOf(s), 400);
+});
+
+test("make() rejects invalid size and timeout options with RangeError (G4-3)", () => {
+  const h: HttpServer.Handler = () => {};
+  for (const opts of [
+    { maxHeaderSize: NaN },
+    { maxHeaderSize: 0 },
+    { maxHeaderSize: -1 },
+    { maxHeaderSize: 1.5 },
+    { maxHeaderSize: -Infinity },
+    { maxBodySize: NaN },
+    { maxBodySize: -1 },
+    { maxBodySize: 0.5 },
+    { maxBodySize: 1000.1 },
+    { headersTimeout: NaN },
+    { headersTimeout: -1 },
+    { headersTimeout: -Infinity },
+    { keepAliveTimeout: NaN },
+    { keepAliveTimeout: -5 },
+    { keepAliveTimeout: 1e10 },
+    { keepAliveTimeout: 2 ** 31 },
+    { keepAliveTimeout: Infinity },
+  ] as HttpServer.Options[]) {
+    assert.throws(() => HttpServer.make(h, opts), RangeError, JSON.stringify(opts));
+  }
+  // Boundaries that are valid
+  HttpServer.make(h, { maxHeaderSize: 1, maxBodySize: 0, headersTimeout: 0, keepAliveTimeout: 0 });
+  HttpServer.make(h, { headersTimeout: 2 ** 31 - 1, keepAliveTimeout: 0.5 });
+  HttpServer.make(h, { maxHeaderSize: undefined, maxBodySize: undefined });
+  // Unlimited / very large values accepted as in 10.0.0
+  HttpServer.make(h, { maxHeaderSize: Infinity, maxBodySize: Infinity, headersTimeout: Infinity });
+  HttpServer.make(h, { maxBodySize: 2 ** 60, headersTimeout: 1e10, keepAliveTimeout: 2 ** 31 - 1 });
+});
+
+test("maxBodySize 0 rejects any body", () => {
+  const { seen, connect } = fakeServer({ maxBodySize: 0 });
+  assert.equal(statusOf(connect().feed("POST / HTTP/1.1\r\nContent-Length: 1\r\n\r\nx")), 413);
+  connect().feed("POST / HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+  assert.equal(seen.length, 1);
+});
+
+test("async handler: one request in flight, responses in order (G4-2)", async () => {
+  const pending: Array<() => void> = [];
+  const headers: Array<string | null> = [];
+  const { seen, connect } = fakeServer({ maxHeaderSize: 256 }, (req, socket) => {
+    const url = req.url;
+    pending.push(() => {
+      headers.push(HttpServer.getHeader(req, "x-id")); // still valid until the response
+      HttpServer.respond(socket, 200, JSON.stringify(url));
+    });
+  });
+  const s = connect().feed(
+    "GET /1 HTTP/1.1\r\nX-Id: one\r\n\r\nGET /2 HTTP/1.1\r\nX-Id: two\r\n\r\nGET /3 HTTP/1.1\r\n",
+  );
+  assert.equal(seen.length, 1);
+  assert.equal(s.paused, false); // still reading while little is queued
+  s.feed("X-Id: three\r\n\r\n", "GET /4 HTTP/1.1\r\n\r\n".repeat(50)); // buffered only
+  assert.equal(seen.length, 1);
+  assert.equal(s.paused, true); // more than maxHeaderSize queued: stop reading
+  pending.shift()!();
+  assert.equal(seen.length, 1); // dispatch resumes on the next tick
+  await tick();
+  assert.equal(seen.length, 2);
+  pending.shift()!();
+  await tick();
+  pending.shift()!();
+  await tick();
+  assert.deepEqual(headers, ["one", "two", "three"]);
+  assert.deepEqual(
+    seen.slice(0, 3).map((r) => r.url),
+    ["/1", "/2", "/3"],
+  );
+  while (pending.length > 0) {
+    pending.shift()!();
+    await tick();
+  }
+  assert.equal(seen.length, 53);
+  assert.equal(s.paused, false);
+  const bodies = s
+    .text()
+    .split("HTTP/1.1 200")
+    .slice(1)
+    .map((r) => r.slice(r.indexOf("\r\n\r\n") + 4));
+  assert.deepEqual(bodies.slice(0, 4), ['"/1"', '"/2"', '"/3"', '"/4"']);
+  assert.equal(bodies.length, 53);
+});
+
+test("async handler: a throw in a resumed dispatch destroys the connection", async () => {
+  const errors: unknown[] = [];
+  const pending: Array<() => void> = [];
+  const { connect } = fakeServer({ onError: (e) => errors.push(e) }, (req, socket) => {
+    if (req.url === "/boom") throw new Error("boom");
+    pending.push(() => HttpServer.respond(socket, 200, "{}"));
+  });
+  const s = connect().feed("GET /a HTTP/1.1\r\n\r\nGET /boom HTTP/1.1\r\n\r\n");
+  pending.shift()!();
+  await tick();
+  assert.equal(s.destroyed, true);
+  assert.equal((errors[0] as Error).message, "boom");
+});
+
+test("no dispatch after the handler destroys or ends the socket (G4-4)", async () => {
+  for (const how of ["destroy", "end"] as const) {
+    const { seen, connect } = fakeServer(undefined, (_req, socket) => {
+      HttpServer.respond(socket, 401, "{}");
+      if (how === "destroy") socket.destroy();
+      else socket.end();
+    });
+    const s = connect().feed("GET /1 HTTP/1.1\r\n\r\nGET /2 HTTP/1.1\r\n\r\n");
+    s.feed("GET /3 HTTP/1.1\r\n\r\n");
+    assert.equal(seen.length, 1, how);
+  }
+  // Async: socket destroyed right after the (late) response
+  const pending: Array<() => void> = [];
+  const { seen, connect } = fakeServer(undefined, (_req, socket) => {
+    pending.push(() => {
+      HttpServer.respond(socket, 200, "{}");
+      socket.destroy();
+    });
+  });
+  connect().feed("GET /1 HTTP/1.1\r\n\r\nGET /2 HTTP/1.1\r\n\r\n");
+  pending.shift()!();
+  await tick();
+  assert.equal(seen.length, 1);
+  // Handler destroys without responding
+  const quiet = fakeServer(undefined, (_req, socket) => socket.destroy());
+  quiet.connect().feed("GET /1 HTTP/1.1\r\n\r\nGET /2 HTTP/1.1\r\n\r\n");
+  assert.equal(quiet.seen.length, 1);
+});
+
+test("a closed socket ignores further input (G4-4)", () => {
+  const { seen, connect } = fakeServer();
+  const s = connect();
+  s.destroy(); // emits 'close'
+  s.feed("GET / HTTP/1.1\r\n\r\n");
+  assert.equal(seen.length, 0);
+});
+
+test("Connection: close and HTTP/1.0 end the connection after the response (G4-5)", () => {
+  const closing = [
+    "GET / HTTP/1.1\r\nConnection: close\r\n\r\n",
+    "GET / HTTP/1.1\r\nconnection:CLOSE\r\n\r\n",
+    "GET / HTTP/1.1\r\nCONNECTION: keep-alive , Close \r\n\r\n",
+    "GET / HTTP/1.1\r\nConnection: upgrade\r\nConnection: close\r\n\r\n",
+    "GET / HTTP/1.0\r\n\r\n",
+    "GET / HTTP/1.0\r\nConnection: keep-alive, close\r\n\r\n",
+    "GET / HTTP/1.0\r\nConnection: foo\r\n\r\n",
+    "GET / HTTP/1.0\r\nConnection: keep-alive\r\nConnection: close\r\n\r\n",
+    "GET / HTTP/1.0\r\nConnection: keep-alivx\r\n\r\n",
+  ];
+  for (const req of closing) {
+    const { seen, connect } = fakeServer();
+    const s = connect().feed(req + "GET /next HTTP/1.1\r\n\r\n");
+    assert.equal(s.ended, true, JSON.stringify(req));
+    assert.equal(parseHeader(s.text(), "connection"), "close", JSON.stringify(req));
+    assert.equal(seen.length, 1, JSON.stringify(req));
+  }
+  const staying = [
+    "GET / HTTP/1.1\r\n\r\n",
+    "GET / HTTP/1.1\r\nConnection: keep-alive\r\n\r\n",
+    "GET / HTTP/1.1\r\nConnection: closed, xclose,, close-ish\r\n\r\n",
+    "GET / HTTP/1.1\r\nConnection:\r\n\r\n",
+    "GET / HTTP/1.1\r\nConnectionx: close\r\nCon: close\r\nConnectio: close\r\n\r\n",
+    // Same length as a framing name, different bytes
+    "GET / HTTP/1.1\r\nConnectiox: close\r\nContent-Lengtx: 5\r\nTransfer-Encodinx: x\r\n\r\n",
+    "GET / HTTP/1.0\r\nConnection: Keep-Alive\r\n\r\n",
+    "GET / HTTP/1.0\r\nConnection:\tkeep-alive\r\n\r\n",
+    "GET / HTTP/1.2\r\n\r\n",
+    "GET / HTTP/2.0\r\n\r\n",
+    "GET / HTTP/1x0\r\n\r\n",
+  ];
+  for (const req of staying) {
+    const { seen, connect } = fakeServer();
+    const s = connect().feed(req + "GET /next HTTP/1.1\r\n\r\n");
+    assert.equal(s.ended, false, JSON.stringify(req));
+    assert.equal(seen.length, 2, JSON.stringify(req));
+  }
+});
+
+test("every respond helper sends Connection: close on a closing connection (G4-5)", () => {
+  const raw = HttpServer.precompute(200, '{"raw":true}');
+  const noKa = Buffer.from("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n");
+  const kaInBody = Buffer.from(
+    "HTTP/1.1 200 OK\r\nContent-Length: 26\r\n\r\n\r\nConnection: keep-alive\r\n",
+  );
+  const cases: Array<[(s: net.Socket) => void, string]> = [
+    [(s) => HttpServer.respond(s, 200, '{"a":1}'), '{"a":1}'],
+    [(s) => HttpServer.respond(s, 299, "x", "text/plain"), "x"],
+    [(s) => HttpServer.respondRaw(s, raw), '{"raw":true}'],
+    [(s) => HttpServer.respondBuffer(s, 200, Buffer.from("buf"), "text/plain"), "buf"],
+  ];
+  for (const [send, body] of cases) {
+    const { connect } = fakeServer(undefined, (_req, socket) => send(socket));
+    const s = connect().feed("GET / HTTP/1.1\r\nConnection: close\r\n\r\n");
+    const text = s.text();
+    assert.equal(parseHeader(text, "connection"), "close");
+    assert.ok(!text.includes("keep-alive"));
+    assert.equal(parseBody(text), body);
+    assert.equal(s.ended, true);
+  }
+  for (const buf of [noKa, kaInBody]) {
+    const { connect } = fakeServer(undefined, (_req, socket) => HttpServer.respondRaw(socket, buf));
+    const s = connect().feed("GET / HTTP/1.0\r\n\r\n");
+    assert.deepEqual(Buffer.concat(s.out), buf); // sent unchanged
+    assert.equal(s.ended, true);
+  }
+});
+
+test("headersTimeout is enforced by a sweep even when no more data arrives (G4-7)", async () => {
+  const { server, seen, connect } = fakeServer({ headersTimeout: 200, keepAliveTimeout: 0 });
+  await HttpServer.listen(server, 0);
+  await HttpServer.listen(server, 0).catch(() => {}); // second listen: still one sweep
+  const stalled = connect().feed("GET / HTTP/1.1\r\n");
+  const idle = connect().feed("GET / HTTP/1.1\r\n\r\n");
+  await new Promise((r) => setTimeout(r, 20));
+  const later = connect().feed("GET /"); // not yet expired at the first sweep
+  await new Promise((r) => setTimeout(r, 450));
+  assert.equal(stalled.destroyed, true);
+  assert.equal(later.destroyed, true);
+  assert.equal(idle.destroyed, false);
+  assert.equal(seen.length, 1);
+  await HttpServer.close(server);
+});
+
+test("a drain after the connection died does not resume dispatch", () => {
+  const { seen, connect } = fakeServer(undefined, (_req, socket) => {
+    HttpServer.respond(socket, 200, "{}");
+    (socket as unknown as FakeSocket).writableNeedDrain = true;
+  });
+  const s = connect().feed("GET /1 HTTP/1.1\r\n\r\nGET /2 HTTP/1.1\r\n\r\n");
+  s.destroy();
+  s.writableNeedDrain = false;
+  s.emit("drain");
+  assert.equal(seen.length, 1);
+});
+
+test("no sweep when headersTimeout is 0", async () => {
+  const { server, connect } = fakeServer({ headersTimeout: 0, keepAliveTimeout: 0 });
+  await HttpServer.listen(server, 0);
+  const s = connect().feed("GET / HTTP/1.1\r\n");
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(s.destroyed, false);
+  s.destroy();
+  await HttpServer.close(server);
+});
+
+test("close() over TCP resolves while a client holds a partial request (G4-7)", async () => {
+  const server = HttpServer.make((_req, socket) => HttpServer.respond(socket, 200, "{}"), {
+    keepAliveTimeout: 0,
+    headersTimeout: 50,
+  });
+  await HttpServer.listen(server, 0);
+  const c = net.createConnection({ port: getPort(server), host: "127.0.0.1" });
+  c.on("error", () => {});
+  await new Promise((r) => c.on("connect", r));
+  c.write("GET / HTTP/1.1\r\n");
+  await new Promise((r) => setTimeout(r, 10));
+  await HttpServer.close(server);
+  c.destroy();
+});
+
+test("async handler: dispatch waits for drain after a response fills the buffer", async () => {
+  const pending: Array<() => void> = [];
+  const { seen, connect } = fakeServer(undefined, (_req, socket) => {
+    pending.push(() => {
+      HttpServer.respond(socket, 200, "{}");
+      (socket as unknown as FakeSocket).writableNeedDrain = true;
+    });
+  });
+  const s = connect().feed("GET /1 HTTP/1.1\r\n\r\nGET /2 HTTP/1.1\r\n\r\n");
+  pending.shift()!();
+  await tick();
+  assert.equal(seen.length, 1); // buffer full: /2 held back
+  assert.equal(s.paused, true);
+  s.writableNeedDrain = false;
+  s.emit("drain");
+  assert.equal(seen.length, 2);
+});
+
+test("backpressure over TCP with an async handler: a non-reading client stays bounded", async () => {
+  const body = JSON.stringify("x".repeat(64 * 1024));
+  let handled = 0;
+  let maxQueued = 0;
+  const server = HttpServer.make((_req, socket) => {
+    handled++;
+    setImmediate(() => {
+      HttpServer.respond(socket, 200, body);
+      maxQueued = Math.max(maxQueued, socket.writableLength);
+    });
+  });
+  await HttpServer.listen(server, 0);
+  const c = net.createConnection({ port: getPort(server), host: "127.0.0.1" });
+  c.pause();
+  c.on("error", () => {});
+  await new Promise((r) => c.on("connect", r));
+  c.write("GET / HTTP/1.1\r\n\r\n".repeat(3000));
+  await new Promise((r) => setTimeout(r, 400));
+  assert.ok(handled < 1000, `handled ${handled}`);
+  assert.ok(maxQueued < 8 * 1024 * 1024, `queued ${maxQueued}`);
+  c.destroy();
+  await HttpServer.close(server);
+});
+
+test("a client disconnecting while its async request is pending is noticed (G4-2)", async () => {
+  const server = HttpServer.make(() => {}, { keepAliveTimeout: 0 }); // never answers
+  await HttpServer.listen(server, 0);
+  const c = net.createConnection({ port: getPort(server), host: "127.0.0.1" });
+  c.on("error", () => {});
+  await new Promise((r) => c.on("connect", r));
+  c.write("GET /1 HTTP/1.1\r\n\r\nGET /2 HTTP/1.1\r\n\r\n");
+  await new Promise((r) => setTimeout(r, 20));
+  c.end();
+  await HttpServer.close(server); // resolves: the server socket saw the FIN
+});
+
+test("pipelined async requests over TCP: responses in request order (G4-2)", async () => {
+  let inflight = 0;
+  let maxInflight = 0;
+  const server = HttpServer.make((req, socket) => {
+    const url = req.url;
+    inflight++;
+    maxInflight = Math.max(maxInflight, inflight);
+    setTimeout(
+      () => {
+        inflight--;
+        HttpServer.respond(socket, 200, JSON.stringify(url));
+      },
+      url === "/slow" ? 40 : 0,
+    );
+  });
+  await HttpServer.listen(server, 0);
+  const out = await sendParts(
+    getPort(server),
+    ["GET /slow HTTP/1.1\r\n\r\nGET /fast HTTP/1.1\r\nConnection: close\r\n\r\n"],
+    200,
+  );
+  const bodies = out
+    .split("HTTP/1.1 200")
+    .slice(1)
+    .map((r) => r.slice(r.indexOf("\r\n\r\n") + 4));
+  assert.deepEqual(bodies, ['"/slow"', '"/fast"']);
+  assert.equal(maxInflight, 1);
+  await HttpServer.close(server);
 });
 
 // ── Utility ─────────────────────────────────────────────────────────

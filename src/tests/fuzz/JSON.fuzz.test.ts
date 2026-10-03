@@ -300,3 +300,39 @@ test("safeParse policies: reject iff a dangerous key exists, keep == parse, stri
     { numRuns: 1_000_000 },
   );
 });
+
+// ---------------------------------------------------------------------------
+// G3-5: the narrowed \u trigger never skips a walk that would find a key
+// ---------------------------------------------------------------------------
+
+// Words near the dangerous keys plus benign text; each char raw or escaped
+const TRIGGER_WORDS = ["__proto__", "constructor", "__proto_", "onstructor", "prototype", "café"];
+
+test("safeParse: narrowed \\u trigger agrees with an unconditional walk", () => {
+  const bools = Arb.array(Arb.boolean(), { minLength: 1, maxLength: 11 });
+  const word = Arb.constantFrom(...(TRIGGER_WORDS as [string, ...string[]]));
+  Prop.assert(
+    Arb.tuple<[string, boolean[], boolean[], string, boolean[], boolean[], unknown]>(
+      word,
+      bools,
+      bools,
+      word,
+      bools,
+      bools,
+      jsonValue,
+    ),
+    ([w1, m1, u1, w2, m2, u2, filler]) => {
+      const k = escapeWord(w1, m1, u1);
+      const v = escapeWord(w2, m2, u2);
+      const text = `{"${k}":{"x":1},"v":"${v}","f":${JSON.stringify(filler)}}`;
+      // Reference: always walk
+      const ref = JSON.parse(text) as VJSON.JSONValue;
+      const dangerous = VJSON.findDangerousKey(ref);
+      VJSON.stripDangerousKeys(ref);
+      assert.deepEqual(VJSON.safeParse(text), [true, ref], text);
+      const rejected = VJSON.safeParse(text, { onDangerousKey: "reject" });
+      assert.equal(rejected[0], dangerous === undefined, text);
+    },
+    { numRuns: 1_000_000 },
+  );
+});

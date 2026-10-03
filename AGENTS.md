@@ -60,8 +60,8 @@ Add that paragraph to your app's `AGENTS.md`. In a monorepo, resolve `node_modul
 | Prefix-keyed lookup / URL routing / autocomplete | `RadixTree` | `insert`, `lookup`, `prefixMatch` (results in lexicographic key order). `insert(k, undefined)` removes. Outperforms `Map` for prefix scans. |
 | Cache-friendly iteration over many records | `SOA` | Structure of Arrays. `index` is a reserved column name; `set` throws `RangeError` unless `0 <= i < length`; don't change the column set after the first `get`/`pop`. Use for tight loops, ECS, columnar data. |
 | Sorted key-value map with floor/ceiling/range | `OrderedMap` | AVL tree. `make(compare?)`, `set`, `get`, `has`, `del`, `min`, `max`, `floor`, `ceiling`, `range`, `keys`, `values`, `entries`, `forRange(m, lo, hi, fn)` (hot-path range scan), `size`. Default comparator is a total order for keys that compare consistently with `<`/`>` (numbers, bigints, or strings — not strings mixed with numbers; NaN last, `-0` equals `0`); objects, `null`/`undefined`, booleans or number/string mixes like `1` and `"1"` collide — pass `compare`. Don't `set`/`del` inside `forRange`. Use when sorted order or range queries matter; for unordered lookup use plain `Map`. |
-| Compact dense boolean vector or set algebra | `BitSet` | `Uint32Array`-backed. `make(capacity)`, `set`, `clear`, `toggle`, `get`, `capacity`, `popcount` (SWAR), `toArray`, `and`, `or`, `xor`, `not`. Use for SOA row flags, graph adjacency, or bit-parallel set operations. |
-| Fast "definitely absent" pre-filter | `BloomFilter` | Probabilistic. `make(capacity, fpr?)`, `add`, `mightContain`, `clear`, `count`, `bitCount`, `hashCount`. Strings only; no false negatives; `make` throws `RangeError` unless 0 < `fpr` < 1 (NaN included), or if `fpr` is unreachable within 2^32 bits. Use before expensive DB or cache lookups to skip work when item is definitely absent. |
+| Compact dense boolean vector or set algebra | `BitSet` | `Uint32Array`-backed. `make(capacity)`, `set`, `clear`, `toggle`, `get`, `capacity`, `popcount` (SWAR), `toArray`, `and`, `or`, `xor`, `not`. `make` throws `RangeError` unless `capacity` is an integer in [1, 2^31-1]. Use for SOA row flags, graph adjacency, or bit-parallel set operations. |
+| Fast "definitely absent" pre-filter | `BloomFilter` | Probabilistic. `make(capacity, fpr?)`, `add`, `mightContain`, `clear`, `count`, `bitCount`, `hashCount`. Strings only; no false negatives; `make` throws `RangeError` unless `capacity` is an integer in [1, 2^31-1] and 0 < `fpr` < 1 (NaN included), or if `fpr` is unreachable within 2^32 bits. Use before expensive DB or cache lookups to skip work when item is definitely absent. |
 
 ### Async & concurrency
 
@@ -69,11 +69,11 @@ Add that paragraph to your app's `AGENTS.md`. In a monorepo, resolve `node_modul
 |---|---|---|
 | Batch items but return per-item promises | `BatchExecutor` | Dataloader pattern. `make(batchFn, options?)` returns `(item) => Promise<R>`; options `"io"` or `{ schedule?, maxBatchSize?, maxInFlight? }` (items queue FIFO beyond `maxInFlight` and coalesce into chunks of up to `maxBatchSize`). Batch fn must return exactly as many results as items; a mismatch or throw rejects every promise in that chunk. |
 | Batch fire-and-forget (logs, events, analytics) | `BufferizedFunction` | No per-item return. Schedule: `"macrotask"` (default) or `"io"`. |
-| Rate-limit continuous events (scroll, resize) | `TimedFunction` | `throttle(fn, ms)` — leading-edge; re-entrant calls dropped, a throwing `fn` still starts the window. |
-| Wait until activity stops (search input) | `TimedFunction` | `debounce(fn, ms)` — trailing-edge. |
-| Resolve named promises in parallel | `PromiseUtils` | `props({ a: p1, b: p2 })` → `{ a, b }` (own enumerable string+symbol keys; null-prototype result). |
+| Rate-limit continuous events (scroll, resize) | `TimedFunction` | `throttle(fn, ms)` — leading-edge; re-entrant calls dropped, a throwing `fn` still starts the window. `ms` in `[0, 2^31-1]`, else `RangeError`. |
+| Wait until activity stops (search input) | `TimedFunction` | `debounce(fn, ms)` — trailing-edge. `ms` in `[0, 2^31-1]`, else `RangeError`. |
+| Resolve named promises in parallel | `PromiseUtils` | `props({ a: p1, b: p2 })` → `{ a, b }` (own enumerable string+symbol keys; null-prototype result). Typed for plain objects only — for arrays use `Promise.all`. |
 | Run N async tasks, at most K at a time | `PromiseUtils` | `pool(items, limit, fn, { signal? })` → `PromiseSettledResult[]` in input order; abort stops new starts. Async I/O limiter (use `WorkerPool` for CPU-bound threads). |
-| Offload CPU-bound work to threads | `WorkerPool` | `make({ filename, maxThreads?, minThreads?, workerData? })`, `run(pool, data)`. `filename` is a cwd-relative path or URL; worker gets `workerData.userData`. Also `activeCount`, `pendingCount`, `drain`, `destroy`; `run` opts `priority`, `signal`, `transferList`. Equal priorities run FIFO. Worker must be a separate file exporting a `default` function. |
+| Offload CPU-bound work to threads | `WorkerPool` | `make({ filename, maxThreads?, minThreads?, idleTimeout?, workerData? })`, `run(pool, data)`. `filename` is a cwd-relative path or URL; worker gets `workerData.userData`. Also `activeCount`, `pendingCount`, `drain`, `destroy`; `run` opts `priority`, `signal`, `transferList`. Equal priorities run FIFO; NaN `priority` rejects with `RangeError`. `idleTimeout` `0`/`Infinity` = never; NaN, negative or > 2^31-1 throws `RangeError`. Worker must be a separate file exporting a `default` function (else startup fails with `TypeError`). |
 
 ### Type safety / branded types
 
@@ -92,10 +92,10 @@ Add that paragraph to your app's `AGENTS.md`. In a monorepo, resolve `node_modul
 | Goal | Module | Notes |
 |---|---|---|
 | Define a schema once, use many ways | `schema/Schema` | 18 kinds (`S.null_()`, `S.enum_()`, `S.unknown()`, `S.allOf()`, `S.not()`, `S.conditional()`; `S.oneOf()` = exclusive union). `S.Infer<typeof schema>` for TypeScript type; `toJsonSchema`, `fromJsonSchema(js, { refs, formats })` (JSON Schema 2020-12 incl. `$ref`/`oneOf`/`allOf`/`not`/`if`; `Err` for anything it cannot express, recursive `$ref` included; `formats: "strict"` = `Err` on unknown `format` names). `S.object()` rejects undeclared own keys unless `{ additionalProperties: true }`; `S.number()` rejects NaN/±Infinity. Source of truth for Validate, JSON, TOON. |
-| Validate unknown input at runtime | `schema/Validate` | `validate(schema)` compiles once at init; returns `Result<T, SchemaError>`. `validate(schema, { allErrors: true })` returns every failure as `SchemaError[]`. Unions accept a value only if some variant fully validates it; `oneOf` only if exactly one does. Formats `date-time`/`date`/`time` (RFC 3339), `email`, `uri`, `uuid`, `ipv4`, `ipv6` are enforced; legacy `iso-datetime` is a loose prefix check; other names are ignored. |
+| Validate unknown input at runtime | `schema/Validate` | `validate(schema)` compiles once at init; returns `Result<T, SchemaError>`. `validate(schema, { allErrors: true })` returns every failure as `SchemaError[]`. Unions accept a value only if some variant fully validates it; `oneOf` only if exactly one does. Formats `date-time`/`date`/`time` (RFC 3339), `email` (local part ≤ 64 octets), `uri`, `uuid` (any variant nibble), `ipv4`, `ipv6` are enforced; legacy `iso-datetime` is a loose prefix check; other names are ignored. |
 | Check a string `format` / list enforced names | `schema/Formats` | `isEmail`, `isUri`, `isUuid` (format `uuid`: any version and variant nibble — looser than `UUID.uuid()`), `isIPv4`, `isIPv6`, `KNOWN_FORMATS`, `isKnownFormat`, `formatTester`. |
-| Fast JSON serialization / deserialization | `schema/JSON` | Typed one-pass parse+validate (`parse(schema)`); `stringify(schema)` emits only declared keys (`unknown` / `not` values as-is), non-finite → `null`, and is not faster than native `JSON.stringify` once output is consumed. Compile at module scope. |
-| Token-efficient serialization (LLM / config) | `schema/TOON` | ~50% smaller than JSON for tabular arrays (~20% flat objects, little for nested). Nested list items and discriminated unions supported; unsupported shapes throw at compile time. |
+| Fast JSON serialization / deserialization | `schema/JSON` | Typed one-pass parse+validate (`parse(schema)`); `stringify(schema)` emits only declared keys (`unknown` / `not` values as-is), non-finite → `null`; function/symbol values omit their record/optional-field key and are `null` in required fields, arrays and the root; and is not faster than native `JSON.stringify` once output is consumed. Compile at module scope. |
+| Token-efficient serialization (LLM / config) | `schema/TOON` | ~50% smaller than JSON for tabular arrays (~20% flat objects, little for nested). Nested list items and discriminated unions supported; unsupported shapes throw at compile time. `parse` enforces constraints, JSON number grammar and strict escapes; value tokens are space-trimmed; `flexibleOrder` rejects duplicate/undeclared keys; `indent` integer ≥ 1. |
 | Custom validator with structured errors | `schema/ValidationError` | `ValidationError`, `Validator<T>` type. |
 | Extend schema code generators | `schema/Codegen` | Internal plumbing for generated validators/serializers. Route every schema-derived value spliced into generated code through `jsLiteral`. Application code rarely imports this directly. |
 
@@ -111,11 +111,11 @@ Add that paragraph to your app's `AGENTS.md`. In a monorepo, resolve `node_modul
 
 | Goal | Module | Notes |
 |---|---|---|
-| Generate typed random test data | `Arbitrary` | `integer`, `nat`, `float`, `bigint`, `date`, `string`, `array`, `uniqueArray`, `dictionary`, `oneOf`, `frequency`, `constantFrom`, `map`, `chain`, `letrec`. Shrinking is built in; `Tree.shrinks` must be re-iterable. |
-| Run property-based tests | `Property` | `assert(arb, predicate, { numRuns: 500 })`; also `maxShrinkEvaluations`, `timeoutMs`, `path` replay (`run@size:idx…`, same `seed`). Use inside `node:test`. |
-| Test stateful APIs via command sequences | `StatefulTest` | `assertStateful({ initialModel, initialReal, commands })`; generators receive the live model. Also `assertStatefulAsync`, `checkStateful*`; `maxShrinkEvaluations`, `timeoutMs`. |
-| Find crash inputs in parsers / validators | `CoverageGuided` | `fuzz(arb, fn)` (random, time-boxed) / `fuzzAsync` (V8 coverage feedback; ~5–10x slower than PBT; falls back to random fuzzing when `NODE_V8_COVERAGE` is set to a non-empty value). `config.corpus` runs first; `maxCorpus` default 256. |
-| Reproducible / splittable randomness | `PRNG` | `seed(bigint)`, `randomSeed()`, `make`, `next`, `nextInt`, `nextBigInt` (raw 64 bits), `split`. Not cryptographic. |
+| Generate typed random test data | `Arbitrary` | `integer`, `nat`, `float`, `bigint`, `date`, `string`, `array`, `uniqueArray`, `dictionary`, `oneOf`, `frequency`, `constantFrom`, `map`, `chain`, `letrec`. Shrinking is built in; `Tree.shrinks` must be re-iterable. Invalid bounds/lengths throw `RangeError`; `maxLength`/`maxSize` may be `Infinity` (uncapped). |
+| Run property-based tests | `Property` | `assert(arb, predicate, { numRuns: 500 })`; also `maxShrinkEvaluations`, `timeoutMs`, `path` replay (`run@size:idx…`, same `seed`). Sync `assert`/`check` fail a Promise-returning predicate with `TypeError`. Use inside `node:test`. |
+| Test stateful APIs via command sequences | `StatefulTest` | `assertStateful({ initialModel, initialReal, commands })`; generators receive the live model. Also `assertStatefulAsync`, `checkStateful*`; `maxShrinkEvaluations`, `timeoutMs`. A `check` that throws during shrink replay counts as false. |
+| Find crash inputs in parsers / validators | `CoverageGuided` | `fuzz(arb, fn)` (random, time-boxed) / `fuzzAsync` (V8 coverage feedback; ~5–10x slower than PBT; falls back to random fuzzing when `NODE_V8_COVERAGE` is set to a non-empty value). `config.corpus` runs first; `maxCorpus` default 256. Harness (`Arbitrary`/`PRNG`/`CoverageGuided`) and `node:` coverage is ignored. |
+| Reproducible / splittable randomness | `PRNG` | `seed(bigint)`, `randomSeed()`, `make`, `next`, `nextInt` (integer bounds, else `RangeError`), `nextBigInt` (raw 64 bits), `split`. Not cryptographic. |
 
 ### Functional
 
@@ -123,7 +123,7 @@ Add that paragraph to your app's `AGENTS.md`. In a monorepo, resolve `node_modul
 |---|---|---|
 | Left-to-right function composition | `FunctionUtils` | `pipe(f, g, h)` — needs at least 1 function; up to 5 with full TypeScript type inference. |
 | Partial application | `FunctionUtils` | `partial(fn, ...args)`, `partialNamed(fn, { key: val })`. |
-| Cross-thread / cross-process function dispatch | `FunctionReference` | `resolve("./module.ts#export")` via dynamic `import()`. String refs are `file:` URLs or cwd-relative paths; prefer `new URL("./x.js#fn", import.meta.url)`. Not needed for same-thread callbacks. |
+| Cross-thread / cross-process function dispatch | `FunctionReference` | `resolve("./module.ts#export")` via dynamic `import()`. String refs are `file:` URLs or cwd-relative paths; prefer `new URL("./x.js#fn", import.meta.url)`. The hash is stripped before `import()`, so all references into one file share one module instance. Not needed for same-thread callbacks. |
 
 ---
 

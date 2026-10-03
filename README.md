@@ -52,7 +52,7 @@ Validate compiles schemas to code-generated validators - one pass validation at 
 Branded ISOTimestamp, ISODate, UnixTimestamp validates and brands at construction time. UUID v4 random and v7 time-ordered.
 
 ### Testing
-Property.check() runs property-based tests - generates random input, shrinks to minimal counterexamples automatically. StatefulTest.assertStateful() for model-based stateful testing with oracle model. CoverageGuided.fuzz() is time-boxed random fuzzing; fuzzAsync() adds V8 coverage feedback.
+Property.check() runs property-based tests - generates random input, shrinks to minimal counterexamples automatically. StatefulTest.assertStateful() for model-based stateful testing with oracle model. CoverageGuided.fuzz() is time-boxed random fuzzing; fuzzAsync() adds V8 coverage feedback (falling back to random fuzzing when NODE_V8_COVERAGE is set).
 
 ## Why this exists
 

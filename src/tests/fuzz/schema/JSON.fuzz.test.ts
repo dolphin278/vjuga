@@ -261,3 +261,141 @@ test("stringify of allOf(s, s) decodes to the same JSON as stringify of s", () =
     { numRuns: NUM_RUNS },
   );
 });
+
+// ---------------------------------------------------------------------------
+// G3: values without a JSON form, escaped __proto__ spellings
+// ---------------------------------------------------------------------------
+
+/** A value tree whose leaves include functions, symbols and undefined. */
+function genWild(r: G.Rng, depth: number): unknown {
+  const x = Math.floor(r() * (depth >= 3 ? 7 : 9));
+  switch (x) {
+    case 0:
+      return () => 1;
+    case 1:
+      return Symbol("s");
+    case 2:
+      return undefined;
+    case 3:
+      return null;
+    case 4:
+      return Math.floor(r() * 100);
+    case 5:
+      return "s" + Math.floor(r() * 10);
+    case 6:
+      return r() < 0.5;
+    case 7: {
+      const a: unknown[] = [];
+      for (let i = Math.floor(r() * 4); i > 0; i--) a.push(genWild(r, depth + 1));
+      return a;
+    }
+    default: {
+      const o: Record<string, unknown> = {};
+      for (let i = Math.floor(r() * 4); i > 0; i--) o["k" + i] = genWild(r, depth + 1);
+      return o;
+    }
+  }
+}
+
+const wildSchemas: S.Schema[] = [
+  S.unknown(),
+  S.array(S.unknown()),
+  S.record(S.unknown()),
+  S.record(S.optional(S.unknown())),
+  S.object({
+    k1: S.optional(S.unknown()),
+    k2: S.optional(S.not(S.null_())),
+    k3: S.optional(S.unknown()),
+  }),
+  S.tuple(S.unknown(), S.unknown()),
+];
+const wildStr = wildSchemas.map((s) => jsonStringify(s));
+
+test("unknown / not values serialize exactly like native JSON.stringify", () => {
+  Prop.assert(
+    Arb.integer(0, 0x7fffffff),
+    (seed) => {
+      const r = G.rng(seed);
+      const i = Math.floor(r() * wildSchemas.length);
+      const kind = wildSchemas[i].kind;
+      let v: unknown = genWild(r, 0);
+      if (kind === "array") v = Array.isArray(v) ? v : [v];
+      else if (kind === "tuple") v = [genWild(r, 1), genWild(r, 1)];
+      else if (kind === "object") {
+        // Declared keys only; not(null) never holds null
+        const k2 = genWild(r, 1);
+        v = { k1: genWild(r, 1), k2: k2 === null ? 0 : k2, k3: genWild(r, 1) };
+      } else if (kind === "record" && (typeof v !== "object" || v === null || Array.isArray(v))) {
+        v = { k1: v };
+      }
+      assert.equal(wildStr[i](v), JSON.stringify(v) ?? "null", `seed=${seed} schema=${i}`);
+      return true;
+    },
+    { numRuns: NUM_RUNS },
+  );
+});
+
+const unknownParse = jsonParse(S.unknown());
+const PROTO = "__proto__";
+
+/** Native parse with own `__proto__` keys removed — what SJ.parse must return. */
+function nativeStripped(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(nativeStripped);
+  if (typeof v !== "object" || v === null) return v;
+  const out: Record<string, unknown> = {};
+  for (const k of Object.keys(v)) {
+    if (k !== PROTO) out[k] = nativeStripped((v as Record<string, unknown>)[k]);
+  }
+  return out;
+}
+
+function hasOwnProto(v: unknown): boolean {
+  if (Array.isArray(v)) return v.some(hasOwnProto);
+  if (typeof v !== "object" || v === null) return false;
+  if (Object.hasOwn(v, PROTO)) return true;
+  return Object.values(v).some(hasOwnProto);
+}
+
+/** `__proto__` (or a near miss) with each char literal or \u-escaped in random hex case. */
+function genEscapedKey(r: G.Rng): string {
+  const bases = ["__proto__", "__proto__", "__proto_", "_proto__", "__protO__", "é", "a"];
+  const base = bases[Math.floor(r() * bases.length)];
+  let k = "";
+  for (let i = 0; i < base.length; i++) {
+    if (r() < 0.4) {
+      const hex = base.charCodeAt(i).toString(16).padStart(4, "0");
+      k += "\\u" + (r() < 0.5 ? hex : hex.toUpperCase());
+    } else k += base[i];
+  }
+  return k;
+}
+
+function genEscapedDoc(r: G.Rng, depth: number): string {
+  const x = depth >= 3 ? 0 : Math.floor(r() * 3);
+  if (x === 0) return String(Math.floor(r() * 10));
+  if (x === 1) {
+    const items: string[] = [];
+    for (let i = Math.floor(r() * 3); i > 0; i--) items.push(genEscapedDoc(r, depth + 1));
+    return "[" + items.join(",") + "]";
+  }
+  const entries: string[] = [];
+  for (let i = Math.floor(r() * 4); i > 0; i--) {
+    entries.push(`"${genEscapedKey(r)}":${genEscapedDoc(r, depth + 1)}`);
+  }
+  return "{" + entries.join(",") + "}";
+}
+
+test("parse never returns an own __proto__ key, however it is escaped", () => {
+  Prop.assert(
+    Arb.integer(0, 0x7fffffff),
+    (seed) => {
+      const text = genEscapedDoc(G.rng(seed), 0);
+      const r = unknownParse(text);
+      assert.ok(r[0], text);
+      assert.ok(!hasOwnProto(r[1]), text);
+      assert.deepStrictEqual(r[1], nativeStripped(JSON.parse(text)), text);
+      return true;
+    },
+    { numRuns: NUM_RUNS },
+  );
+});

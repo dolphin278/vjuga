@@ -794,7 +794,15 @@ describe("G7-1: task submitted from a startup-failure rejection handler", () => 
 
 describe("G7-3: idleTimeout validation", () => {
   test("NaN, negative, -Infinity and > 2^31-1 throw RangeError (before spawning)", () => {
-    for (const idleTimeout of [NaN, -1, -Infinity, 2 ** 31, 1e12]) {
+    for (const idleTimeout of [
+      NaN,
+      -1,
+      -Infinity,
+      2 ** 31,
+      1e12,
+      Symbol() as unknown as number,
+      "100" as unknown as number,
+    ]) {
       assert.throws(
         () => WP.make({ filename: echoUrl, minThreads: 1, maxThreads: 1, idleTimeout }),
         RangeError,
@@ -825,6 +833,7 @@ describe("G7-4: NaN priority", () => {
   test("run() rejects with RangeError and queues nothing", async () => {
     const pool = WP.make<number, number>({ filename: echoUrl, maxThreads: 1 });
     await assert.rejects(() => WP.run(pool, 1, { priority: NaN }), RangeError);
+    await assert.rejects(() => WP.run(pool, 1, { priority: "x" as unknown as number }), RangeError);
     assert.equal(WP.pendingCount(pool), 0);
     assert.equal(WP.activeCount(pool), 0);
     assert.equal(await WP.run(pool, 3), 3);

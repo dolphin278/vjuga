@@ -138,6 +138,8 @@ export interface Options {
 
 interface Config {
   maxHeaderSize: number;
+  /** Queued bytes at which a connection awaiting an async handler pauses. */
+  pauseAt: number;
   maxBodySize: number;
   headersTimeout: number;
   keepAliveTimeout: number;
@@ -386,7 +388,9 @@ export function make(handler: Handler, options?: Options): HttpServer {
     ),
     onError: options?.onError ?? noop,
     closing: false,
+    pauseAt: 0,
   };
+  cfg.pauseAt = Math.min(cfg.maxHeaderSize, DEFAULT_MAX_HEADER_SIZE);
   const conns = new Map<net.Socket, ConnState>();
 
   const tcpServer = net.createServer((socket: ConnSocket) => {
@@ -477,8 +481,9 @@ function onData(
   // Waiting for drain, or for the rest of an already-framed body
   if (conn.paused || needed < conn.need) {
     // Waiting for an async handler: the socket keeps reading (so a client
-    // that disconnects is noticed) until a header block's worth is queued
-    if (conn.awaiting && needed - conn.skip > cfg.maxHeaderSize) socket.pause();
+    // that disconnects is noticed) until a header block's worth is queued,
+    // capped at the default so `maxHeaderSize: Infinity` still bounds it
+    if (conn.awaiting && needed - conn.skip > cfg.pauseAt) socket.pause();
     return;
   }
 
@@ -950,9 +955,13 @@ function tryParse(conn: ConnState, offset: number, end: number, scan: number, cf
   const buf = conn.buf;
   const req = conn.req;
 
-  // RFC 9112 §2.2: ignore empty lines before the request line
+  // RFC 9112 §2.2: ignore empty lines (CRLF or LF) before the request line
   let start = offset;
-  while (start < end && (buf[start] === 0x0d || buf[start] === 0x0a)) start++;
+  for (;;) {
+    if (start < end && buf[start] === 0x0a) start++;
+    else if (start + 1 < end && buf[start] === 0x0d && buf[start + 1] === 0x0a) start += 2;
+    else break;
+  }
 
   // Find end of headers (\r\n\r\n). Buffer is reused: bytes past `end` are
   // stale, so a match is only valid when the whole terminator lies inside

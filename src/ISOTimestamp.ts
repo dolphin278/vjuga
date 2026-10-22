@@ -18,7 +18,7 @@
  * truncates fractions beyond milliseconds. `fromDate` / `fromEpochMs` throw
  * `RangeError` outside years 0000–9999 rather than brand an expanded-year
  * string. `now()` bypasses `toISOString()` via Hinnant's civil-from-days
- * algorithm with pre-built pad tables: ~20–25% faster on Node, ~5–20% slower
+ * algorithm with pre-built pad tables: ≥20% faster on Node 22+, ~5–20% slower
  * on Bun (whose native `toISOString` is already fast). `isRfc3339DateTime` /
  * `isRfc3339Time` are separate, stricter predicates for JSON Schema
  * `date-time` / `time` (RFC 3339 section 5.6).
@@ -303,8 +303,8 @@ export function fromEpochMs(ms: number): ISOTimestamp {
 }
 
 /**
- * Returns the current time as a branded ISOTimestamp. About 20–25% faster than
- * `new Date().toISOString()` on Node; about 5–20% slower on Bun.
+ * Returns the current time as a branded ISOTimestamp. At least 20% faster than
+ * `new Date().toISOString()` on Node 22+; about 5–20% slower on Bun.
  */
 export function now(): ISOTimestamp {
   return fromEpochMs(Date.now());

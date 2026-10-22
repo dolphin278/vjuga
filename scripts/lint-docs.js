@@ -36,11 +36,7 @@ const DOC_REQUIREMENTS = [
   },
   {
     file: "CLAUDE.md",
-    required: [
-      UNPUBLISHED_CONTRIBUTING_LINK,
-      "[AGENTS.md](./AGENTS.md)",
-      "[llms.txt](./llms.txt)",
-    ],
+    required: [UNPUBLISHED_CONTRIBUTING_LINK, "[AGENTS.md](./AGENTS.md)", "[llms.txt](./llms.txt)"],
     forbidden: [
       "**100% code coverage is required**",
       "**Fuzz tests are mandatory.**",
@@ -104,7 +100,9 @@ const staleExampleImports = tsFiles(join(ROOT, "src")).filter((file) =>
   /from ["']vjuga\//.test(readFileSync(file, "utf8")),
 );
 if (staleExampleImports.length > 0) {
-  console.error('lint-docs: JSDoc examples must import from "@dolphin278/vjuga/<Module>", not "vjuga/":');
+  console.error(
+    'lint-docs: JSDoc examples must import from "@dolphin278/vjuga/<Module>", not "vjuga/":',
+  );
   for (const file of staleExampleImports) console.error(`  ${file.slice(ROOT.length)}`);
   process.exit(1);
 }
@@ -121,7 +119,11 @@ if (packageJson.exports?.["."] !== null) {
   process.exit(1);
 }
 const publishedFiles = packageJson.files;
-if (!Array.isArray(publishedFiles) || !publishedFiles.includes("AGENTS.md") || !publishedFiles.includes("llms.txt")) {
+if (
+  !Array.isArray(publishedFiles) ||
+  !publishedFiles.includes("AGENTS.md") ||
+  !publishedFiles.includes("llms.txt")
+) {
   console.error("lint-docs: package.json files must include AGENTS.md and llms.txt");
   process.exit(1);
 }
@@ -169,10 +171,15 @@ const modules = [
 
 const llmsTxt = readFileSync(join(ROOT, "llms.txt"), "utf8");
 if (llmsTxt.includes("](./src/")) {
-  console.error("lint-docs: llms.txt must not link to src/ paths that 404 in the published package");
+  console.error(
+    "lint-docs: llms.txt must not link to src/ paths that 404 in the published package",
+  );
   process.exit(1);
 }
-const packedDocs = { "AGENTS.md": readFileSync(join(ROOT, "AGENTS.md"), "utf8"), "llms.txt": llmsTxt };
+const packedDocs = {
+  "AGENTS.md": readFileSync(join(ROOT, "AGENTS.md"), "utf8"),
+  "llms.txt": llmsTxt,
+};
 for (const [file, contents] of Object.entries(packedDocs)) {
   if (contents.includes("`src/<Module>.ts`")) {
     console.error(`lint-docs: ${file} must not tell package consumers to open src/<Module>.ts`);
@@ -188,9 +195,7 @@ const missing = modules.filter((m) => !llmsTxt.includes(m.importPath));
 if (missing.length > 0) {
   console.error("lint-docs: llms.txt is missing entries for:");
   for (const m of missing) console.error(`  ${m.importPath}`);
-  console.error(
-    "\nAdd an entry for each missing module to the appropriate section in llms.txt.",
-  );
+  console.error("\nAdd an entry for each missing module to the appropriate section in llms.txt.");
   process.exit(1);
 }
 
@@ -207,7 +212,9 @@ const missingPackageSpecifier = modules.filter((m) => {
   return !source.includes("@dolphin278/vjuga/");
 });
 if (missingPackageSpecifier.length > 0) {
-  console.error("lint-docs: public module JSDoc must include a resolving @dolphin278/vjuga/ import:");
+  console.error(
+    "lint-docs: public module JSDoc must include a resolving @dolphin278/vjuga/ import:",
+  );
   for (const m of missingPackageSpecifier) console.error(`  ${m.name}`);
   process.exit(1);
 }
@@ -262,7 +269,10 @@ function exportNames(moduleName) {
   for (const match of source.matchAll(decl)) names.add(match[1]);
   for (const match of source.matchAll(/^export\s+(?:type\s+)?\{([^}]*)\}/gm)) {
     for (const item of match[1].split(",")) {
-      const name = item.trim().split(/\s+as\s+/).pop();
+      const name = item
+        .trim()
+        .split(/\s+as\s+/)
+        .pop();
       if (name) names.add(name);
     }
   }

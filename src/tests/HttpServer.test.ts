@@ -975,6 +975,17 @@ test("leading empty lines before a request are ignored", () => {
   );
 });
 
+test("a bare CR before the request line is not an empty line: 400", () => {
+  const { seen, connect } = fakeServer();
+  assert.equal(statusOf(connect().feed("\r\r\nGET /a HTTP/1.1\r\n\r\n")), 400);
+  // A CR whose LF arrives in the next chunk is still an empty line
+  connect().feed("\r", "\nGET /b HTTP/1.1\r\n\r\n");
+  assert.deepEqual(
+    seen.map((r) => r.url),
+    ["/b"],
+  );
+});
+
 test("body split across chunks waits without re-parsing, then dispatches once", () => {
   const { seen, connect } = fakeServer();
   const s = connect();
@@ -1408,6 +1419,14 @@ test("maxBodySize 0 rejects any body", () => {
   assert.equal(statusOf(connect().feed("POST / HTTP/1.1\r\nContent-Length: 1\r\n\r\nx")), 413);
   connect().feed("POST / HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
   assert.equal(seen.length, 1);
+});
+
+test("async handler: an unlimited maxHeaderSize still pauses a pipelining client", () => {
+  const { pending, connect } = deferredServer({ maxHeaderSize: Infinity });
+  const s = connect().feed("GET / HTTP/1.1\r\n\r\n");
+  assert.equal(pending.length, 1);
+  s.feed("GET /x HTTP/1.1\r\n\r\n".repeat(4000)); // ~80 KB queued behind it
+  assert.equal(s.paused, true);
 });
 
 test("async handler: one request in flight, responses in order (G4-2)", async () => {

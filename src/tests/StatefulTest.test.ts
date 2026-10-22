@@ -315,21 +315,18 @@ test("checkStateful() shrinks command arguments", () => {
   }
 
   const addCmd: ST.CommandArbitrary<AccModel, Accumulator> = (_model) =>
-    Arb.map(
-      Arb.integer(1, 100),
-      (n): ST.Command<AccModel, Accumulator> => ({
-        name: `add(${n})`,
-        check: () => true,
-        run: (model, real) => {
-          model.total += n;
-          real.add(n);
-          // Bug: fail when total exceeds 50
-          if (real.get() > 50) {
-            throw new Error(`total ${real.get()} exceeds 50`);
-          }
-        },
-      }),
-    );
+    Arb.map(Arb.integer(1, 100), (n): ST.Command<AccModel, Accumulator> => ({
+      name: `add(${n})`,
+      check: () => true,
+      run: (model, real) => {
+        model.total += n;
+        real.add(n);
+        // Bug: fail when total exceeds 50
+        if (real.get() > 50) {
+          throw new Error(`total ${real.get()} exceeds 50`);
+        }
+      },
+    }));
 
   const result = ST.checkStateful({
     initialModel: () => ({ total: 0 }),

@@ -6,6 +6,8 @@ import * as Arb from "../../Arbitrary.js";
 import * as Prop from "../../Property.js";
 
 test("v7: valid, version 7, timestamp prefix matches clock, unique across pool refills", () => {
+  // Bun's native v7 may run its timestamp ahead of the clock in bursts (README)
+  const ahead = typeof Bun !== "undefined";
   const seen = new Set<string>();
   for (let i = 0; i < 50_000; i++) {
     const before = Date.now();
@@ -14,7 +16,7 @@ test("v7: valid, version 7, timestamp prefix matches clock, unique across pool r
     assert.equal(UUID.uuid(id), id);
     assert.equal(UUID.version(id), 7);
     const ms = parseInt(id.slice(0, 8) + id.slice(9, 13), 16);
-    assert.ok(ms >= before && ms <= after);
+    assert.ok(ms >= before && (ahead || ms <= after));
     assert.equal(seen.has(id), false);
     seen.add(id);
   }

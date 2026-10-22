@@ -111,7 +111,7 @@ function settleModel(m: Model, pos: number, kind: SettleKind): ModelInvocation {
 
 async function flush(r: Real): Promise<void> {
   let last = -1;
-  for (let stable = 0; stable < 64; ) {
+  for (let stable = 0; stable < 64;) {
     await Promise.resolve();
     if (r.events === last) {
       stable++;
@@ -180,29 +180,26 @@ const initCmd = Arb.map(
   }),
 );
 
-const callCmd = Arb.map(
-  Arb.integer(0, 9),
-  (p): ST.AsyncCommand<Model, Real> => ({
-    name: p === 0 ? "call(poison)" : "call",
-    check: (m) => m.cfg !== undefined,
-    run: async (m, r) => {
-      const item: Item = { id: m.nextId++, poison: p === 0 };
-      m.buffer.push(item);
-      r.exec!(item).then(
-        (v) => {
-          r.events++;
-          r.outcomes.set(item.id, `ok:${v}`);
-        },
-        (e: unknown) => {
-          r.events++;
-          r.outcomes.set(item.id, `rej:${reasonText(e)}`);
-        },
-      );
-      await flush(r);
-      compare(m, r);
-    },
-  }),
-);
+const callCmd = Arb.map(Arb.integer(0, 9), (p): ST.AsyncCommand<Model, Real> => ({
+  name: p === 0 ? "call(poison)" : "call",
+  check: (m) => m.cfg !== undefined,
+  run: async (m, r) => {
+    const item: Item = { id: m.nextId++, poison: p === 0 };
+    m.buffer.push(item);
+    r.exec!(item).then(
+      (v) => {
+        r.events++;
+        r.outcomes.set(item.id, `ok:${v}`);
+      },
+      (e: unknown) => {
+        r.events++;
+        r.outcomes.set(item.id, `rej:${reasonText(e)}`);
+      },
+    );
+    await flush(r);
+    compare(m, r);
+  },
+}));
 
 const tickCmd = Arb.constant<ST.AsyncCommand<Model, Real>>({
   name: "tick",

@@ -1474,8 +1474,11 @@ for (const [name, a, b, isB] of swapCases) {
     const arb = Arb.gen((pick) =>
       pick(Arb.boolean()) ? { a: true, v: pick(a) } : { a: false, v: pick(b) },
     );
+    // letrec / dictionary trees grow fast with size; 10 still nests and
+    // stays well under bun's 5 s test timeout under coverage on CI
+    const size = name === "letrec" || name === "dictionary" ? 10 : 30;
     for (let s = 0n; s < 30n; s++) {
-      everyNode(arb(rng(s), 30), 2, (x) => {
+      everyNode(arb(rng(s), size), 2, (x) => {
         if (!x.a) assert.ok(isB(x.v), `${name}: ${ser(x)}`);
       });
     }

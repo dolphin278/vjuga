@@ -461,6 +461,39 @@ test("default comparator: -0 and 0 are the same key", () => {
   assert.equal(OM.get(m, -0), "pos");
 });
 
+test("default comparator: mixed number/string keys collide (documented; pass compare)", () => {
+  // G6-1: the default orders keys that compare consistently with </> (numbers,
+  // bigints, or strings — not strings mixed with numbers). Incomparable pairs
+  // (10 vs "a", 10 vs "10") compare equal and overwrite each other.
+  const m = OM.make<number | string, string>();
+  OM.set(m, 10, "number 10");
+  OM.set(m, "10", "string 10");
+  OM.set(m, "a", "string a");
+  assert.equal(OM.size(m), 1);
+  assert.equal(OM.get(m, 10), "string a");
+  // A type-aware comparator restores a total order.
+  const typed = OM.make<number | string, string>((a, b) => {
+    if (typeof a !== typeof b) return typeof a === "number" ? -1 : 1;
+    return a < b ? -1 : a > b ? 1 : 0;
+  });
+  OM.set(typed, 10, "number 10");
+  OM.set(typed, "10", "string 10");
+  OM.set(typed, "a", "string a");
+  assert.deepEqual([...OM.keys(typed)], [10, "10", "a"]);
+});
+
+test("default comparator: bigint and number/bigint mixes are totally ordered", () => {
+  const m = OM.make<number | bigint, string>();
+  for (const k of [3n, 1, 2n, 2.5, 0n, -1n]) OM.set(m, k, String(k));
+  assert.equal(OM.size(m), 6);
+  assert.deepEqual([...OM.keys(m)], [-1n, 0n, 1, 2n, 2.5, 3n]);
+  assert.equal(OM.get(m, 2n), "2");
+  // 0n and 0 (and -0) are the same key, like -0 and 0.
+  OM.set(m, 0, "zero");
+  assert.equal(OM.size(m), 6);
+  assert.equal(OM.get(m, 0n), "zero");
+});
+
 // ---------------------------------------------------------------------------
 // AVL balance: bounded comparator calls per lookup (an unbalanced BST would
 // need O(n) calls for sorted inserts)

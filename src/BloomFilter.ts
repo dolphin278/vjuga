@@ -131,13 +131,15 @@ function hashPairInto(s: string): void {
  * at 2^32 bits.
  *
  * Throws `RangeError` for:
- * - `capacity` < 1 or non-integer
+ * - `capacity` not an integer in [1, 2^31-1]
  * - `fpr` ≤ 0, ≥ 1 or NaN
  * - a (capacity, fpr) pair that cannot be met within the 2^32-bit cap
  */
 export function make(capacity: number, fpr: number = 0.01): BloomFilter {
   if (capacity < 1 || (capacity | 0) !== capacity) {
-    throw new RangeError(`BloomFilter.make: capacity must be a positive integer, got ${capacity}`);
+    throw new RangeError(
+      `BloomFilter.make: capacity must be an integer in [1, 2^31-1], got ${capacity}`,
+    );
   }
   if (!(fpr > 0 && fpr < 1)) {
     throw new RangeError(`BloomFilter.make: fpr must be in (0, 1), got ${fpr}`);

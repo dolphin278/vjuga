@@ -24,7 +24,8 @@
  * All traversals use an explicit stack to avoid call-stack overflow on deep
  * trees. Int32Array for tree topology keeps GC pressure low. For dense range
  * scans, prefer `forRange(m, lo, hi, fn)` over `range(m, lo, hi)` — it avoids
- * generator-frame overhead and is ~5× faster in tight loops.
+ * generator-frame overhead and is ~5× faster in tight loops. The default
+ * comparator orders numbers/bigints or strings (not mixed); else pass `compare`.
  *
  * @example
  * ```ts
@@ -70,8 +71,13 @@ export interface OrderedMap<K, V> {
 }
 
 /**
- * Default comparator — a total order for number and string keys. NaN sorts
- * after every other number and equals itself; -0 and 0 compare equal (one key).
+ * Default comparator — a total order for keys that compare consistently with
+ * `<`/`>`: numbers, bigints (and number/bigint mixes), or strings — not
+ * strings mixed with numbers. NaN sorts after every other number and equals
+ * itself; -0 and 0 compare equal (one key). It is NOT a total order for
+ * objects, `null`/`undefined`, booleans, or number/string mixes: such pairs
+ * are often neither `<` nor `>` and return 0 (collide, e.g. `1` and `"1"`), or
+ * compare intransitively via coercion (`"10" < "9" < 10`).
  * The common cases (`a < b`, `a > b`) stay on the two-compare fast path.
  */
 function defaultCmp<K>(a: K, b: K): number {
@@ -85,9 +91,14 @@ function defaultCmp<K>(a: K, b: K): number {
 
 /**
  * Creates an empty `OrderedMap`. Supply an optional `compare` function
- * (returns negative/0/positive for a<b/a=b/a>b). The default comparator works
- * for `string` and `number` keys: it is a total order in which NaN sorts last
- * (and equals itself) and `-0` equals `0`.
+ * (returns negative/0/positive for a<b/a=b/a>b). The default comparator is a
+ * total order for keys that compare consistently with `<`/`>` — numbers,
+ * bigints (number/bigint mixes included), or strings, but not strings mixed
+ * with numbers: NaN sorts last (and equals itself) and `-0` equals `0`.
+ * Objects, `null`/`undefined`, booleans, or number/string mixes are
+ * unsupported by the default: incomparable keys compare equal and silently
+ * overwrite each other (e.g. `set(m, 1, a); set(m, "1", b)` leaves one entry),
+ * and coercion makes mixed orders intransitive. Pass `compare` for such keys.
  *
  * **Comparator contract**: `compare` must be a total order — it must return a
  * *finite* number (not NaN) for all pairs of keys in the map. A NaN-returning
@@ -585,6 +596,13 @@ const _forRangeStack = new Int32Array(128);
  * would reset the buffer and corrupt the outer traversal's stack state.
  * Callbacks that read via `get`, `has`, `floor`, `ceiling`, or `range` (the
  * generator form) are safe — only `forRange` itself is affected.
+ *
+ * **No mutation during the scan**: `fn` must not call `set` or `del` on `m`.
+ * Inserts and deletes rebalance the tree (and recycle node slots) under the
+ * in-progress traversal, so entries are silently skipped or revisited (e.g.
+ * deleting every visited key leaves most of the range in place). Collect the
+ * keys first, then mutate after `forRange` returns. The same applies to
+ * iterating `range`, `keys`, `values` and `entries`.
  */
 
 export function forRange<K, V>(

@@ -112,14 +112,14 @@ function hasNoJson(x: unknown): boolean {
 }
 
 /**
- * True for an `unknown` / `not` schema, optional-wrapped or not. As a record
+ * True for an `unknown` / `not` schema, optional- or nullable-wrapped. As a record
  * value or an optional property, its JSON text is computed first and the key
  * omitted when the value has none (function, symbol, undefined), like native
  * `JSON.stringify`. A required property emits `null` instead (`_ju`).
  */
 function mayHaveNoJson(schema: Schema): boolean {
   let s = schema;
-  while (s.kind === "optional") s = s.meta.inner;
+  while (s.kind === "optional" || s.kind === "nullable") s = s.meta.inner;
   return s.kind === "unknown" || s.kind === "not";
 }
 
@@ -142,7 +142,8 @@ function mayHaveNoJson(schema: Schema): boolean {
  * no JSON form (function, symbol) omits its record / optional-field key and
  * is `null` in an array slot or at the root. A required `unknown` / `not`
  * field keeps its key: `null` for undefined / function / symbol, so `parse`
- * accepts the output.
+ * accepts the output (unless the field's schema rejects `null`, e.g.
+ * `not(null)`).
  */
 export function stringify<S extends Schema>(schema: S): (value: Infer<S>) => string {
   const buf = createBuffer();

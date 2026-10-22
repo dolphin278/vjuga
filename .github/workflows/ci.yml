@@ -41,9 +41,11 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
       - if: matrix.runtime == 'bun'
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: latest
+          bun-version-file: .bun-version
+      - if: matrix.runtime == 'bun'
+        run: test "$(bun --version)" = "$(cat .bun-version)"
       - if: matrix.runtime != 'bun'
         run: npm ci
       - if: matrix.runtime != 'bun'

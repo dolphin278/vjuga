@@ -11,6 +11,10 @@
  * waiting until activity stops (search input, resize-end) — fires only after
  * `ms` of silence.
  *
+ * `ms` must be a number in `[0, 2^31 - 1]` (the range `setTimeout` honours;
+ * Node clamps anything else, Infinity included, to 1ms). Other values throw
+ * `RangeError` at construction.
+ *
  * @example
  * ```ts
  * import * as TimedFunction from "@dolphin278/vjuga/TimedFunction";
@@ -31,8 +35,10 @@ import type { Fn } from "./FunctionUtils.js";
  *
  * @param fn - Function to throttle. Must not rely on `this`.
  * @param ms - Minimum interval between invocations, in milliseconds.
+ * @throws {RangeError} If `ms` is not a number in `[0, 2^31 - 1]`.
  */
 export function throttle<T extends unknown[]>(fn: Fn<T>, ms: number): Fn<T> {
+  checkDelay(ms);
   const timer: Ref.RefCell<ReturnType<typeof setTimeout> | undefined> = Ref.make(void 0);
 
   return function throttled(...args: T): void {
@@ -51,8 +57,10 @@ export function throttle<T extends unknown[]>(fn: Fn<T>, ms: number): Fn<T> {
  *
  * @param fn - Function to debounce. Must not rely on `this`.
  * @param ms - Quiet-period duration in milliseconds.
+ * @throws {RangeError} If `ms` is not a number in `[0, 2^31 - 1]`.
  */
 export function debounce<T extends unknown[]>(fn: Fn<T>, ms: number): Fn<T> {
+  checkDelay(ms);
   const timer: Ref.RefCell<ReturnType<typeof setTimeout> | undefined> = Ref.make(void 0);
 
   return function debounced(...args: T): void {
@@ -61,6 +69,16 @@ export function debounce<T extends unknown[]>(fn: Fn<T>, ms: number): Fn<T> {
     }
     timer.contents = setTimeout(fire, ms, fn, args, timer);
   };
+}
+
+// Largest delay setTimeout honours; larger values are clamped to 1ms.
+const MAX_TIMEOUT = 2_147_483_647;
+
+function checkDelay(ms: number): void {
+  // Negated range test so NaN fails too.
+  if (!(ms >= 0 && ms <= MAX_TIMEOUT)) {
+    throw new RangeError(`ms must be a number in [0, ${MAX_TIMEOUT}], got ${String(ms)}`);
+  }
 }
 
 function clearTimer(timer: Ref.RefCell<ReturnType<typeof setTimeout> | undefined>): void {

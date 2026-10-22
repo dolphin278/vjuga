@@ -376,6 +376,38 @@ test("TimedFunction: debounce — no calls execute synchronously (property)", as
   );
 });
 
+test("TimedFunction: throttle/debounce accept ms iff in [0, 2^31-1] (property)", async () => {
+  const TF = await import("../../TimedFunction.js");
+  const noop = (): void => {};
+  const accepts = (make: () => unknown): boolean => {
+    try {
+      make();
+      return true;
+    } catch (e) {
+      if (!(e instanceof RangeError)) throw e;
+      return false;
+    }
+  };
+
+  // Construction only: no timer is armed, so nothing outlives the run.
+  Prop.assert(
+    Arb.oneOf<number>(
+      Arb.float(-1e10, 1e10),
+      Arb.integer(2 ** 31 - 3, 2 ** 31 + 3),
+      Arb.integer(-3, 3),
+      Arb.constantFrom(NaN, Infinity, -Infinity, -0),
+    ),
+    (ms) => {
+      const valid = ms >= 0 && ms <= 2 ** 31 - 1;
+      return (
+        accepts(() => TF.throttle(noop, ms)) === valid &&
+        accepts(() => TF.debounce(noop, ms)) === valid
+      );
+    },
+    { numRuns: 1_000_000 },
+  );
+});
+
 test("TimedFunction: throttle — fresh window after timer clears (property)", async () => {
   const TF = await import("../../TimedFunction.js");
 

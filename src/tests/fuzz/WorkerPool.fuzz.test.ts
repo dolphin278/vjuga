@@ -86,6 +86,88 @@ test("property: deserializeThrown never throws on arbitrary input", () => {
 });
 
 // ---------------------------------------------------------------------------
+// G7-3: idleTimeout validation (no workers spawned: minThreads defaults to 0)
+// ---------------------------------------------------------------------------
+
+test("property: make() accepts idleTimeout iff Infinity or in [0, 2^31-1]", () => {
+  Prop.assert(
+    Arb.oneOf<number>(
+      Arb.float(-1e10, 1e10),
+      Arb.integer(2 ** 31 - 3, 2 ** 31 + 3),
+      Arb.integer(-3, 3),
+      Arb.constantFrom(NaN, Infinity, -Infinity, -0),
+    ),
+    (idleTimeout) => {
+      const valid = idleTimeout === Infinity || (idleTimeout >= 0 && idleTimeout <= 2 ** 31 - 1);
+      try {
+        WP.make({ filename: opsUrl, maxThreads: 1, idleTimeout });
+        return valid;
+      } catch (e) {
+        return !valid && e instanceof RangeError;
+      }
+    },
+    { numRuns: 1_000_000 },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// G7-1: retries issued from a startup-failure rejection handler never hang
+// ---------------------------------------------------------------------------
+
+const badInitCountUrl = new URL("../fixtures/bad-init-count.mjs", import.meta.url).href;
+// G7-6: a module without a default function is a startup failure too.
+const noDefaultCountUrl = new URL("../fixtures/no-default-count.mjs", import.meta.url).href;
+
+test("property: startup-failure retries all settle, drain() settles, no respawn loop", async () => {
+  await Prop.assertAsync(
+    Arb.tuple(
+      Arb.integer(1, 3),
+      Arb.integer(0, 4),
+      Arb.constantFrom(badInitCountUrl, noDefaultCountUrl),
+    ),
+    async ([maxThreads, retries, filename]) => {
+      const noDefault = filename === noDefaultCountUrl;
+      const ok = (e: unknown): boolean =>
+        noDefault
+          ? e instanceof Error &&
+            e.name === "TypeError" &&
+            /must export a default function/.test(e.message)
+          : /init failed/.test(String(e));
+      const counter = new SharedArrayBuffer(4);
+      const pool = WP.make<number, number>({
+        filename,
+        maxThreads,
+        workerData: counter,
+      });
+      const outcomes: Promise<unknown>[] = [];
+      // Retries are submitted between the failed worker's 'error' and 'exit'.
+      let firstOk = false;
+      const first = WP.run(pool, 0).catch((e: unknown) => {
+        firstOk = ok(e);
+        for (let i = 0; i < retries; i++) outcomes.push(WP.run(pool, i).catch((e: unknown) => e));
+      });
+      try {
+        await withTimeout(first, 10_000, "first run");
+        const errs = await withTimeout(Promise.all(outcomes), 10_000, "retries");
+        await withTimeout(WP.drain(pool), 10_000, "drain()");
+        const spawns = Atomics.load(new Int32Array(counter), 0);
+        return (
+          firstOk &&
+          errs.every(ok) &&
+          spawns <= 1 + retries &&
+          WP.activeCount(pool) === 0 &&
+          WP.pendingCount(pool) === 0
+        );
+      } finally {
+        await WP.destroy(pool);
+      }
+    },
+    // Each run spawns real threads: bounded by wall clock, not 1M runs.
+    { numRuns: 1_000_000, timeoutMs: 60_000 },
+  );
+});
+
+// ---------------------------------------------------------------------------
 // Stateful: WorkerPool vs. oracle (run / abort / crash / drain / destroy)
 // ---------------------------------------------------------------------------
 
@@ -99,6 +181,8 @@ interface TaskModel {
   aborted: boolean;
   /** Submitted after destroy(): the only legal outcome is WorkerPoolDestroyedError. */
   readonly afterDestroy: boolean;
+  /** Submitted with priority NaN: must reject with RangeError (G7-4). */
+  readonly nanPriority: boolean;
 }
 
 interface Model {
@@ -116,6 +200,8 @@ interface Real {
   pool: WP.WorkerPool<unknown, unknown>;
   handles: Map<number, Handle>;
   maxThreads: number;
+  /** Ids of tasks whose promise has settled. */
+  settled: Set<number>;
 }
 
 const MAX_THREADS = 3;
@@ -126,6 +212,18 @@ function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
     timer = setTimeout(() => reject(new Error(`timeout (${ms}ms): ${what}`)), ms);
   });
   return Promise.race([p, t]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * G7-7 oracle: pendingCount never counts aborted or settled tasks, so it is
+ * bounded by the live, non-aborted tasks the model knows about.
+ */
+function checkCounts(m: Model, r: Real): void {
+  const pending = WP.pendingCount(r.pool);
+  let live = 0;
+  for (const t of m.tasks) if (!t.aborted && !r.settled.has(t.id)) live++;
+  assert.ok(pending >= 0, `pendingCount ${pending} < 0`);
+  assert.ok(pending <= live, `pendingCount ${pending} > live non-aborted tasks ${live}`);
 }
 
 /** Oracle: legal outcomes of a task given the model. */
@@ -141,6 +239,10 @@ function checkOutcome(t: TaskModel, model: Model, r: PromiseSettledResult<unknow
       assert.ok(model.destroyed, `${tag}: destroyed error but pool never destroyed`);
       return;
     }
+    if (t.nanPriority) {
+      assert.ok(reason instanceof RangeError, `${tag}: expected RangeError for NaN priority`);
+      return;
+    }
     if (t.aborted && reason?.name === "AbortError") return;
     if (t.kind === "throw") {
       assert.ok(reason instanceof Error && reason.message === `t${t.id}`, `${tag}: wrong error`);
@@ -153,6 +255,7 @@ function checkOutcome(t: TaskModel, model: Model, r: PromiseSettledResult<unknow
     assert.fail(`${tag}: unexpected rejection ${String(reason)}`);
   }
   assert.ok(!t.afterDestroy, `${tag}: resolved on a destroyed pool`);
+  assert.ok(!t.nanPriority, `${tag}: resolved despite NaN priority`);
   assert.ok(t.kind === "echo" || t.kind === "slow", `${tag}: resolved but should not`);
   assert.equal(r.value, t.id, `${tag}: wrong value`);
 }
@@ -185,6 +288,7 @@ test("stateful: WorkerPool matches oracle under run/abort/crash/drain/destroy", 
       }),
       handles: new Map(),
       maxThreads: MAX_THREADS,
+      settled: new Set(),
     }),
     commands: [
       // submit
@@ -192,7 +296,10 @@ test("stateful: WorkerPool matches oracle under run/abort/crash/drain/destroy", 
         Arb.map(
           Arb.tuple(
             Arb.constantFrom(...KINDS),
-            Arb.integer(0, 2),
+            Arb.frequency<number>(
+              { weight: 8, arb: Arb.integer(0, 2) },
+              { weight: 1, arb: Arb.constantFrom(NaN, Infinity, -Infinity) },
+            ),
             Arb.boolean(),
             Arb.integer(0, 25),
           ),
@@ -201,6 +308,8 @@ test("stateful: WorkerPool matches oracle under run/abort/crash/drain/destroy", 
             run: async (m: Model, r: Real): Promise<void> => {
               const id = m.nextId++;
               const ctrl = withSignal ? new AbortController() : undefined;
+              const pendingBefore = WP.pendingCount(r.pool);
+              const activeBefore = WP.activeCount(r.pool);
               const promise = WP.run(
                 r.pool,
                 { op: kind, v: id, ms },
@@ -209,14 +318,23 @@ test("stateful: WorkerPool matches oracle under run/abort/crash/drain/destroy", 
                 (value): PromiseSettledResult<unknown> => ({ status: "fulfilled", value }),
                 (reason): PromiseSettledResult<unknown> => ({ status: "rejected", reason }),
               );
+              void promise.then(() => r.settled.add(id));
               r.handles.set(id, { promise, ctrl });
+              const nanPriority = priority !== priority;
+              if (nanPriority) {
+                // Rejected up front: nothing queued, nothing dispatched.
+                assert.equal(WP.pendingCount(r.pool), pendingBefore, "NaN priority queued");
+                assert.equal(WP.activeCount(r.pool), activeBefore, "NaN priority dispatched");
+              }
               m.tasks.push({
                 id,
                 kind,
                 hasSignal: withSignal,
                 aborted: false,
                 afterDestroy: m.destroyed,
+                nanPriority,
               });
+              checkCounts(m, r);
               assert.ok(
                 WP.activeCount(r.pool) <= r.maxThreads,
                 `activeCount ${WP.activeCount(r.pool)} > maxThreads`,
@@ -233,8 +351,13 @@ test("stateful: WorkerPool matches oracle under run/abort/crash/drain/destroy", 
           run: async (m: Model, r: Real): Promise<void> => {
             const abortable = m.tasks.filter((t) => t.hasSignal);
             const t = abortable[idx % abortable.length]!;
+            const before = WP.pendingCount(r.pool);
             t.aborted = true;
             r.handles.get(t.id)!.ctrl!.abort();
+            // An abort removes at most this one task from the pending count.
+            const after = WP.pendingCount(r.pool);
+            assert.ok(after === before || after === before - 1, `pendingCount ${before}→${after}`);
+            checkCounts(m, r);
           },
         })),
 

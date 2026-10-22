@@ -29,6 +29,16 @@
  * const pages = await PromiseUtils.pool(urls, 4, (url) => fetch(url));
  * ```
  */
+
+/**
+ * Resolves every own enumerable property of `obj` and returns a null-prototype
+ * object with the awaited values under the same keys.
+ *
+ * Type note: the result type `{ [K in keyof T]: Awaited<T[K]> }` is only
+ * accurate for plain objects. For arrays use `Promise.all` (the result is not
+ * an array and has no `length`); for class instances only own enumerable
+ * fields are resolved — prototype methods and getters typed on `T` are absent.
+ */
 export async function props<T extends object>(obj: T): Promise<{ [K in keyof T]: Awaited<T[K]> }> {
   const keys: (string | symbol)[] = [];
   const promises: unknown[] = [];

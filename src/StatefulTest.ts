@@ -14,7 +14,8 @@
  * Internal design: generation is interleaved with execution (fast-check
  * style) — command i is generated from the model after commands 0..i-1 ran,
  * so state-dependent generators see real state. Shrink candidates replay on
- * fresh `initialModel()`/`initialReal()` instances, re-checking `check`.
+ * fresh `initialModel()`/`initialReal()` instances, re-checking `check`
+ * (a `check` that throws there counts as false).
  *
  * Design tradeoffs: commands are plain objects with `check`/`run` methods
  * rather than classes. Generators receive the live model: read it, don't
@@ -50,7 +51,9 @@ import { type CheckResult } from "./Property.js";
 export interface Command<Model, Real> {
   /** Human-readable name for shrink output. */
   readonly name: string;
-  /** Whether this command is valid in the current model state. Defaults to always-valid. */
+  /** Whether this command is valid in the current model state. Defaults to
+   *  always-valid. While shrinking replays a sequence, a `check` that throws
+   *  counts as `false` (the command is skipped). */
   check?(model: Model): boolean;
   /** Execute on the real system and update the model. Throws on mismatch. */
   run(model: Model, real: Real): void;
@@ -59,6 +62,7 @@ export interface Command<Model, Real> {
 /** Async variant of Command where `run` returns a Promise. */
 export interface AsyncCommand<Model, Real> {
   readonly name: string;
+  /** As `Command.check`; a throw during shrink replay counts as `false`. */
   check?(model: Model): boolean;
   run(model: Model, real: Real): Promise<void>;
 }
@@ -232,6 +236,22 @@ async function runGeneratedAsync<Model, Real>(
 // Internal: replaying a fixed sequence (shrinking)
 // ---------------------------------------------------------------------------
 
+/**
+ * Re-checks a command's precondition during replay. A throwing `check` counts
+ * as false: a generator may write a precondition that is safe only for the
+ * model it was generated from (`m.get(k).v` for an existing `k`), and
+ * shrinking can drop the command that made it safe. Letting that throw escape
+ * would lose the real failure, its seed and its command sequence.
+ */
+function precondition<Model>(cmd: { check?(model: Model): boolean }, model: Model): boolean {
+  if (cmd.check === undefined) return true;
+  try {
+    return cmd.check(model);
+  } catch {
+    return false;
+  }
+}
+
 /** Runs a fixed sequence on fresh state, re-checking each precondition. */
 function replaySync<Model, Real>(
   commands: Command<Model, Real>[],
@@ -241,7 +261,7 @@ function replaySync<Model, Real>(
   const real = config.initialReal();
   try {
     for (const cmd of commands) {
-      if (cmd.check !== undefined && !cmd.check(model)) continue;
+      if (!precondition(cmd, model)) continue;
       try {
         cmd.run(model, real);
       } catch (e) {
@@ -263,7 +283,7 @@ async function replayAsync<Model, Real>(
   const real = await config.initialReal();
   try {
     for (const cmd of commands) {
-      if (cmd.check !== undefined && !cmd.check(model)) continue;
+      if (!precondition(cmd, model)) continue;
       try {
         await cmd.run(model, real);
       } catch (e) {

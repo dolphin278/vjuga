@@ -3,6 +3,8 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import * as PRNG from "../PRNG.js";
 import * as Arb from "../Arbitrary.js";
+import * as Prop from "../Property.js";
+import * as Ref from "./fixtures/PRNGReference.js";
 
 // Helper: make a deterministic PRNG
 function rng(n = 42n) {
@@ -1313,4 +1315,392 @@ test("letrec shape arbs invoked during an active generation share its budget", (
   for (let s = 0n; s < 50n; s++) {
     assert.ok(countNodes(out.a(rng(s), 100).value) <= 10 * 101 + 1);
   }
+});
+
+// ---------------------------------------------------------------------------
+// gen replay: parameter-keyed arbitrary identity (G5-2)
+// ---------------------------------------------------------------------------
+
+test("gen replay never feeds integer(0,10) picks into integer(100,200)", () => {
+  const arb = Arb.gen((pick) =>
+    pick(Arb.boolean())
+      ? { k: "x", n: pick(Arb.integer(0, 10)) }
+      : { k: "y", n: pick(Arb.integer(100, 200)) },
+  );
+  const r = Prop.check(arb, (v) => v.k === "y" && v.n >= 100 && v.n <= 200, {
+    seed: PRNG.seed(1n),
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.counterexample!.k, "x", ser(r.counterexample));
+  for (let s = 0n; s < 40n; s++) {
+    everyNode(arb(rng(s), 100), 3, (v) => {
+      if (v.k === "y") assert.ok(v.n >= 100 && v.n <= 200, ser(v));
+      else assert.ok(v.n >= 0 && v.n <= 10, ser(v));
+    });
+  }
+});
+
+/** Same factory, different parameters: [name, A, B, is-a-value-of-B]. */
+const swapCases: [string, Arb.Arbitrary<unknown>, Arb.Arbitrary<unknown>, (v: any) => boolean][] = [
+  ["nat", Arb.nat(5), Arb.integer(50, 60), (v) => v >= 50 && v <= 60],
+  ["float", Arb.float(0, 1), Arb.float(5, 6), (v) => v >= 5 && v < 6],
+  ["bigint", Arb.bigint(0n, 5n), Arb.bigint(50n, 60n), (v) => v >= 50n && v <= 60n],
+  [
+    "string",
+    Arb.string({ maxLength: 3 }),
+    Arb.string({ minLength: 5, maxLength: 6 }),
+    (v) => v.length >= 5,
+  ],
+  [
+    "array",
+    Arb.array(Arb.integer(0, 5)),
+    Arb.array(Arb.integer(50, 60)),
+    (v) => v.every((x: number) => x >= 50),
+  ],
+  [
+    "array lengths",
+    Arb.array(Arb.integer(0, 5), { maxLength: 2 }),
+    Arb.array(Arb.integer(0, 5), { minLength: 4, maxLength: 5 }),
+    (v) => v.length >= 4,
+  ],
+  [
+    "tuple arity",
+    Arb.tuple(Arb.integer(0, 5)),
+    Arb.tuple(Arb.integer(0, 5), Arb.integer(0, 5)),
+    (v) => v.length === 2,
+  ],
+  [
+    "record keys",
+    Arb.record({ a: Arb.integer(0, 5) }),
+    Arb.record({ b: Arb.integer(0, 5) }),
+    (v) => "b" in v,
+  ],
+  [
+    "oneOf",
+    Arb.oneOf<unknown>(Arb.integer(0, 5), Arb.integer(6, 9)),
+    Arb.oneOf<unknown>(Arb.integer(50, 55), Arb.integer(56, 60)),
+    (v) => v >= 50,
+  ],
+  ["constant", Arb.constant("x"), Arb.constant("y"), (v) => v === "y"],
+  [
+    "constant object",
+    Arb.constant({ mode: "a" }),
+    Arb.constant({ mode: "b" }),
+    (v) => v.mode === "b",
+  ],
+  ["constant object keys", Arb.constant({ a: 1 }), Arb.constant({ b: 1 }), (v) => "b" in v],
+  [
+    "constant key order",
+    Arb.constant({ x: 1, y: 2 }),
+    Arb.constant({ y: 2, x: 1 }),
+    (v) => Object.keys(v)[0] === "y",
+  ],
+  ["constant object size", Arb.constant({ a: 1 }), Arb.constant({ a: 1, b: 2 }), (v) => "b" in v],
+  ["constant array length", Arb.constant([1]), Arb.constant([1, 2]), (v) => v.length === 2],
+  ["constant array vs object", Arb.constant([1]), Arb.constant({ 0: 1 }), (v) => !Array.isArray(v)],
+  [
+    "constant nested callback",
+    Arb.constant({ f: () => 1 }),
+    Arb.constant({ f: () => 2 }),
+    (v) => v.f() === 2,
+  ],
+  ["constantFrom", Arb.constantFrom(1, 2), Arb.constantFrom(8, 9), (v) => v >= 8],
+  [
+    "uniqueArray",
+    Arb.uniqueArray(Arb.integer(0, 5)),
+    Arb.uniqueArray(Arb.integer(50, 60)),
+    (v) => v.every((x: number) => x >= 50),
+  ],
+  [
+    "dictionary",
+    Arb.dictionary(Arb.string(), Arb.integer(0, 5)),
+    Arb.dictionary(Arb.string(), Arb.integer(50, 60)),
+    (v) => Object.values(v).every((x) => (x as number) >= 50),
+  ],
+  [
+    "subarray",
+    Arb.subarray([1, 2, 3]),
+    Arb.subarray([7, 8, 9]),
+    (v) => v.every((x: number) => x >= 7),
+  ],
+  [
+    "frequency weights",
+    Arb.frequency<number>({ weight: 1, arb: Arb.integer(0, 5) }),
+    Arb.frequency<number>({ weight: 2, arb: Arb.integer(50, 60) }),
+    (v) => v >= 50,
+  ],
+  [
+    "filter",
+    Arb.filter(Arb.integer(0, 5), () => true),
+    Arb.filter(Arb.integer(50, 60), () => true),
+    (v) => v >= 50,
+  ],
+  [
+    "chain",
+    Arb.chain(Arb.integer(0, 5), (n) => Arb.constant(n)),
+    Arb.chain(Arb.integer(50, 60), (n) => Arb.constant(n)),
+    (v) => v >= 50,
+  ],
+  [
+    "map callback",
+    Arb.map(Arb.integer(0, 5), (n) => n),
+    Arb.map(Arb.integer(0, 5), (n) => n + 1000),
+    (v) => v >= 1000,
+  ],
+  [
+    "date",
+    Arb.date(new Date(0), new Date(10)),
+    Arb.date(new Date(500), new Date(600)),
+    (d) => d.getTime() >= 500,
+  ],
+  [
+    "custom vs built-in",
+    (_p: PRNG.PRNG, _s: number) => ({ value: -1, shrinks: [] }),
+    Arb.integer(50, 60),
+    (v) => v >= 50,
+  ],
+  [
+    "letrec",
+    Arb.letrec((tie) => ({ t: Arb.oneOf<unknown>(Arb.integer(0, 5), Arb.array(tie("t"))) })).t,
+    Arb.letrec((tie) => ({ t: Arb.oneOf<unknown>(Arb.integer(50, 60), Arb.array(tie("t"))) })).t,
+    function allBig(v): boolean {
+      return Array.isArray(v) ? v.every(allBig) : v >= 50;
+    },
+  ],
+];
+
+for (const [name, a, b, isB] of swapCases) {
+  test(`gen replay keeps ${name} picks apart when parameters differ`, () => {
+    const arb = Arb.gen((pick) =>
+      pick(Arb.boolean()) ? { a: true, v: pick(a) } : { a: false, v: pick(b) },
+    );
+    for (let s = 0n; s < 30n; s++) {
+      everyNode(arb(rng(s), 30), 2, (x) => {
+        if (!x.a) assert.ok(isB(x.v), `${name}: ${ser(x)}`);
+      });
+    }
+  });
+}
+
+test("gen replay reuses picks of arbitraries rebuilt inline with equal parameters", () => {
+  const arb = Arb.gen((pick) => {
+    const big = pick(
+      Arb.tuple(
+        Arb.map(Arb.integer(100, 1000), (n) => n * 2),
+        Arb.record({ s: Arb.string({ minLength: 2 }) }),
+        Arb.oneOf(Arb.constant("k"), Arb.constantFrom("p", "q")),
+        Arb.uniqueArray(Arb.integer(0, 99), { minLength: 1 }),
+      ),
+    );
+    const n = pick(Arb.integer(0, 1000));
+    return { big, n };
+  });
+  let checked = 0;
+  for (let s = 0n; s < 30n; s++) {
+    const tree = arb(rng(s), 100);
+    for (const child of tree.shrinks) {
+      // Shrinking only the second pick must replay the first one unchanged.
+      if (child.value.n !== tree.value.n) {
+        assert.deepEqual(child.value.big, tree.value.big);
+        checked++;
+      }
+    }
+  }
+  assert.ok(checked > 0);
+});
+
+test("gen replay matches inline object constants structurally, so shrinking still reaches the minimum", () => {
+  const bodies: [string, (pick: Arb.GenPick) => { n: number }][] = [
+    [
+      "constant",
+      (pick) => ({
+        cfg: pick(Arb.constant({ mode: "a", xs: [1, null] })),
+        n: pick(Arb.integer(0, 1000)),
+      }),
+    ],
+    [
+      "constantFrom",
+      (pick) => ({
+        cfg: pick(Arb.constantFrom({ mode: "a" }, { mode: "b" })),
+        n: pick(Arb.integer(0, 1000)),
+      }),
+    ],
+    [
+      "subarray",
+      (pick) => ({ s: pick(Arb.subarray([{ k: 1 }, { k: 2 }])), n: pick(Arb.integer(0, 1000)) }),
+    ],
+    [
+      "null-prototype object",
+      (pick) => ({
+        cfg: pick(Arb.constant(Object.assign(Object.create(null) as object, { m: 1 }))),
+        n: pick(Arb.integer(0, 1000)),
+      }),
+    ],
+  ];
+  for (const [name, body] of bodies) {
+    for (let s = 1n; s <= 20n; s++) {
+      const r = Prop.check(Arb.gen(body), (v) => v.n < 500, { seed: PRNG.seed(s), numRuns: 1000 });
+      assert.equal(r.ok, false);
+      assert.equal(r.counterexample!.n, 500, `${name} seed ${s}`);
+    }
+  }
+});
+
+test("gen replay structural comparison is bounded for cyclic and huge constants", () => {
+  for (const make of [
+    (): unknown => {
+      const c: unknown[] = [];
+      c.push(c);
+      return c;
+    },
+    (): unknown => Array.from({ length: 5000 }, (_, i) => i),
+  ]) {
+    const arb = Arb.gen((pick) => ({
+      c: pick(Arb.constant(make())),
+      n: pick(Arb.integer(0, 1000)),
+    }));
+    // Unequal-by-budget values only miss reuse; every node stays a valid value.
+    for (let s = 0n; s < 5n; s++) {
+      everyNode(arb(rng(s), 100), 2, (v) => assert.ok(v.n >= 0 && v.n <= 1000));
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// float: wide ranges and the exclusive max (G5-3)
+// ---------------------------------------------------------------------------
+
+/** PRNG whose next `next()` draw is 1 - 2^-53 (the largest value below 1). */
+function rngNearOne(): PRNG.PRNG {
+  return PRNG.make(PRNG.seed(Ref.seedForOutput(((1n << 53n) - 1n) << 11n)));
+}
+
+test("float() spans ranges wider than Number.MAX_VALUE without overflowing", () => {
+  const arb = Arb.float(-Number.MAX_VALUE, Number.MAX_VALUE);
+  const prng = rng(1n);
+  let neg = 0;
+  let pos = 0;
+  for (let i = 0; i < 200; i++) {
+    const tree = arb(PRNG.split(prng), 100);
+    assert.ok(Number.isFinite(tree.value), `${tree.value}`);
+    if (tree.value < 0) neg++;
+    else pos++;
+    everyNode(tree, 2, (v) => assert.ok(Number.isFinite(v) && v < Number.MAX_VALUE));
+  }
+  assert.ok(neg > 50 && pos > 50);
+  assert.ok(arb(rngNearOne(), 100).value < Number.MAX_VALUE);
+});
+
+test("float() never returns the exclusive max when rounding lands on it", () => {
+  assert.equal(Arb.float(1, 2)(rngNearOne(), 100).value, 2 - 2 ** -52);
+  assert.equal(Arb.float(-2, -1)(rngNearOne(), 100).value, -1 - 2 ** -52);
+  // Subnormal span: r·MIN_VALUE rounds to MIN_VALUE, landing on max = 0.
+  assert.equal(Arb.float(-Number.MIN_VALUE, 0)(rngNearOne(), 100).value, -Number.MIN_VALUE);
+  assert.equal(Arb.float(3, 3)(rngNearOne(), 100).value, 3);
+});
+
+// ---------------------------------------------------------------------------
+// string shrinking removes leading and interior characters (G5-6)
+// ---------------------------------------------------------------------------
+
+test("string() shrinks a '%'-containing counterexample to exactly '%'", () => {
+  for (let s = 1n; s <= 60n; s++) {
+    const r = Prop.check(Arb.string(), (x) => !x.includes("%"), {
+      seed: PRNG.seed(s),
+      numRuns: 1000,
+    });
+    if (!r.ok) assert.equal(r.counterexample, "%", `seed ${s}`);
+  }
+});
+
+test("string() shrink candidates remove runs at every offset, respecting minLength", () => {
+  // Size 0 generates "", which has nothing to shrink.
+  assert.equal([...Arb.string()(rng(), 0).shrinks].length, 0);
+  let t = Arb.string({ minLength: 4, maxLength: 4 })(rng(3n), 100);
+  for (const c of t.shrinks) assert.equal(c.value.length, 4);
+  t = Arb.string({ minLength: 2, maxLength: 8 })(rng(5n), 100);
+  const v = t.value;
+  const kids = [...t.shrinks].map((c) => c.value);
+  assert.ok(v.length > 3, v);
+  // Removing the first character alone is a candidate.
+  assert.ok(kids.includes(v.slice(1)), `${v} -> ${ser(kids)}`);
+  assert.ok(kids.includes(v.slice(0, 1) + v.slice(2)), `${v} -> ${ser(kids)}`);
+  for (const k of kids) assert.ok(k.length >= 2);
+});
+
+test("string() counterexample replays exactly from its path", () => {
+  const pred = (x: string) => !(x.includes("%") && x.length > 1);
+  const r = Prop.check(Arb.string(), pred, { seed: PRNG.seed(7n), numRuns: 1000 });
+  assert.equal(r.ok, false);
+  const replay = Prop.check(Arb.string(), pred, {
+    seed: PRNG.seed(7n),
+    numRuns: 1000,
+    path: r.path,
+  });
+  assert.equal(replay.counterexample, r.counterexample);
+  assert.equal(r.counterexample!.length, 2);
+});
+
+// ---------------------------------------------------------------------------
+// collection length validation (G5-9)
+// ---------------------------------------------------------------------------
+
+test("string/array/uniqueArray/dictionary reject invalid lengths with RangeError", () => {
+  const bad = [
+    { minLength: 5, maxLength: 2 },
+    { maxLength: 2.5 },
+    { minLength: -1 },
+    { minLength: Number.NaN },
+    { minLength: Infinity },
+    { maxLength: -Infinity },
+  ];
+  for (const opts of bad) {
+    assert.throws(() => Arb.string(opts), {
+      name: "RangeError",
+      message: /^string: minLength must be a non-negative safe integer and maxLength/,
+    });
+    assert.throws(() => Arb.array(Arb.nat(), opts), /^RangeError: array: minLength/);
+    assert.throws(() => Arb.uniqueArray(Arb.nat(), opts), /^RangeError: uniqueArray: minLength/);
+  }
+  assert.throws(() => Arb.dictionary(Arb.string(), Arb.nat(), { minSize: 3, maxSize: 1 }), {
+    name: "RangeError",
+    message: /^dictionary: minSize must be .* maxSize .*\(got 3, 1\)$/,
+  });
+  assert.throws(() => Arb.dictionary(Arb.string(), Arb.nat(), { minSize: 0.5 }), /dictionary/);
+});
+
+test("maxLength / maxSize: Infinity means uncapped (bounded by size), as in 10.0.0", () => {
+  const prng = rng(3n);
+  const arbs: [string, Arb.Arbitrary<unknown>, (v: any) => number][] = [
+    ["string", Arb.string({ maxLength: Infinity }), (v) => v.length],
+    ["array", Arb.array(Arb.integer(), { maxLength: Infinity }), (v) => v.length],
+    ["uniqueArray", Arb.uniqueArray(Arb.integer(), { maxLength: Infinity }), (v) => v.length],
+    [
+      "dictionary",
+      Arb.dictionary(Arb.string({ minLength: 4 }), Arb.integer(), { maxSize: Infinity }),
+      (v) => Object.keys(v).length,
+    ],
+  ];
+  for (const [name, arb, len] of arbs) {
+    let longest = 0;
+    for (let i = 0; i < 200; i++) {
+      const n = len(arb(PRNG.split(prng), 40).value);
+      assert.ok(n <= 40, `${name}: ${n}`);
+      longest = Math.max(longest, n);
+    }
+    assert.ok(longest > 10, `${name} is capped at ${longest}`);
+  }
+});
+
+test("an omitted maxLength defaults to max(minLength, 10)", () => {
+  const prng = rng();
+  for (let i = 0; i < 20; i++) {
+    assert.equal(Arb.string({ minLength: 20 })(PRNG.split(prng), 100).value.length, 20);
+    assert.equal(Arb.array(Arb.nat(), { minLength: 12 })(PRNG.split(prng), 100).value.length, 12);
+    const d = Arb.dictionary(Arb.string({ minLength: 3 }), Arb.nat(), { minSize: 11 });
+    assert.equal(Object.keys(d(PRNG.split(prng), 100).value).length, 11);
+  }
+  const lens = new Set<number>();
+  for (let i = 0; i < 200; i++) lens.add(Arb.string()(PRNG.split(prng), 100).value.length);
+  assert.equal(Math.max(...lens), 10);
 });

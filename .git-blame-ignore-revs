@@ -1,0 +1,3 @@
+# Mechanical reformats; git blame --ignore-revs-file / GitHub blame skip these.
+# bun fmt adoption (#53)
+ac5bfc8ef39e06fb51d7cd8b6aedeb6d44b36127

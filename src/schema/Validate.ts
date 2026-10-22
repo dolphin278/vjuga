@@ -82,7 +82,11 @@ export interface SchemaError {
   readonly received: unknown;
 }
 
-/** Create a SchemaError. Captured as a ref in generated code. */
+/**
+ * Create a SchemaError. Captured as a ref in generated code.
+ *
+ * @internal Exported for the schema code generators only — not part of the public API contract.
+ */
 export function makeError(path: string, expected: string, received: unknown): SchemaError {
   return { path, expected, received };
 }
@@ -101,6 +105,8 @@ function ownGet(o: object, k: string): unknown {
  *
  * Every ref that `emitValidation` output may reference is registered here, so
  * callers (Validate, JSON.parse, TOON) only need this one call.
+ *
+ * @internal Exported for the schema code generators only — not part of the public API contract.
  */
 export function emitStandardRefs(buf: CodeBuffer, okFn: unknown, errFn: unknown): void {
   emitRef(buf, "_ok", okFn);
@@ -298,6 +304,8 @@ function emitSingle(buf: CodeBuffer, schema: Schema, accessor: string, pathExpr:
  * `pathExpr` is a JS expression string for error paths. Static paths are
  * string literals; dynamic paths (array/record loops) use string
  * concatenation with loop variables.
+ *
+ * @internal Exported for the schema code generators only — not part of the public API contract.
  */
 export function emitValidation(
   buf: CodeBuffer,

@@ -289,3 +289,12 @@ test("ok() with an explicit type argument is assignable to a mutable Result", ()
   const r: Result.Result<{ a: number[] }, string> = Result.ok<{ a: number[] }>({ a: [1] });
   assert.deepEqual(r, [true, { a: [1] }]);
 });
+
+test("unwrap() wraps (not re-throws) an Error from another realm (documented, G8-11)", async () => {
+  const vm = await import("node:vm");
+  const foreign = vm.runInNewContext('new Error("foreign")') as Error;
+  assert.throws(
+    () => Result.unwrap(Result.err(foreign)),
+    (e: unknown) => e instanceof Error && e !== foreign && e.cause === foreign,
+  );
+});

@@ -18,6 +18,9 @@
  *     integer; otherwise `make` throws `RangeError`. A throwing `factory`
  *     does not consume a slot; a throwing `reset` drops that instance (it is
  *     not recycled) and frees its slot, and the error propagates.
+ *   - `withAcquire` is settle-aware: if `fn` returns a thenable, the instance
+ *     is released when it settles (the call then returns a new Promise), so
+ *     async borrowers never share an instance or see `reset` mid-use.
  *   - No ownership tracking or double-release guards — intentionally simple.
  *     If ownership tracking is needed during development, wrap the pool in a
  *     Set-based borrow-checker at the call site.
@@ -154,20 +157,72 @@ export function release<T extends object>(pool: MemoryPool<T>, instance: T): voi
   pool[kFreeList].push(instance);
 }
 
+/**
+ * Acquires an instance, calls `fn(instance)` and releases the instance
+ * afterwards, also when `fn` throws (`fn`'s error wins over a throwing
+ * `reset`).
+ *
+ * If `fn` returns a thenable (e.g. an `async` function), the instance stays
+ * borrowed until it settles, and `withAcquire` returns a new Promise that
+ * settles the same way after the release: fulfilment with `fn`'s value (or
+ * rejection with a throwing `reset`'s error), rejection with `fn`'s reason
+ * (which wins over a throwing `reset`). Concurrent async borrowers therefore
+ * hold distinct instances and count against `maxSize`. Acquisition errors
+ * (`MemoryPoolExhaustedError`, a throwing `factory`) are thrown synchronously
+ * even for an async `fn`, which is then not called.
+ */
+export function withAcquire<T extends object, R>(
+  pool: MemoryPool<T>,
+  fn: (instance: T) => PromiseLike<R>,
+): Promise<R>;
+export function withAcquire<T extends object, R>(pool: MemoryPool<T>, fn: (instance: T) => R): R;
 export function withAcquire<T extends object, R>(pool: MemoryPool<T>, fn: (instance: T) => R): R {
   const instance = acquire(pool);
   let result: R;
+  let then: unknown;
   try {
     result = fn(instance);
+    // Read `.then` inside the try: a throwing getter must still release.
+    then = isObjectLike(result) ? (result as { then?: unknown }).then : undefined;
   } catch (error) {
-    // Do not let a throwing `reset` mask the error from `fn`.
-    try {
-      release(pool, instance);
-    } catch {
-      // `fn`'s error takes precedence.
-    }
+    releaseQuietly(pool, instance);
     throw error;
+  }
+  if (typeof then === "function") {
+    return releaseOnSettle(pool, instance, result as PromiseLike<unknown>) as R;
   }
   release(pool, instance);
   return result;
+}
+
+function isObjectLike(value: unknown): value is object {
+  return (typeof value === "object" && value !== null) || typeof value === "function";
+}
+
+/** Release, swallowing a `reset` error so the caller's error takes precedence. */
+function releaseQuietly<T extends object>(pool: MemoryPool<T>, instance: T): void {
+  try {
+    release(pool, instance);
+  } catch {
+    // The caller's error takes precedence.
+  }
+}
+
+// Off the sync hot path: only reached when `fn` returned a thenable.
+// `await` adopts any thenable once (a misbehaving `then` that calls back
+// twice or throws still settles exactly once), so `release` runs once.
+async function releaseOnSettle<T extends object>(
+  pool: MemoryPool<T>,
+  instance: T,
+  thenable: PromiseLike<unknown>,
+): Promise<unknown> {
+  let value: unknown;
+  try {
+    value = await thenable;
+  } catch (error) {
+    releaseQuietly(pool, instance);
+    throw error;
+  }
+  release(pool, instance);
+  return value;
 }

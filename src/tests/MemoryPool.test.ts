@@ -261,6 +261,161 @@ test("withAcquire: a throwing reset on the success path propagates", () => {
   assert.throws(() => withAcquire(pool, () => 1), /reset boom/);
 });
 
+// --- withAcquire with async / thenable fn (G8-2) ---
+
+const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 1));
+
+test("withAcquire: concurrent async borrowers get distinct instances, reset after settle", async () => {
+  const pool = make({
+    factory: () => ({ owner: "" }),
+    reset: (o) => {
+      o.owner = "";
+    },
+    maxSize: 2,
+  });
+  const job = (name: string): Promise<string> =>
+    withAcquire(pool, async (o) => {
+      o.owner = name;
+      await tick();
+      return `${name} sees ${o.owner}`;
+    });
+  assert.deepEqual(await Promise.all([job("A"), job("B")]), ["A sees A", "B sees B"]);
+  // Both released after settling: the pool can hand out two instances again.
+  const a = acquire(pool);
+  const b = acquire(pool);
+  assert.notEqual(a, b);
+  assert.equal(a.owner, "");
+});
+
+test("withAcquire: an unsettled async borrower counts against maxSize", async () => {
+  const pool = make({ factory: () => ({}), maxSize: 1 });
+  let finish!: () => void;
+  const pending = withAcquire(pool, () => new Promise<void>((r) => (finish = r)));
+  assert.throws(() => acquire(pool), MemoryPoolExhaustedError);
+  assert.throws(() => withAcquire(pool, async () => 1), MemoryPoolExhaustedError);
+  finish();
+  await pending;
+  release(pool, acquire(pool));
+});
+
+test("withAcquire: returns a new Promise with fn's value, released before it settles", async () => {
+  const pool = make({ factory: () => ({}), maxSize: 1 });
+  const inner = Promise.resolve(42);
+  const outer = withAcquire(pool, () => inner);
+  assert.notEqual(outer, inner);
+  assert.equal(await outer, 42);
+  release(pool, acquire(pool)); // slot is free again
+});
+
+test("withAcquire: a rejected promise releases the instance and wins over a throwing reset", async () => {
+  let failReset = false;
+  const pool = make({
+    factory: () => ({}),
+    reset: () => {
+      if (failReset) throw new Error("reset boom");
+    },
+    maxSize: 1,
+  });
+  await assert.rejects(
+    withAcquire(pool, async () => {
+      throw new Error("user boom");
+    }),
+    /user boom/,
+  );
+  release(pool, acquire(pool));
+  failReset = true;
+  await assert.rejects(
+    withAcquire(pool, () => Promise.reject(new Error("user boom"))),
+    /user boom/,
+  );
+  // Dirty instance dropped, slot freed.
+  failReset = false;
+  release(pool, acquire(pool));
+});
+
+test("withAcquire: a throwing reset after fulfilment rejects the returned promise", async () => {
+  const pool = make({
+    factory: () => ({}),
+    reset: () => {
+      throw new Error("reset boom");
+    },
+    maxSize: 1,
+  });
+  await assert.rejects(
+    withAcquire(pool, async () => 1),
+    /reset boom/,
+  );
+  acquire(pool); // slot freed
+});
+
+test("withAcquire: custom thenables are adopted once, even if they misbehave", async () => {
+  let resets = 0;
+  const pool = make({ factory: () => ({}), reset: () => void resets++, maxSize: 1 });
+  const twice: PromiseLike<number> = {
+    // oxlint-disable-next-line unicorn/no-thenable -- deliberate thenables under test
+    then(onFulfilled, onRejected) {
+      onFulfilled?.(1);
+      onFulfilled?.(2);
+      onRejected?.(new Error("late"));
+      return Promise.resolve() as never;
+    },
+  };
+  assert.equal(await withAcquire(pool, () => twice), 1);
+  assert.equal(resets, 1, "released exactly once");
+  const throwing = {
+    // oxlint-disable-next-line unicorn/no-thenable -- deliberate thenables under test
+    then() {
+      throw new Error("then boom");
+    },
+  };
+  await assert.rejects(
+    withAcquire(pool, () => throwing),
+    /then boom/,
+  );
+  assert.equal(resets, 2);
+  // A function with a `then` method is a thenable too.
+  const fnThenable = Object.assign(() => 0, {
+    // oxlint-disable-next-line unicorn/no-thenable -- deliberate thenables under test
+    then: (onFulfilled: (v: number) => void) => onFulfilled(5),
+  });
+  assert.equal(await withAcquire(pool, () => fnThenable), 5);
+  release(pool, acquire(pool));
+});
+
+test("withAcquire: a throwing `then` getter releases synchronously and rethrows", () => {
+  let resets = 0;
+  const pool = make({ factory: () => ({}), reset: () => void resets++, maxSize: 1 });
+  const evil = {
+    // oxlint-disable-next-line unicorn/no-thenable -- deliberate thenables under test
+    get then(): never {
+      throw new Error("getter boom");
+    },
+  };
+  assert.throws(() => withAcquire(pool, () => evil), /getter boom/);
+  assert.equal(resets, 1);
+  release(pool, acquire(pool));
+});
+
+test("withAcquire: non-thenable objects and functions are returned synchronously", () => {
+  const pool = make({ factory: () => ({}), maxSize: 1 });
+  // oxlint-disable-next-line unicorn/no-thenable -- deliberate thenables under test
+  const obj = { then: 1 };
+  assert.equal(
+    withAcquire(pool, () => obj),
+    obj,
+  );
+  const fn = (): number => 1;
+  assert.equal(
+    withAcquire(pool, () => fn),
+    fn,
+  );
+  assert.equal(
+    withAcquire(pool, () => null),
+    null,
+  );
+  release(pool, acquire(pool));
+});
+
 test("make validates maxSize and minSize", () => {
   const factory = () => ({});
   assert.throws(() => make({ factory, maxSize: NaN }), RangeError);

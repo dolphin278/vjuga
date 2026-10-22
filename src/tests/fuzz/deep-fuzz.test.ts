@@ -357,6 +357,58 @@ test("Memoization: once() calls function exactly once", async () => {
   );
 });
 
+test("Memoization: once() runs fn at most once per successful init, re-entrancy throws", async () => {
+  const Memo = await import("../../Memoization.js");
+
+  // Plan per call to fn: throw, re-enter (caught or not), or succeed.
+  type Step = "throw" | "reenterCaught" | "reenterUncaught" | "ok";
+  Prop.assert(
+    Arb.array(Arb.constantFrom<Step>("throw", "reenterCaught", "reenterUncaught", "ok"), {
+      maxLength: 8,
+    }),
+    (plan) => {
+      let calls = 0;
+      let reentrantErrors = 0;
+      const fn: () => number = Memo.once(() => {
+        const step = plan[calls++] ?? "ok";
+        if (step === "throw") throw new Error("boom");
+        if (step === "reenterCaught") {
+          try {
+            fn();
+          } catch (e) {
+            assert.ok(e instanceof TypeError);
+            reentrantErrors++;
+          }
+        } else if (step === "reenterUncaught") fn();
+        return calls;
+      });
+      // Oracle: each failing step costs one call; the first "ok"/"reenterCaught"
+      // step wins and is cached forever.
+      let expectedCalls = 0;
+      for (const step of plan) {
+        expectedCalls++;
+        if (step === "ok" || step === "reenterCaught") break;
+      }
+      const first = plan.findIndex((s) => s === "ok" || s === "reenterCaught");
+      if (first === -1) expectedCalls = plan.length + 1;
+      let value: number | undefined;
+      for (let i = 0; i < expectedCalls + 3; i++) {
+        try {
+          value = fn();
+        } catch (e) {
+          assert.ok(i < expectedCalls - 1, "only failing steps throw");
+          assert.ok(e instanceof Error);
+        }
+      }
+      assert.equal(calls, expectedCalls);
+      assert.equal(value, expectedCalls);
+      assert.equal(reentrantErrors, plan[expectedCalls - 1] === "reenterCaught" ? 1 : 0);
+      return true;
+    },
+    { numRuns: 1_000_000 },
+  );
+});
+
 // ============================================================================
 // ErrorChain (new module — no fuzz test existed)
 // ============================================================================

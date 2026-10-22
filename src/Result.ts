@@ -122,7 +122,9 @@ export function unwrapOr<T, E, U>(result: Result<T, E>, fallback: U): T | U {
  * If the Err payload is an Error instance it is re-thrown directly;
  * otherwise it is wrapped in a plain Error via String() (a payload that cannot
  * be stringified, e.g. a null-prototype object, gets a generic message). The
- * original payload is always available as `cause`.
+ * original payload is always available as `cause`. The check is
+ * `instanceof Error` in this realm, so an Error from another realm (a
+ * `node:vm` context, an iframe) is wrapped, not re-thrown as-is.
  */
 export function unwrap<T, E>(result: Result<T, E>): T {
   if (result[0]) {

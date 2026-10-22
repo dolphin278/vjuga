@@ -98,6 +98,67 @@ test("once retries after fn throws and then caches the first success", () => {
   assert.equal(calls, 2);
 });
 
+test("once throws TypeError on a re-entrant call during the first run (G8-10)", () => {
+  let calls = 0;
+  let inner: unknown;
+  const init: () => number = once(() => {
+    calls++;
+    if (calls === 1) {
+      try {
+        init();
+      } catch (e) {
+        inner = e;
+      }
+    }
+    return calls;
+  });
+  assert.equal(init(), 1);
+  assert.ok(inner instanceof TypeError, "re-entrant call throws TypeError");
+  assert.equal(calls, 1, "fn ran exactly once");
+  assert.equal(init(), 1);
+});
+
+test("once: an uncaught re-entrant TypeError fails the first run, which can be retried", () => {
+  let calls = 0;
+  const init: () => number = once(() => {
+    calls++;
+    if (calls === 1) init(); // propagates the TypeError out of fn
+    return calls;
+  });
+  assert.throws(() => init(), TypeError);
+  // The guard is cleared after the failed run, so the next call retries.
+  assert.equal(init(), 2);
+  assert.equal(init(), 2);
+});
+
+test("once with async fn: re-entry before the first await rejects, and that promise is cached (documented)", async () => {
+  let calls = 0;
+  const init: () => Promise<number> = once(async () => {
+    calls++;
+    await init(); // re-enters synchronously, inside the first run
+    return calls;
+  });
+  const first = init();
+  await assert.rejects(first, TypeError);
+  assert.equal(init(), first, "the rejected promise is the cached result");
+  assert.equal(calls, 1);
+});
+
+test("once with async fn: re-entry after the first await gets the cached promise", async () => {
+  let calls = 0;
+  let inner: Promise<number> | undefined;
+  const init: () => Promise<number> = once(async () => {
+    calls++;
+    await Promise.resolve();
+    inner = init();
+    return calls;
+  });
+  const first = init();
+  assert.equal(await first, 1);
+  assert.equal(inner, first);
+  assert.equal(calls, 1);
+});
+
 test("once caches an undefined result without calling fn again", () => {
   let calls = 0;
   const memoized = once((): undefined => {

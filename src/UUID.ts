@@ -11,18 +11,22 @@
  *
  * Design tradeoffs: validation checks both structural format and RFC 4122
  * variant-1 bits (the first nibble of group 4 must be 8/9/a/b); the Nil
- * (all-zero) and Max (all-f) UUIDs are accepted as special cases. Input is
- * lower-cased when branded so equal UUIDs always compare `===`. v7 generation
- * uses random sub-millisecond fill rather than a monotonic counter — two UUIDs
- * generated within the same millisecond are not guaranteed to be ordered, but
- * are unique with overwhelming probability.
+ * (all-zero) and Max (all-f) UUIDs are accepted as special cases. This is
+ * stricter than schema `format: "uuid"` (`Formats.isUuid`), which accepts
+ * any variant nibble, so a schema-valid value can still fail `uuid()`. Input
+ * is lower-cased when branded so equal UUIDs always compare `===`. v7 is
+ * monotonic per thread (module instance): consecutive `v7()` calls return
+ * strictly increasing values, even within one millisecond or if the clock
+ * steps back (RFC 9562 section 6.2, method 1: a 42-bit counter seeded
+ * randomly each new millisecond, followed by 32 random bits). Separate
+ * `worker_threads` have separate counters, so their ids may interleave.
  *
  * @example
  * ```ts
  * import { uuid, v4, v7, version } from "@dolphin278/vjuga/UUID";
  * const id = uuid("550e8400-e29b-41d4-a716-446655440000"); // validated
  * const random = v4();                                      // crypto.randomUUID()
- * const timeSorted = v7();                                  // timestamp-sortable
+ * const timeSorted = v7();                                  // monotonic, time-ordered
  * version(random); // 4
  * ```
  */
@@ -30,7 +34,8 @@
 import type { Branded } from "./FunctionUtils.js";
 import { type Result, ok, err } from "./Result.js";
 import { ValidationError, type Validator } from "./schema/ValidationError.js";
-import { randomUUID, getRandomValues } from "node:crypto";
+import { randomUUID } from "node:crypto";
+import { v7Impl } from "./UUID.v7.js";
 
 /** The Nil UUID (RFC 9562 section 5.9). */
 export const NIL = "00000000-0000-0000-0000-000000000000" as UUID;
@@ -47,13 +52,6 @@ declare const Bun: { randomUUIDv7: () => string } | undefined;
  * 8-4-4-4-12 hex groups, group 4 starts with 8/9/a/b.
  */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-/** Hex lookup table for byte-to-hex conversion. */
-const HEX: readonly string[] = /* @__PURE__ */ (() => {
-  const table: string[] = Array(256);
-  for (let i = 0; i < 256; i++) table[i] = (i + 0x100).toString(16).substring(1);
-  return table;
-})();
 
 /**
  * Validates and brands a string as a UUID.
@@ -78,66 +76,31 @@ export function v4(): UUID {
   return randomUUID() as UUID;
 }
 
-// Pooled random bytes: one getRandomValues syscall-ish call per POOL_SIZE / 10
-// UUIDs instead of one per UUID (the dominant cost of v7).
-const POOL_SIZE = 4096;
-const RANDOM_BYTES = 10; // bytes 6..15 of a v7 UUID
-const pool = new Uint8Array(POOL_SIZE);
-let poolPos = POOL_SIZE;
-
-function _v7Impl(): UUID {
-  const ms = Date.now();
-  if (poolPos + RANDOM_BYTES > POOL_SIZE) {
-    getRandomValues(pool);
-    poolPos = 0;
-  }
-  const o = poolPos;
-  poolPos += RANDOM_BYTES;
-
-  // Version 7: high nibble of byte 6 = 0111; variant 1: high 2 bits of byte 8 = 10
-  const b6 = (pool[o] & 0x0f) | 0x70;
-  const b8 = (pool[o + 2] & 0x3f) | 0x80;
-
-  // 48-bit timestamp (big-endian) in bytes 0-5, random in 6-15
-  return (HEX[(ms / 0x10000000000) & 0xff] +
-    HEX[(ms / 0x100000000) & 0xff] +
-    HEX[(ms / 0x1000000) & 0xff] +
-    HEX[(ms / 0x10000) & 0xff] +
-    "-" +
-    HEX[(ms / 0x100) & 0xff] +
-    HEX[ms & 0xff] +
-    "-" +
-    HEX[b6] +
-    HEX[pool[o + 1]] +
-    "-" +
-    HEX[b8] +
-    HEX[pool[o + 3]] +
-    "-" +
-    HEX[pool[o + 4]] +
-    HEX[pool[o + 5]] +
-    HEX[pool[o + 6]] +
-    HEX[pool[o + 7]] +
-    HEX[pool[o + 8]] +
-    HEX[pool[o + 9]]) as UUID;
-}
-
 /**
  * Generates a v7 UUID (timestamp-sortable) per RFC 9562.
  *
- * Layout (128 bits):
- *   48-bit ms timestamp | 4-bit version (0111) | 12-bit random |
- *   2-bit variant (10)  | 62-bit random
+ * Layout (128 bits, Node implementation):
+ *   48-bit ms timestamp | 4-bit version (0111) | 12-bit counter (high) |
+ *   2-bit variant (10)  | 30-bit counter (low) | 32-bit random
  *
+ * Monotonic per thread (each Worker loads its own copy of this module): each
+ * value is strictly greater (as a string and as a 128-bit number) than the
+ * previous one from the same thread. The counter is reseeded
+ * randomly each new millisecond and incremented within one; if the clock
+ * steps back, the last timestamp is reused and the counter keeps counting.
  * Random bits come from a 4 KiB pool refilled via `crypto.getRandomValues`.
- * Delegates to `Bun.randomUUIDv7` when running under Bun; falls back to a
- * manual implementation otherwise.
+ * Delegates to `Bun.randomUUIDv7` when running under Bun (also monotonic in
+ * a thread, but its 12-bit counter allows 4096 ids per millisecond and then
+ * runs the timestamp ahead of the clock); falls back to the manual
+ * implementation otherwise.
  */
-// Bun path is exercised by `npm run test:bun`; Node tests always take _v7Impl.
+// Bun path is exercised by `npm run test:bun`; Node tests always take v7Impl
+// (internal module `UUID.v7`, blocked in package exports).
 /* node:coverage ignore next 4 */
 export const v7: () => UUID =
   typeof Bun !== "undefined" && typeof Bun.randomUUIDv7 === "function"
     ? () => Bun.randomUUIDv7() as UUID
-    : _v7Impl;
+    : (v7Impl as () => UUID);
 
 /** Extracts the version number (4-bit nibble at position 12) from a UUID. */
 export function version(id: UUID): number {

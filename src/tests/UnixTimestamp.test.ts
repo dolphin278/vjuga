@@ -136,6 +136,56 @@ test("toISO() matches native for negative and fractional seconds", () => {
   assert.equal(UnixTimestamp.toISO(UnixTimestamp.unixTimestamp(-1)), "1969-12-31T23:59:59.000Z");
 });
 
+test("toDate()/toISO() keep exact milliseconds despite float error (G8-1)", () => {
+  // 1.005 * 1000 === 1004.9999999999999; Date would truncate it to 1004.
+  const cases: [number, number][] = [
+    [1.001, 1001],
+    [1.005, 1005],
+    [539075433.943, 539075433943],
+    [1094491586.718, 1094491586718],
+    [-1.005, -1005],
+    // In [2^51, 2^52) ms `Math.round(s * 1000)` can be 1 too high (the `r - 1` retry).
+    [-4435527859354.766, -4435527859354766],
+  ];
+  for (const [s, ms] of cases) {
+    assert.equal(UnixTimestamp.toDate(UnixTimestamp.unixTimestamp(s)).getTime(), ms, String(s));
+  }
+  assert.equal(UnixTimestamp.toISO(UnixTimestamp.unixTimestamp(1.005)), "1970-01-01T00:00:01.005Z");
+  assert.equal(
+    UnixTimestamp.toISO(UnixTimestamp.unixTimestamp(1094491586.718)),
+    "2004-09-06T17:26:26.718Z",
+  );
+  // Every exact-ms value in a small range survives the round trip.
+  for (let ms = -5000; ms <= 5000; ms++) {
+    assert.equal(UnixTimestamp.toDate(UnixTimestamp.unixTimestamp(ms / 1000)).getTime(), ms);
+  }
+});
+
+test("toDate()/toISO() still truncate sub-millisecond fractions toward zero (G8-1)", () => {
+  assert.equal(UnixTimestamp.toDate(UnixTimestamp.unixTimestamp(1.0009999)).getTime(), 1000);
+  assert.equal(UnixTimestamp.toDate(UnixTimestamp.unixTimestamp(1.0005)).getTime(), 1000);
+  assert.ok(Object.is(UnixTimestamp.toDate(UnixTimestamp.unixTimestamp(-0.0005)).getTime(), 0));
+  assert.equal(UnixTimestamp.toDate(UnixTimestamp.unixTimestamp(-1.0005)).getTime(), -1000);
+  assert.equal(
+    UnixTimestamp.toISO(UnixTimestamp.unixTimestamp(1.0009999)),
+    "1970-01-01T00:00:01.000Z",
+  );
+});
+
+test("toISO() throws RangeError outside years 0000-9999 (G8-3)", () => {
+  assert.equal(
+    UnixTimestamp.toISO(UnixTimestamp.unixTimestamp(253402300799.999)),
+    "9999-12-31T23:59:59.999Z",
+  );
+  assert.equal(
+    UnixTimestamp.toISO(UnixTimestamp.unixTimestamp(-62167219200)),
+    "0000-01-01T00:00:00.000Z",
+  );
+  for (const s of [253402300800, -62167219200.001, 8.64e12, 1e300]) {
+    assert.throws(() => UnixTimestamp.toISO(UnixTimestamp.unixTimestamp(s)), RangeError, String(s));
+  }
+});
+
 test("unixTimestamp() accepts millisecond-magnitude values (documented: no unit check)", () => {
   assert.equal(UnixTimestamp.unixTimestamp(1705312200000), 1705312200000);
 });

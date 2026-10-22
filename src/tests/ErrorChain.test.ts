@@ -91,3 +91,18 @@ test("non-Error terminator ends the chain", () => {
   assert.deepEqual(ErrorChain.toArray(e), [e]);
   assert.deepEqual([...ErrorChain.chain(e)], [e]);
 });
+
+test("ErrorChain: a cause from another realm (node:vm) ends the walk (documented, G8-11)", async () => {
+  const vm = await import("node:vm");
+  const foreign = vm.runInNewContext('new Error("foreign")') as Error;
+  const root = new Error("root", { cause: foreign });
+  assert.deepStrictEqual(ErrorChain.toArray(root), [root]);
+  assert.deepStrictEqual([...ErrorChain.chain(root)], [root]);
+  assert.strictEqual(
+    ErrorChain.find((e) => e.message === "foreign", root),
+    undefined,
+  );
+  // A foreign root: toArray/find see nothing, chain yields the root alone.
+  assert.deepStrictEqual(ErrorChain.toArray(foreign), []);
+  assert.strictEqual([...ErrorChain.chain(foreign)].length, 1);
+});

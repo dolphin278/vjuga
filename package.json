@@ -1,12 +1,20 @@
 {
   "name": "@dolphin278/vjuga",
   "version": "10.0.0",
-  "packageManager": "npm@11.14.0",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/dolphin278/vjuga.git"
   },
+  "files": [
+    "AGENTS.md",
+    "llms.txt",
+    "src/*.js",
+    "src/*.d.ts",
+    "src/schema/*.js",
+    "src/schema/*.d.ts"
+  ],
+  "type": "module",
   "exports": {
     ".": null,
     "./WorkerPool.worker.js": null,
@@ -34,7 +42,9 @@
       "default": "./src/*.js"
     }
   },
-  "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "clean": "tsc --build --clean",
     "build": "npm run clean && tsc --project tsconfig.json",
@@ -80,15 +90,5 @@
   "engines": {
     "node": ">=22.0.0"
   },
-  "files": [
-    "AGENTS.md",
-    "llms.txt",
-    "src/*.js",
-    "src/*.d.ts",
-    "src/schema/*.js",
-    "src/schema/*.d.ts"
-  ],
-  "publishConfig": {
-    "access": "public"
-  }
+  "packageManager": "npm@11.14.0"
 }

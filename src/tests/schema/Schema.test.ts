@@ -472,6 +472,53 @@ test("toJsonSchema — nested object", () => {
   });
 });
 
+test("toJsonSchema — shared subschemas are converted once (DAG stays linear)", () => {
+  const leaf = S.string({ minLength: 1 });
+  const pair = S.union(leaf, leaf);
+  assert.deepEqual(S.toJsonSchema(pair), {
+    anyOf: [
+      { type: "string", minLength: 1 },
+      { type: "string", minLength: 1 },
+    ],
+  });
+  // d_i = { l: d_{i-1}, r: d_{i-1} }: 2^40 paths, 41 distinct nodes
+  let d: S.Schema = S.string();
+  for (let i = 0; i < 40; i++) d = S.object({ l: d, r: d });
+  const t = performance.now();
+  const out = S.toJsonSchema(d) as { properties: { l: unknown; r: unknown } };
+  assert.ok(performance.now() - t < 1000);
+  assert.equal(out.properties.l, out.properties.r); // shared output object
+  // a shared non-leaf below different parents keeps the same output
+  const item = S.object({ id: S.integer() });
+  const s = S.object({ a: S.array(item), b: S.optional(item), c: S.tuple(item, S.nullable(item)) });
+  const js = S.toJsonSchema(s) as { properties: Record<string, unknown> };
+  assert.deepEqual(js.properties.b, S.toJsonSchema(item));
+  assert.deepEqual(js, JSON.parse(JSON.stringify(js)));
+});
+
+test("toJsonSchema — a deep acyclic schema is not mistaken for a cycle", () => {
+  let s: S.Schema = S.string();
+  for (let i = 0; i < 5000; i++) s = i % 2 === 0 ? S.array(s) : S.nullable(s);
+  let js = S.toJsonSchema(s) as Record<string, unknown>;
+  for (let i = 4999; i >= 0; i--) {
+    js = (i % 2 === 0 ? js.items : (js.anyOf as unknown[])[0]) as Record<string, unknown>;
+  }
+  assert.deepEqual(js, { type: "string" });
+});
+
+test("toJsonSchema — a cyclic schema throws TypeError", () => {
+  const props: Record<string, S.Schema> = {};
+  const self = S.object(props);
+  props.next = S.optional(self); // self → optional → self
+  assert.throws(() => S.toJsonSchema(self), TypeError);
+  const loop = S.union(S.string());
+  (loop.meta.variants as unknown as S.Schema[]).push(S.array(S.allOf(loop))); // indirect, after a leaf
+  assert.throws(() => S.toJsonSchema(S.object({ x: S.string(), y: loop })), {
+    name: "TypeError",
+    message: /cyclic schema/,
+  });
+});
+
 // ---------------------------------------------------------------------------
 // fromJsonSchema
 // ---------------------------------------------------------------------------

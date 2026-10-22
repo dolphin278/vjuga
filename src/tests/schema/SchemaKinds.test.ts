@@ -530,3 +530,74 @@ test("allOf / conditional properties that accept undefined may be absent", () =>
     "[null]",
   );
 });
+
+test("nullable(optional(T)) / union(optional(T), U) properties may be absent", () => {
+  const s = S.object({
+    n: S.nullable(S.optional(S.string())),
+    u: S.union(S.optional(S.string()), S.number()),
+    x: S.oneOf(S.optional(S.string()), S.null_()), // exactly one variant takes undefined
+    r: S.nullable(S.string()),
+  });
+  const p = s.meta.properties;
+  assert.equal(S.propertyMayBeAbsent(p.n), true);
+  assert.equal(S.propertyMayBeAbsent(p.u), true);
+  assert.equal(S.propertyMayBeAbsent(p.x), true);
+  assert.equal(S.propertyMayBeAbsent(p.r), false);
+  assert.equal(S.propertyMayBeAbsent(S.union(S.string(), S.number())), false);
+  assert.equal(S.propertyMayBeAbsent(S.nullable(S.nullable(S.optional(S.null_())))), true);
+  // toJsonSchema: only `r` is required, and the round trip keeps `{}`-ish values valid
+  const js = S.toJsonSchema(s);
+  assert.deepEqual(js.required, ["r"]);
+  const back = S.fromJsonSchema(js);
+  assert.ok(back[0]);
+  assert.equal(validate(back[1])({ r: null })[0], true);
+  assert.equal(validate(s)({ r: null })[0], true);
+  // JSON: stringify omits absent keys; parse accepts its own output
+  const str = SJ.stringify(s);
+  const par = SJ.parse(s);
+  const values = [
+    { r: null },
+    { r: "a", n: "s", u: "t", x: "v" },
+    { r: "a", n: null, u: 1, x: null },
+    { r: "a", n: undefined, u: undefined, x: undefined },
+  ];
+  for (const v of values) {
+    const text = str(v as never);
+    assert.equal(text.includes("undefined"), false, text);
+    const parsed = par(text);
+    assert.ok(parsed[0], text);
+    assert.equal(validate(s)(parsed[1])[0], true, text);
+    assert.equal(str(parsed[1] as never), text);
+  }
+  assert.equal(str({ r: null } as never), '{"r":null}');
+  assert.equal(
+    str({ r: "a", n: null, u: 1, x: null } as never),
+    '{"n":null,"u":1,"x":null,"r":"a"}',
+  );
+  // Deep wrapper chains do not overflow the stack; shared union DAGs are linear
+  let deep: S.Schema = S.optional(S.string());
+  let chain: S.Schema = S.string();
+  for (let i = 0; i < 20_000; i++) {
+    deep = S.nullable(deep);
+    chain = S.union(chain, S.number());
+  }
+  assert.equal(S.propertyMayBeAbsent(deep), true);
+  assert.equal(S.propertyMayBeAbsent(chain), false);
+  assert.deepEqual(S.toJsonSchema(S.object({ a: deep, b: chain })).required, ["b"]);
+  let dag: S.Schema = S.optional(S.string());
+  for (let i = 0; i < 40; i++) dag = i % 2 === 0 ? S.union(dag, dag) : S.allOf(dag, dag);
+  const t = performance.now();
+  assert.equal(S.propertyMayBeAbsent(dag), true);
+  assert.equal(S.propertyMayBeAbsent(S.oneOf(dag, dag)), false);
+  assert.equal(S.propertyMayBeAbsent(S.conditional(dag, S.string(), dag)), false);
+  assert.deepEqual(S.toJsonSchema(S.object({ a: dag, b: S.number() })).required, ["b"]);
+  assert.ok(performance.now() - t < 1000);
+  // A cycle through the wrappers is a TypeError, not a hang
+  const loop = S.union(S.string());
+  (loop.meta.variants as unknown as S.Schema[]).push(S.nullable(loop));
+  assert.throws(() => S.propertyMayBeAbsent(loop), TypeError);
+  // G3-4(a): union(optional(T), U) used to emit "u":null, which its own parse rejected
+  const su = S.object({ a: S.union(S.optional(S.string()), S.number()), b: S.number() });
+  assert.equal(SJ.stringify(su)({ b: 1 } as never), '{"b":1}');
+  assert.deepEqual(SJ.parse(su)(SJ.stringify(su)({ b: 1 } as never)), [true, { b: 1 }]);
+});

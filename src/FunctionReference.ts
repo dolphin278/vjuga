@@ -6,8 +6,9 @@
  * be resolved via native `import()` in any execution context (child processes,
  * worker threads, remote machines). The URL hash fragment selects the named
  * export (percent-decoded); omitting it defaults to the `default` export. The
- * module is imported without the fragment, so every reference into one file
- * shares a single module instance (same as a static import of it).
+ * module is imported without the fragment, so every reference to the same
+ * module URL (fragment ignored) shares a single module instance (same as a
+ * static import of it); a different `?query` is a different instance on Node.
  *
  * String references: a string starting with `file:` is parsed as a URL; any
  * other string is a filesystem path (the part before the last `#`) resolved

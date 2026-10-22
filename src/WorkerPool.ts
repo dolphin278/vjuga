@@ -83,7 +83,8 @@ export interface WorkerPoolConfig {
   maxThreads?: number;
   /**
    * Idle timeout in ms before terminating excess threads. Default: 30000.
-   * `0` or `Infinity` = no timeout. Anything else outside `[0, 2^31 - 1]`
+   * `0` or `Infinity` = no timeout: idle workers then keep the event loop
+   * alive until `destroy()`. Anything else outside `[0, 2^31 - 1]`
    * (NaN, negative, too large for `setTimeout`) throws `RangeError`.
    */
   idleTimeout?: number;
@@ -222,9 +223,9 @@ export function make<I, O>(config: WorkerPoolConfig): WorkerPool<I, O> {
   let idleTimeout = config.idleTimeout !== undefined ? config.idleTimeout : 30_000;
   if (idleTimeout === Infinity) {
     idleTimeout = 0;
-  } else if (!(idleTimeout >= 0 && idleTimeout <= MAX_TIMEOUT)) {
+  } else if (typeof idleTimeout !== "number" || !(idleTimeout >= 0 && idleTimeout <= MAX_TIMEOUT)) {
     throw new RangeError(
-      `idleTimeout must be Infinity or a number in [0, ${MAX_TIMEOUT}], got ${idleTimeout}`,
+      `idleTimeout must be Infinity or a number in [0, ${MAX_TIMEOUT}], got ${String(idleTimeout)}`,
     );
   }
 
@@ -270,9 +271,10 @@ export function run<I, O>(pool: WorkerPool<I, O>, data: I, options?: RunOptions)
   const signal = options?.signal;
   const priority = options?.priority ?? 0;
 
-  // NaN makes taskCmp non-transitive and silently corrupts the heap order.
-  if (priority !== priority) {
-    return Promise.reject(new RangeError("priority must not be NaN"));
+  // NaN (or a non-number, which coerces to NaN) makes taskCmp non-transitive
+  // and silently corrupts the heap order.
+  if (typeof priority !== "number" || priority !== priority) {
+    return Promise.reject(new RangeError("priority must be a number, not NaN"));
   }
 
   // Fast path: already aborted.

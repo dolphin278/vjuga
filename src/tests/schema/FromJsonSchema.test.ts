@@ -75,6 +75,46 @@ test("$ref — shared targets lower to one node", () => {
   assert.equal(s.meta.properties.a, s.meta.properties.b);
 });
 
+test("$ref — targets reached only through discarded sites lower once (no exponential blow-up)", () => {
+  // Each level references the previous one twice from a discarded site
+  // (prefixItems past maxItems, or properties of an impossible object).
+  const chain = (wrap: (ref: unknown) => unknown): unknown => {
+    const $defs: Record<string, unknown> = { a0: { type: "string" } };
+    for (let i = 1; i <= 40; i++) $defs["a" + i] = wrap({ $ref: "#/$defs/a" + (i - 1) });
+    return { $defs, $ref: "#/$defs/a40" };
+  };
+  lower(chain((r) => ({ prefixItems: [r, r], items: false, maxItems: 0 })));
+  lower(
+    chain((r) => ({
+      properties: { x: r, z: r },
+      required: ["y"],
+      additionalProperties: false,
+    })),
+  );
+  // A discarded use still reports errors, and a later kept use of the same
+  // target is lowered for real.
+  assert.match(
+    lowerErr({
+      $defs: { bad: { minLength: -1 } },
+      prefixItems: [{}, { $ref: "#/$defs/bad" }],
+      items: false,
+      maxItems: 1,
+    }),
+    /minLength/,
+  );
+  verdicts(
+    {
+      $defs: { s: { type: "string" } },
+      properties: {
+        a: { prefixItems: [{}, { $ref: "#/$defs/s" }], items: false, maxItems: 1 },
+        b: { $ref: "#/$defs/s" },
+      },
+    },
+    [{ b: "x" }],
+    [{ b: 1 }],
+  );
+});
+
 test("$ref — recursion and cyclic input are Err, never hang", () => {
   assert.match(lowerErr({ properties: { a: { $ref: "#" } } }), /recursive \$ref is not supported/);
   assert.match(

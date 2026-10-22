@@ -6,3 +6,8 @@ coveragePathIgnorePatterns = ["src/HTML.js"]
 
 # Enforce 100 % coverage for all other source files.
 coverageThreshold = { lines = 1, functions = 1 }
+
+[fmt]
+# Keep oxfmt's style. Without this key bun fmt prints like Prettier once the
+# oxfmt devDependency is gone: 136 src files rewritten instead of 3.
+flavor = "oxfmt"

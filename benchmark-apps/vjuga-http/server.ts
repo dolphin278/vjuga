@@ -87,6 +87,10 @@ const STATIC_FILES = new Map<string, StaticFile>();
 
 const HEALTH_RESPONSE = HttpServer.precompute(200, '{"ok":true}');
 const ERR_NOT_FOUND = HttpServer.precompute(404, '{"error":"Not found"}');
+// Logout clears the session cookie, so it needs a custom header block.
+const LOGOUT_RESPONSE = Buffer.from(
+  'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: keep-alive\r\nSet-Cookie: session=; HttpOnly; Path=/; Max-Age=0\r\nContent-Length: 11\r\n\r\n{"ok":true}',
+);
 const ERR_USER_NOT_FOUND = HttpServer.precompute(404, '{"error":"User not found"}');
 const ERR_INVALID_JSON = HttpServer.precompute(400, '{"error":"Invalid JSON"}');
 const ERR_MISSING_USER_PASS = HttpServer.precompute(400, '{"error":"Missing user or pass"}');
@@ -296,9 +300,7 @@ function handleRequest(req: HttpServer.Request, socket: net.Socket): void {
       const token = extractSessionToken(req);
       if (token) sessionDestroy(token);
       // Custom response with Set-Cookie header
-      socket.write(
-        'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: keep-alive\r\nSet-Cookie: session=; HttpOnly; Path=/; Max-Age=0\r\nContent-Length: 11\r\n\r\n{"ok":true}',
-      );
+      HttpServer.respondRaw(socket, LOGOUT_RESPONSE);
       return;
     }
     // POST /users
@@ -343,8 +345,13 @@ function handleLogin(req: HttpServer.Request, socket: net.Socket): void {
   }
   const token = sessionCreate(row.id);
   const tokenBody = `{"token":"${token}"}`;
-  socket.write(
-    `HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: keep-alive\r\nSet-Cookie: session=${token}; HttpOnly; Path=/\r\nContent-Length: ${Buffer.byteLength(tokenBody)}\r\n\r\n${tokenBody}`,
+  // Custom response with Set-Cookie header. respondRaw (not socket.write)
+  // marks the request answered, so the next pipelined request is dispatched.
+  HttpServer.respondRaw(
+    socket,
+    Buffer.from(
+      `HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: keep-alive\r\nSet-Cookie: session=${token}; HttpOnly; Path=/\r\nContent-Length: ${Buffer.byteLength(tokenBody)}\r\n\r\n${tokenBody}`,
+    ),
   );
 }
 

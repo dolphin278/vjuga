@@ -165,11 +165,12 @@ export interface SafeParseOptions {
  * which cannot poison `Object.prototype` on its own); `\u`-escaped spellings
  * are caught because the check runs on the parsed value.
  *
- * Fast path: scans the raw JSON string for `__proto__`, `constructor` and any
- * `\u` escape (which can spell either token) before walking. If none is
- * present (the common case for real-world payloads), the tree walk is skipped
- * entirely and `options` is never read. False positives (the token appears as
- * a value) trigger the walk but produce correct results.
+ * Fast path: scans the raw JSON string for `__proto__`, `constructor` and a
+ * `\u` escape of one of their letters (which can spell either token) before
+ * walking. If none is present (the common case for real-world payloads, also
+ * with benign escapes like `é`), the tree walk is skipped entirely and
+ * `options` is never read. False positives (the token appears as a value)
+ * trigger the walk but produce correct results.
  *
  * @example
  * ```ts
@@ -192,11 +193,14 @@ export function safeParse(json: string, options?: SafeParseOptions): Result<JSON
   // indexOf is O(n) but with SIMD acceleration it's far cheaper than
   // Object.keys + iteration on every parsed object node.
   // A \u escape can spell either token ("\u005f_proto__"), which the raw-text scan
-  // cannot see, so any \u in the source forces the walk too.
+  // cannot see. Such a spelling escapes at least one of the tokens' letters, so
+  // only a \u escape of one of those forces the walk; benign escapes
+  // ("caf\u00e9") keep the fast path. The regexp runs only when indexOf finds
+  // a \u at all.
   if (
     json.indexOf(PROTO_TOKEN) !== -1 ||
     json.indexOf(CONSTRUCTOR_TOKEN) !== -1 ||
-    json.indexOf(ESCAPE_TOKEN) !== -1
+    (json.indexOf(ESCAPE_TOKEN) !== -1 && TOKEN_CHAR_ESCAPE.test(json))
   ) {
     const policy = options?.onDangerousKey;
     if (policy === undefined || policy === "strip") {
@@ -216,6 +220,10 @@ export function safeParse(json: string, options?: SafeParseOptions): Result<JSON
 const PROTO_TOKEN = "__proto__";
 const CONSTRUCTOR_TOKEN = "constructor";
 const ESCAPE_TOKEN = "\\u";
+// \u escape of a letter of __proto__ (_ p r o t) or constructor (c o n s t r u):
+// 5f, 63, 6e, 6f, 70, 72, 73, 74, 75; hex digits in either case. No g flag,
+// so test() keeps no lastIndex state.
+const TOKEN_CHAR_ESCAPE = /\\u00(?:5f|6[3ef]|7[02-5])/i;
 
 // ---------------------------------------------------------------------------
 // JSON string escaping — shared by src/JSON.ts and schema/JSON.ts

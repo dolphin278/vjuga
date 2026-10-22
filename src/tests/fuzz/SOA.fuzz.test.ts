@@ -46,17 +46,14 @@ function assertPointEqual(actual: Point, expected: Point, msg: string): void {
 // ---------------------------------------------------------------------------
 
 const pushCmd: ST.CommandArbitrary<Model, PointSOA> = (_model) =>
-  Arb.map(
-    pointArb,
-    (pt): ST.Command<Model, PointSOA> => ({
-      name: `push({x:${pt.x},y:${pt.y}})`,
-      check: () => true,
-      run: (model, soa) => {
-        model.items.push(pt);
-        SOA.push(soa, pt);
-      },
-    }),
-  );
+  Arb.map(pointArb, (pt): ST.Command<Model, PointSOA> => ({
+    name: `push({x:${pt.x},y:${pt.y}})`,
+    check: () => true,
+    run: (model, soa) => {
+      model.items.push(pt);
+      SOA.push(soa, pt);
+    },
+  }));
 
 const popCmd: ST.CommandArbitrary<Model, PointSOA> = (_model) =>
   Arb.constant<ST.Command<Model, PointSOA>>({
@@ -70,18 +67,15 @@ const popCmd: ST.CommandArbitrary<Model, PointSOA> = (_model) =>
   });
 
 const getCmd: ST.CommandArbitrary<Model, PointSOA> = (model) =>
-  Arb.map(
-    Arb.nat(Math.max(0, model.items.length - 1)),
-    (i): ST.Command<Model, PointSOA> => ({
-      name: `get(${i})`,
-      check: (m) => i < m.items.length,
-      run: (m, soa) => {
-        const expected = m.items[i]!;
-        const actual = SOA.get(soa, i);
-        assertPointEqual(actual, expected, `get(${i})`);
-      },
-    }),
-  );
+  Arb.map(Arb.nat(Math.max(0, model.items.length - 1)), (i): ST.Command<Model, PointSOA> => ({
+    name: `get(${i})`,
+    check: (m) => i < m.items.length,
+    run: (m, soa) => {
+      const expected = m.items[i]!;
+      const actual = SOA.get(soa, i);
+      assertPointEqual(actual, expected, `get(${i})`);
+    },
+  }));
 
 const setCmd: ST.CommandArbitrary<Model, PointSOA> = (model) =>
   Arb.map(
@@ -106,21 +100,18 @@ const lengthCmd: ST.CommandArbitrary<Model, PointSOA> = (_model) =>
   });
 
 const swapRemoveCmd: ST.CommandArbitrary<Model, PointSOA> = (model) =>
-  Arb.map(
-    Arb.nat(Math.max(0, model.items.length - 1)),
-    (i): ST.Command<Model, PointSOA> => ({
-      name: `swapRemove(${i})`,
-      check: (m) => i < m.items.length,
-      run: (m, soa) => {
-        const last = m.items.length - 1;
-        if (i !== last) {
-          m.items[i] = m.items[last]!;
-        }
-        m.items.pop();
-        SOA.swapRemove(soa, i);
-      },
-    }),
-  );
+  Arb.map(Arb.nat(Math.max(0, model.items.length - 1)), (i): ST.Command<Model, PointSOA> => ({
+    name: `swapRemove(${i})`,
+    check: (m) => i < m.items.length,
+    run: (m, soa) => {
+      const last = m.items.length - 1;
+      if (i !== last) {
+        m.items[i] = m.items[last]!;
+      }
+      m.items.pop();
+      SOA.swapRemove(soa, i);
+    },
+  }));
 
 const clearCmd: ST.CommandArbitrary<Model, PointSOA> = (_model) =>
   Arb.constant<ST.Command<Model, PointSOA>>({
@@ -133,18 +124,15 @@ const clearCmd: ST.CommandArbitrary<Model, PointSOA> = (_model) =>
   });
 
 const getSliceCmd: ST.CommandArbitrary<Model, PointSOA> = (_model) =>
-  Arb.map(
-    Arb.constantFrom<"x" | "y">("x", "y"),
-    (field): ST.Command<Model, PointSOA> => ({
-      name: `getSlice("${field}")`,
-      check: () => true,
-      run: (model, soa) => {
-        const expected = model.items.map((item) => item[field]);
-        const actual = SOA.getSlice(soa, field);
-        assert.deepEqual(actual, expected, `getSlice("${field}") mismatch`);
-      },
-    }),
-  );
+  Arb.map(Arb.constantFrom<"x" | "y">("x", "y"), (field): ST.Command<Model, PointSOA> => ({
+    name: `getSlice("${field}")`,
+    check: () => true,
+    run: (model, soa) => {
+      const expected = model.items.map((item) => item[field]);
+      const actual = SOA.getSlice(soa, field);
+      assert.deepEqual(actual, expected, `getSlice("${field}") mismatch`);
+    },
+  }));
 
 test("SOA stateful model-based test", () => {
   ST.assertStateful({

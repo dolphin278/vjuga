@@ -685,9 +685,11 @@ function emitOwnRead(
  * Variants without identity duplicates (`allOf[X, X]` is `X`), in
  * first-occurrence order; the input array itself when it has none. A `$ref`
  * used twice resolves to one shared node, and checking it twice adds nothing
- * but doubles the emitted code at every nesting level (a DAG of depth d would
- * otherwise emit 2^d copies). For `allOf` and `anyOf` only — a repeat changes
- * a `oneOf` match count.
+ * but doubles the emitted code at every nesting level (`allOf[X, X]` nested d
+ * deep would otherwise emit 2^d copies). Only identical variants are merged:
+ * a node shared by two properties, tuple slots or distinct branches is still
+ * emitted once per use (bounded by `fromJsonSchema`'s expansion cap). For
+ * `allOf` and `anyOf` only — a repeat changes a `oneOf` match count.
  */
 function distinctVariants(variants: readonly Schema[]): readonly Schema[] {
   const seen = new Set(variants);
@@ -1108,9 +1110,10 @@ function compileBooleanValidator(schema: Schema): (v: unknown) => boolean {
 /**
  * Discriminated union: read the tag once, then a single `switch` dispatch to
  * the matching variant's inline checks. Not constant-time in the number of
- * variants: V8 compiles a `switch` on string tags to sequential `===`
+ * variants on Node: V8 compiles a `switch` on string tags to sequential `===`
  * comparisons, so a late tag pays for every earlier case (still far cheaper
- * than trying each variant as an untagged union does).
+ * than trying each variant as an untagged union does). Bun/JSC dispatches in
+ * constant time.
  */
 function emitDiscriminatedValidation(
   buf: CodeBuffer,

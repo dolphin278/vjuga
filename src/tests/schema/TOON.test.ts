@@ -530,6 +530,13 @@ test("parse rejects end of input for root primitive", () => {
   assertErr(ST.parse(S.number())(""));
 });
 
+test("parse root primitive — only spaces are trimmed (no CR / tab; TOON is LF-only)", () => {
+  assert.equal(assertOk(ST.parse(S.number())(" 1 ")), 1);
+  assertErr(ST.parse(S.number())("1\r\n"));
+  assertErr(ST.parse(S.number())("1\t"));
+  assert.equal(assertOk(ST.parse(S.string())("\tabc")), "\tabc");
+});
+
 test("parse literal — number", () => {
   const fn = ST.parse(S.object({ n: S.literal(42) }));
   assert.deepEqual(assertOk(fn("n: 42")), { n: 42 });

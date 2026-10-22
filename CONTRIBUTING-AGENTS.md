@@ -90,6 +90,8 @@ and that every `name(` cited for a module in `llms.txt` is a real export.
 
 ## Verification Commands
 
+Bun at the version in `.bun-version` is required for `format`, `lint:fmt` and `verify` (they run `bun fmt` and `coverage:bun`); Node alone runs `lint`, `coverage` and the tests.
+
 - `npm run lint`
 - `npm run coverage`
 - `npm run test:fuzz`

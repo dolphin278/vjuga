@@ -365,7 +365,7 @@ export function record<V extends Schema>(values: V): RecordSchema<V> {
  * Validates that value fully matches at least one of the given schemas (an
  * empty union matches nothing). Object variants sharing a literal-valued key
  * are dispatched on that key with a single `switch` (V8 compares string tags
- * sequentially).
+ * sequentially; Bun/JSC is constant-time).
  */
 export function union<const V extends readonly Schema[]>(...variants: V): UnionSchema<V> {
   return { kind: "union", meta: { variants } };
@@ -777,6 +777,7 @@ export function fromJsonSchema(
     tupleNodes: 0,
     discarding: 0,
     memo: new Map(),
+    discardedRefs: new Set(),
     active: new Set(),
     path: [],
   };
@@ -889,6 +890,8 @@ interface LowerCtx {
    * `$ref` targets are not memoized with such a placeholder result.
    */
   discarding: number;
+  /** `$ref` targets lowered while discarding (no result kept). */
+  readonly discardedRefs: Set<object>;
 }
 
 /** Internal failure carrier; converted to `Err` by `fromJsonSchema`. */
@@ -1130,6 +1133,8 @@ function child(ctx: LowerCtx, js: unknown, base: string, ...keys: string[]): Sch
   }
 }
 
+const NEVER_PLACEHOLDER: Schema = not(unknown());
+
 function lowerRef(ctx: LowerCtx, ref: unknown, base: string): Schema {
   if (typeof ref !== "string") fail(ctx, "$ref must be a string");
   const target = resolveRef(ctx, ref, base);
@@ -1137,10 +1142,14 @@ function lowerRef(ctx: LowerCtx, ref: unknown, base: string): Schema {
   if (typeof node !== "object" || node === null) return lower(ctx, node, target.base, true);
   const cached = ctx.memo.get(node);
   if (cached !== undefined) return cached;
+  // Discarded uses only report errors: a target already lowered once (kept
+  // or discarded) has none left to report
+  if (ctx.discarding > 0 && ctx.discardedRefs.has(node)) return NEVER_PLACEHOLDER;
   ctx.path.push("$ref");
   try {
     const s = lower(ctx, node, target.base, true);
     if (ctx.discarding === 0) ctx.memo.set(node, s);
+    else ctx.discardedRefs.add(node);
     return s;
   } finally {
     ctx.path.pop();

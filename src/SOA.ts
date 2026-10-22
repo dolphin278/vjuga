@@ -190,7 +190,7 @@ const indexDescriptor: PropertyDescriptor = {
  * (via WeakMap cache), keeping V8 ICs monomorphic across views.
  *
  * The initial `index` is normalized with `| 0`, exactly like the `view.index`
- * setter (so `createView(soa, 1.5).index === 1`).
+ * setter (so `createView(soa, 1.5).index === 1`; values ≥ 2^31 wrap negative).
  */
 export function createView<T extends object>(soa: SOA<T>, index = 0): T & { index: number } {
   index |= 0;

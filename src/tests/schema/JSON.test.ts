@@ -426,6 +426,9 @@ test("stringify of unknown / not values without a JSON form matches JSON.stringi
   native(S.object({ a: S.optional(S.unknown()), b: S.integer() }), { a: [1, fn], b: 1 });
   native(S.object({ toString: S.optional(S.unknown()) }), {});
   native(S.object({ toString: S.optional(S.unknown()) }), { toString: 5 });
+  native(S.object({ a: S.optional(S.nullable(S.unknown())) }), { a: fn });
+  native(S.object({ a: S.optional(S.nullable(S.unknown())) }), { a: null });
+  native(S.record(S.nullable(S.unknown())), { a: fn, b: null, c: 1 });
   // Required fields (F3-C1): the key stays, with null — output parse accepts
   const any = (s: S.Schema) => ({
     str: (SJ.stringify as unknown as (s: S.Schema) => (v: unknown) => string)(s),

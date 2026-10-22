@@ -17,10 +17,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: "22"
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - run: bun fmt --check
       - run: npm ci
       - run: npm run lint
-      - run: npm run lint:fmt
       - run: npm run lint:docs
 
   test:
@@ -30,9 +33,9 @@ jobs:
       matrix:
         include:
           - runtime: node-22
-            node-version: '22'
+            node-version: "22"
           - runtime: node-25
-            node-version: '25'
+            node-version: "25"
           - runtime: bun
     steps:
       - uses: actions/checkout@v4
@@ -41,9 +44,11 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
       - if: matrix.runtime == 'bun'
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: latest
+          bun-version-file: .bun-version
+      - if: matrix.runtime == 'bun'
+        run: test "$(bun --version)" = "$(cat .bun-version)"
       - if: matrix.runtime != 'bun'
         run: npm ci
       - if: matrix.runtime != 'bun'

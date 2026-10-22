@@ -1,0 +1,23 @@
+# bun fmt reads this file and .gitignore.
+
+# Build output (tsc emits next to the sources; also in .gitignore).
+src/**/*.js
+src/**/*.d.ts
+src/**/*.d.ts.map
+
+# Fixtures: the vendored JSON-Schema-Test-Suite and path/escaping fixtures.
+src/tests/fixtures/
+src/tests/schema/fixtures/
+
+# Separate package with its own lockfile and Dependabot PRs.
+benchmark-apps/
+
+# Vendored agent skills.
+.agents/
+.claude/
+skills-lock.json
+
+# Prose: Prettier pads every Markdown table; AGENTS.md alone would churn 134 lines.
+*.md
+
+package-lock.json

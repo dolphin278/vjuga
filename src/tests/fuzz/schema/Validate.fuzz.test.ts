@@ -413,7 +413,7 @@ function genNumericMeta(pick: Arb.GenPick): S.NumberConstraints | undefined {
 
 function genSchema(pick: Arb.GenPick, depth: number): S.Schema {
   const leafOnly = depth <= 0;
-  switch (choose(pick, leafOnly ? 7 : 20)) {
+  switch (choose(pick, leafOnly ? 7 : 21)) {
     case 0: {
       if (choose(pick, 2) === 0) return S.string();
       const m: Record<string, unknown> = {};
@@ -509,6 +509,21 @@ function genSchema(pick: Arb.GenPick, depth: number): S.Schema {
         choose(pick, 4) === 0 ? undefined : genSchema(pick, depth - 1),
         choose(pick, 4) === 0 ? undefined : genSchema(pick, depth - 1),
       );
+    case 19: {
+      // One node shared by several parents (a `$ref` DAG): the emitter dedupes
+      // allOf / anyOf repeats and collapses then === else; oneOf must not dedupe
+      const x = genSchema(pick, depth - 1);
+      switch (choose(pick, 4)) {
+        case 0:
+          return S.allOf(x, genSchema(pick, depth - 1), x);
+        case 1:
+          return S.conditional(genSchema(pick, depth - 1), x, x);
+        case 2:
+          return S.union(x, x, genSchema(pick, depth - 1));
+        default:
+          return S.oneOf(x, x);
+      }
+    }
     default:
       return S.unknown();
   }
@@ -640,6 +655,46 @@ test("allErrors mode: same verdict as first-error mode, errors[0] is its error",
         const errors = b[1] as SchemaError[];
         if (!Array.isArray(errors) || errors.length === 0) return false;
         deepStrictEqual(errors[0], a[1]);
+      }
+      return true;
+    },
+    { numRuns: NUM_RUNS },
+  );
+});
+
+// Keys of KEYS that Object.prototype lacks: polluting them must never make an
+// absent own key count as present (the plain-prototype direct-read path)
+const POLLUTABLE = KEYS.filter((k) => !(k in Object.prototype));
+const POLLUTION_VALUES: readonly unknown[] = [...LITERALS, ...VALUE_POOL];
+const pollutedCase = Arb.gen((pick) => {
+  const { schema, values } = pick(schemaWithValues);
+  const pollution = Array.from({ length: 1 + choose(pick, 3) }, () => ({
+    key: oneOfValues(pick, POLLUTABLE),
+    value: oneOfValues(pick, POLLUTION_VALUES),
+  }));
+  return { schema, values, pollution };
+});
+
+test("Object.prototype polluted after compile: verdicts still match the own-only oracle", () => {
+  const proto = Object.prototype as Record<string, unknown>;
+  Prop.assert(
+    pollutedCase,
+    ({ schema, values, pollution }) => {
+      // Compile and compute the oracle before polluting (the oracle reads own
+      // properties only, so pollution cannot change its verdict)
+      const s = schema as S.StringSchema;
+      const first = validate(s) as (x: unknown) => Result<unknown, SchemaError>;
+      const all = validate(s, { allErrors: true }) as (x: unknown) => Result<unknown, unknown>;
+      const expected = values.map((value) => refValidate(schema, value));
+      const got: boolean[] = [];
+      try {
+        for (const { key, value } of pollution) proto[key] = value;
+        for (const value of values) got.push(first(value)[0], all(value)[0]);
+      } finally {
+        for (const { key } of pollution) delete proto[key];
+      }
+      for (let i = 0; i < values.length; i++) {
+        if (got[2 * i] !== expected[i] || got[2 * i + 1] !== expected[i]) return false;
       }
       return true;
     },

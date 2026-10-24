@@ -89,7 +89,7 @@
     "oxlint": "^1.58.0",
     "sorted-btree": "^2.1.0",
     "tsc-rs": "0.8.0",
-    "typescript": "^6.0.0"
+    "typescript": "^7.0.2"
   },
   "engines": {
     "node": ">=22.0.0"

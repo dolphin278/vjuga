@@ -4,9 +4,9 @@
  *
  * All function types (`Fn`, `Fn0`, `Fn1`, `Fn2`, `Predicate`, `Lazy`) bind
  * `this: void` to prevent accidental context leaks. `Branded<Base, Kind>`
- * attaches a phantom brand via a mapped type so that intersecting two branded
- * types merges their brands — enabling compound types like `PositiveInteger`
- * (= `PositiveNumber & Integer`).
+ * attaches a phantom brand as one boolean-typed property per kind, so that
+ * intersecting two branded types merges their brands — enabling compound
+ * types like `PositiveInteger` (= `PositiveNumber & Integer`).
  *
  * When to use: `Fn` / `Fn1` / `Fn2` as callback types throughout the library.
  * Branded types for domain values that need compile-time distinction (validated
@@ -49,20 +49,25 @@ export type Lazy<T> = Fn0<T>;
  * Branded type — attaches a phantom brand to `Base` so that two values of the
  * same underlying type but different brands are not assignable to each other.
  *
- * `Kind` is constrained to `PropertyKey` so it can serve as a mapped-type key.
- * The brand uses a mapped type `{ [K in Kind]: true }` so that intersecting two
- * branded types merges their brands, enabling compound types:
+ * Each kind becomes its own top-level property `__brand_<Kind>: true`, so
+ * intersecting two branded types merges their brands, enabling compound types:
  *
  * ```ts
  * type PositiveNumber  = Branded<number, 'PositiveNumber'>
  * type Integer         = Branded<number, 'Integer'>
  * type PositiveInteger = PositiveNumber & Integer
- * // = number & { __brand: { PositiveNumber: true; Integer: true } }
+ * // = number & { __brand_PositiveNumber: true } & { __brand_Integer: true }
  * // A PositiveInteger is assignable to both PositiveNumber and Integer ✓
  * ```
+ *
+ * Why flat `true` properties rather than a nested `__brand: { [K in Kind]: true }`
+ * record: scriptc only lowers a primitive intersected with properties of
+ * primitive (literal) type; a nested object brand makes every value of the
+ * branded type uncompilable. A single `__brand: Kind` literal would compile
+ * but cannot merge — `"A" & "B"` is `never`, so compound brands collapse.
  */
-export type Branded<Base, Kind extends PropertyKey> = Base & {
-  readonly __brand: { readonly [K in Kind]: true };
+export type Branded<Base, Kind extends string> = Base & {
+  readonly [K in `__brand_${Kind}`]: true;
 };
 
 /**
@@ -72,7 +77,7 @@ export type Branded<Base, Kind extends PropertyKey> = Base & {
  * At runtime it is an identity function; the call is trivially inlined by the
  * JIT but is not erased from the emitted JavaScript.
  */
-export function brand<Base, Kind extends PropertyKey>(value: Base): Branded<Base, Kind> {
+export function brand<Base, Kind extends string>(value: Base): Branded<Base, Kind> {
   return value as Branded<Base, Kind>;
 }
 

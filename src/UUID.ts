@@ -45,7 +45,9 @@ export const MAX = "ffffffff-ffff-ffff-ffff-ffffffffffff" as UUID;
 /** Branded string guaranteed to be a valid UUID. */
 export type UUID = Branded<string, "UUID">;
 
-declare const Bun: { randomUUIDv7: () => string } | undefined;
+// Read through globalThis, not `typeof Bun`: scriptc 0.4.4 lowers `typeof` on an
+// undeclared global to a ReferenceError instead of "undefined".
+const bun = (globalThis as { Bun?: { randomUUIDv7?: () => string } }).Bun;
 
 /**
  * RFC 4122 structural regex with variant-1 constraint.
@@ -98,8 +100,8 @@ export function v4(): UUID {
 // (internal module `UUID.v7`, blocked in package exports).
 /* node:coverage ignore next 4 */
 export const v7: () => UUID =
-  typeof Bun !== "undefined" && typeof Bun.randomUUIDv7 === "function"
-    ? () => Bun.randomUUIDv7() as UUID
+  bun !== undefined && typeof bun.randomUUIDv7 === "function"
+    ? () => bun.randomUUIDv7!() as UUID
     : (v7Impl as () => UUID);
 
 /** Extracts the version number (4-bit nibble at position 12) from a UUID. */

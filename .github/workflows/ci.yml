@@ -26,6 +26,40 @@ jobs:
       - run: npm run lint
       - run: npm run lint:docs
 
+  # Three independent checkers, each on the library config (tests excluded)
+  # and the test config (everything under src/). One job per pair, so a red
+  # check names the checker and config that disagree.
+  typecheck:
+    name: Typecheck (${{ matrix.checker }}, ${{ matrix.tsconfig }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        checker: [tsc, tsc-rs, bun]
+        tsconfig: [tsconfig.json, tsconfig.test.json]
+        include:
+          - checker: tsc
+            command: ./node_modules/.bin/tsc --noEmit
+          - checker: tsc-rs
+            command: ./node_modules/.bin/tsc-rs --noEmit
+          # --no-script: `bun check` runs a package.json "check" script
+          # instead of type checking when one exists.
+          - checker: bun
+            command: bun check --no-script --no-pretty
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - if: matrix.checker == 'bun'
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - if: matrix.checker == 'bun'
+        run: test "$(bun --version)" = "$(cat .bun-version)"
+      - run: npm ci
+      - run: ${{ matrix.command }} -p ${{ matrix.tsconfig }}
+
   test:
     name: Test (${{ matrix.runtime }})
     runs-on: ubuntu-latest

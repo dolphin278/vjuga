@@ -115,6 +115,8 @@ export function pop<T>(queue: Queue<T>): T | undefined {
 // Array methods are called on `list` directly, not via
 // `Array.prototype.x.call(list, ...)`: scriptc 0.4.4 builds the latter, then
 // throws at runtime (https://github.com/vercel-labs/scriptc/issues/2142).
+// `list.length = list.length >>> 1` instead of `>>>=`: scriptc 0.4.4 refuses
+// compound assignment to `length` (SC1090, missing lowering, no issue).
 function tryToShrinkList<T>(queue: Queue<T>): void {
   const list = queue[kList];
   const len = list.length;

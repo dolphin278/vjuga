@@ -42,7 +42,6 @@ export type JSONObject = { [key: string]: JSONValue };
 // `export const stringify = JSON.stringify`: scriptc 0.4.4 compiles a function
 // value to one concrete signature and refuses an overloaded one (SC2007, by
 // design). The overloads mirror lib.es5.d.ts so the public type is unchanged.
-/* eslint-disable @typescript-eslint/no-explicit-any */
 export function stringify(
   value: any,
   replacer?: (this: any, key: string, value: any) => any,
@@ -56,7 +55,6 @@ export function stringify(
 export function stringify(value: any, replacer?: any, space?: string | number): string {
   return JSON.stringify(value, replacer, space);
 }
-/* eslint-enable @typescript-eslint/no-explicit-any */
 
 /**
  * Plain `JSON.parse` (throws `SyntaxError` on invalid input). Does NOT strip or

@@ -33,6 +33,10 @@
  * ```
  */
 
+// Literal constants, not `[">", ...].map((x) => x.charCodeAt(0))`
+// destructuring: those elements are `number | undefined`, and scriptc 0.4.4
+// refuses a `switch` case whose type differs from the discriminant (SC1090,
+// missing lowering, no issue).
 const GT_CHAR_CODE = 62; // ">"
 const LT_CHAR_CODE = 60; // "<"
 const AMP_CHAR_CODE = 38; // "&"

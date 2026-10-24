@@ -53,7 +53,10 @@ export function make<T>(fn: Fn1<T[]>, schedule?: ScheduleMode): Fn<T[]> {
    */
   const scheduled = Ref.make(false);
   const queue: Queue.Queue<T> = Queue.make();
-  const scheduler = schedule === "io" ? scheduleIO : scheduleMacrotask;
+  // Explicit `<T>` instantiations here and in the schedulers below: scriptc
+  // 0.4.4 refuses a generic function used as a value without a pinned
+  // signature (SC1090). Type-only; the emitted JS is unchanged.
+  const scheduler = schedule === "io" ? scheduleIO<T> : scheduleMacrotask<T>;
 
   return function bufferizedFn(...args: T[]): void {
     for (let i = 0; i < args.length; i++) {
@@ -71,11 +74,11 @@ function scheduleMacrotask<T>(
   fn: Fn1<T[]>,
   scheduled: Ref.RefCell<boolean>,
 ): void {
-  setTimeout(worker, 0, queue, fn, scheduled);
+  setTimeout(worker<T>, 0, queue, fn, scheduled);
 }
 
 function scheduleIO<T>(queue: Queue.Queue<T>, fn: Fn1<T[]>, scheduled: Ref.RefCell<boolean>): void {
-  setImmediate(worker, queue, fn, scheduled);
+  setImmediate(worker<T>, queue, fn, scheduled);
 }
 
 function worker<T>(queue: Queue.Queue<T>, fn: Fn1<T[]>, scheduled: Ref.RefCell<boolean>): void {

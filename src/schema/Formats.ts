@@ -371,17 +371,21 @@ export function isUuid(value: string): boolean {
 // Table
 // ---------------------------------------------------------------------------
 
+const ISO_DATETIME_PREFIX = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/;
+
+// Every entry is a `{ test }` record, not a bare RegExp: scriptc 0.4.4 refuses
+// to coerce a RegExp instance to the `FormatTester` record shape (SC2002).
 const FORMATS: Readonly<Record<FormatName, FormatTester>> = {
   "date-time": { test: isRfc3339DateTime },
   date: { test: isISODate },
   time: { test: isRfc3339Time },
   email: { test: isEmail },
   uri: { test: isUri },
-  uuid: UUID,
-  ipv4: IPV4,
+  uuid: { test: isUuid },
+  ipv4: { test: isIPv4 },
   ipv6: { test: isIPv6 },
   // Legacy vjuga name: prefix-only, kept byte-for-byte for compatibility
-  "iso-datetime": /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/,
+  "iso-datetime": { test: (value: string) => ISO_DATETIME_PREFIX.test(value) },
 };
 
 /** Every enforced format name, in declaration order. */

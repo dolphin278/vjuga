@@ -1,0 +1,18 @@
+import * as ISODate from "../../src/ISODate.js";
+import * as ISOTimestamp from "../../src/ISOTimestamp.js";
+import * as UnixTimestamp from "../../src/UnixTimestamp.js";
+import * as UUID from "../../src/UUID.js";
+import { isOk, isErr } from "../../src/Result.js";
+console.log(ISODate.today().length);
+const vd = ISODate.validator();
+console.log(isOk(vd("2024-02-29")), isErr(vd("2023-02-29")), isErr(vd(5)));
+const vt = ISOTimestamp.validator();
+console.log(isOk(vt("2024-01-01T00:00:00Z")), isErr(vt("x")));
+const vx = UnixTimestamp.validator();
+console.log(isOk(vx(1700000000)), isErr(vx(Infinity)));
+const vu = UUID.validator();
+const r = vu("550E8400-E29B-41D4-A716-446655440000");
+if (isOk(r)) console.log(r[1]);
+const bad = vu("nope");
+if (isErr(bad)) console.log(bad[1].message);
+console.log(ISOTimestamp.fromEpochMs(1700000000000).length);

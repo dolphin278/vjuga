@@ -67,7 +67,10 @@ export function debounce<T extends unknown[]>(fn: Fn<T>, ms: number): Fn<T> {
     if (timer.contents !== undefined) {
       clearTimeout(timer.contents);
     }
-    timer.contents = setTimeout(fire, ms, fn, args, timer);
+    // A closure, not `setTimeout(fire, ms, fn, args, timer)`: scriptc 0.4.4
+    // cannot pass a generic function through setTimeout's extra arguments
+    // (SC1090/SC2001). Generics limitation, no upstream issue.
+    timer.contents = setTimeout(() => fire(fn, args, timer), ms);
   };
 }
 

@@ -33,14 +33,15 @@
  * ```
  */
 
-// one-time module init, not a hot path
-const [GT_CHAR_CODE, LT_CHAR_CODE, AMP_CHAR_CODE, QUOTE_CHAR_CODE, APOS_CHAR_CODE] = [
-  ">",
-  "<",
-  "&",
-  '"',
-  "'",
-].map((x) => x.charCodeAt(0));
+// Literal constants, not `[">", ...].map((x) => x.charCodeAt(0))`
+// destructuring: those elements are `number | undefined`, and scriptc 0.4.4
+// refuses a `switch` case whose type differs from the discriminant (SC1090,
+// missing lowering, no issue).
+const GT_CHAR_CODE = 62; // ">"
+const LT_CHAR_CODE = 60; // "<"
+const AMP_CHAR_CODE = 38; // "&"
+const QUOTE_CHAR_CODE = 34; // '"'
+const APOS_CHAR_CODE = 39; // "'"
 
 const GT_STR = "&gt;";
 const LT_STR = "&lt;";
@@ -95,11 +96,15 @@ const _escapeImpl = (str: string): string => {
   return result;
 };
 
-declare const Bun: { escapeHTML: (str: string) => string | Uint8Array } | undefined;
+// Read through globalThis, not `typeof Bun` on a `declare const`: scriptc 0.4.4
+// lowers that `typeof` to a ReferenceError when Bun is absent. Remove once
+// https://github.com/vercel-labs/scriptc/issues/2134 is fixed.
+const bun = (globalThis as { Bun?: { escapeHTML?: (str: string) => string | Uint8Array } }).Bun;
 
 // Bun path is exercised by `npm run test:bun`; Node tests always take _escapeImpl.
 /* node:coverage ignore next 5 */
+const bunEscape = bun?.escapeHTML;
 export const escape: (str: string) => string =
-  typeof Bun !== "undefined" && typeof Bun.escapeHTML === "function"
-    ? (str) => (Bun.escapeHTML(str) as string).replaceAll("&#x27;", "&#039;")
+  typeof bunEscape === "function"
+    ? (str) => (bunEscape(str) as string).replaceAll("&#x27;", "&#039;")
     : _escapeImpl;

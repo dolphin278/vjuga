@@ -38,7 +38,23 @@ export type JSONObject = { [key: string]: JSONValue };
 /**
  * Alias for JSON.stringify.
  */
-export const stringify = JSON.stringify;
+// Overloaded declarations forwarding to JSON.stringify, not
+// `export const stringify = JSON.stringify`: scriptc 0.4.4 compiles a function
+// value to one concrete signature and refuses an overloaded one (SC2007, by
+// design). The overloads mirror lib.es5.d.ts so the public type is unchanged.
+export function stringify(
+  value: any,
+  replacer?: (this: any, key: string, value: any) => any,
+  space?: string | number,
+): string;
+export function stringify(
+  value: any,
+  replacer?: (number | string)[] | null,
+  space?: string | number,
+): string;
+export function stringify(value: any, replacer?: any, space?: string | number): string {
+  return JSON.stringify(value, replacer, space);
+}
 
 /**
  * Plain `JSON.parse` (throws `SyntaxError` on invalid input). Does NOT strip or

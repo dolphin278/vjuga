@@ -317,7 +317,10 @@ export function literal<const V extends string | number | boolean | null>(
 
 /** Validates that value is one of the given string/number enum members. */
 export function enum_<const V extends readonly (string | number)[]>(...values: V): EnumSchema<V> {
-  return { kind: "enum", meta: { values } };
+  // Explicit `values: values`, not shorthand: scriptc 0.4.4 crashes on a rest
+  // tuple used in a shorthand property. Remove once
+  // https://github.com/vercel-labs/scriptc/issues/2131 is fixed.
+  return { kind: "enum", meta: { values: values } };
 }
 
 /**
@@ -353,7 +356,10 @@ export function array<I extends Schema>(
 
 /** Validates fixed-length tuples. Each position has its own schema. */
 export function tuple<const I extends readonly Schema[]>(...items: I): TupleSchema<I> {
-  return { kind: "tuple", meta: { items } };
+  // Explicit `items: items`, not shorthand: scriptc 0.4.4 crashes on a rest
+  // tuple used in a shorthand property. Remove once
+  // https://github.com/vercel-labs/scriptc/issues/2131 is fixed.
+  return { kind: "tuple", meta: { items: items } };
 }
 
 /** Validates objects with string keys and uniform value type. */
@@ -368,7 +374,10 @@ export function record<V extends Schema>(values: V): RecordSchema<V> {
  * sequentially; Bun/JSC is constant-time).
  */
 export function union<const V extends readonly Schema[]>(...variants: V): UnionSchema<V> {
-  return { kind: "union", meta: { variants } };
+  // Explicit `variants: variants`, not shorthand: scriptc 0.4.4 crashes on a rest
+  // tuple used in a shorthand property. Remove once
+  // https://github.com/vercel-labs/scriptc/issues/2131 is fixed.
+  return { kind: "union", meta: { variants: variants } };
 }
 
 /**
@@ -398,7 +407,10 @@ export function nullable<I extends Schema>(inner: I): NullableSchema<I> {
  * ```
  */
 export function oneOf<const V extends readonly Schema[]>(...variants: V): UnionSchema<V> {
-  return { kind: "union", meta: { variants, exclusive: true } };
+  // Explicit `variants: variants`, not shorthand: scriptc 0.4.4 crashes on a rest
+  // tuple used in a shorthand property. Remove once
+  // https://github.com/vercel-labs/scriptc/issues/2131 is fixed.
+  return { kind: "union", meta: { variants: variants, exclusive: true } };
 }
 
 /**
@@ -424,7 +436,10 @@ export function unknown(): UnknownSchema {
  * ```
  */
 export function allOf<const V extends readonly Schema[]>(...variants: V): AllOfSchema<V> {
-  return { kind: "allOf", meta: { variants } };
+  // Explicit `variants: variants`, not shorthand: scriptc 0.4.4 crashes on a rest
+  // tuple used in a shorthand property. Remove once
+  // https://github.com/vercel-labs/scriptc/issues/2131 is fixed.
+  return { kind: "allOf", meta: { variants: variants } };
 }
 
 /**

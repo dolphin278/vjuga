@@ -112,6 +112,13 @@ export function pop<T>(queue: Queue<T>): T | undefined {
   return value;
 }
 
+// Array methods are called on `list` directly, not via
+// `Array.prototype.x.call(list, ...)`: scriptc 0.4.4 builds the latter, then
+// `copyWithin.call` and `fill.call` throw at runtime ("Array.prototype method
+// is not supported yet"; `slice.call` happens to work), see
+// https://github.com/vercel-labs/scriptc/issues/2142.
+// `list.length = list.length >>> 1` instead of `>>>=`: scriptc 0.4.4 refuses
+// compound assignment to `length` (SC1090, missing lowering, no issue).
 function tryToShrinkList<T>(queue: Queue<T>): void {
   const list = queue[kList];
   const len = list.length;
@@ -120,20 +127,20 @@ function tryToShrinkList<T>(queue: Queue<T>): void {
   const count = (tail - head + len) & queue[kCapacityMask];
   if (len > 10000 && count < len >> 2) {
     if (tail >= head) {
-      Array.prototype.copyWithin.call(list, 0, head, tail);
+      list.copyWithin(0, head, tail);
     } else {
       // Wrapped: [head, len) is the front part, [0, tail) the back part.
       // Save the (small) back part, slide the front part to 0, append it.
-      const back = Array.prototype.slice.call(list, 0, tail);
+      const back = list.slice(0, tail);
       const frontLen = len - head;
-      Array.prototype.copyWithin.call(list, 0, head, len);
+      list.copyWithin(0, head, len);
       for (let i = 0; i < tail; i++) list[frontLen + i] = back[i];
     }
     queue[kTail] = count;
     queue[kHead] = 0;
     queue[kCapacityMask] = (queue[kCapacityMask] >> 1) | 1;
-    list.length >>>= 1;
-    Array.prototype.fill.call(list, void 0, count, list.length);
+    list.length = list.length >>> 1;
+    list.fill(void 0, count, list.length);
   }
 }
 
@@ -143,8 +150,8 @@ function growList<T>(queue: Queue<T>): void {
   list.length = list.length << 1;
   queue[kCapacityMask] = (queue[kCapacityMask] << 1) | 1;
 
-  Array.prototype.copyWithin.call(list, len, 0, queue[kTail]);
-  Array.prototype.fill.call(list, void 0, 0, queue[kTail]);
+  list.copyWithin(len, 0, queue[kTail]);
+  list.fill(void 0, 0, queue[kTail]);
 
   queue[kTail] = (queue[kHead] + len) & queue[kCapacityMask];
 }

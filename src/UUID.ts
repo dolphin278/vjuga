@@ -46,7 +46,8 @@ export const MAX = "ffffffff-ffff-ffff-ffff-ffffffffffff" as UUID;
 export type UUID = Branded<string, "UUID">;
 
 // Read through globalThis, not `typeof Bun`: scriptc 0.4.4 lowers `typeof` on an
-// undeclared global to a ReferenceError instead of "undefined".
+// undeclared global to a ReferenceError instead of "undefined". Remove once
+// https://github.com/vercel-labs/scriptc/issues/2134 is fixed.
 const bun = (globalThis as { Bun?: { randomUUIDv7?: () => string } }).Bun;
 
 /**

@@ -143,10 +143,26 @@ export interface PoolOptions {
  * // results[i]: { status: "fulfilled", value } | { status: "rejected", reason }
  * ```
  */
-export async function pool<T, R>(
+export function pool<T, R>(
+  items: Iterable<T>,
+  limit: number,
+  fn: (item: T, index: number, signal: AbortSignal | undefined) => R | Promise<R>,
+  options?: PoolOptions,
+): Promise<PromiseSettledResult<Awaited<R>>[]>;
+// The `Promise<R>` overload comes first so scriptc 0.4.4 resolves calls to it:
+// scriptc has no lowering for `PromiseLike` (SC2009 on the callback type).
+// The `PromiseLike<R>` overload keeps custom thenables typed for tsc users.
+// Upstream: not filed yet. Drop the first overload once scriptc lowers PromiseLike.
+export function pool<T, R>(
   items: Iterable<T>,
   limit: number,
   fn: (item: T, index: number, signal: AbortSignal | undefined) => R | PromiseLike<R>,
+  options?: PoolOptions,
+): Promise<PromiseSettledResult<Awaited<R>>[]>;
+export async function pool<T, R>(
+  items: Iterable<T>,
+  limit: number,
+  fn: (item: T, index: number, signal: AbortSignal | undefined) => R | Promise<R>,
   options?: PoolOptions,
 ): Promise<PromiseSettledResult<Awaited<R>>[]> {
   if (limit !== Infinity && (!Number.isInteger(limit) || limit < 1)) {

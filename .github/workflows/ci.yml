@@ -60,6 +60,25 @@ jobs:
       - run: npm ci
       - run: ${{ matrix.command }} -p ${{ matrix.tsconfig }}
 
+  # Compiles each consumer program in scripts/scriptc-smoke with scriptc, runs
+  # the native binary and diffs its output against Bun (the oracle).
+  scriptc-smoke:
+    name: scriptc smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      # scriptc resolves @types/node from node_modules; without it the build
+      # reports spurious SC0001 type errors.
+      - run: npm ci
+      - run: npm install --no-save scriptc@0.4.4
+      - run: SCRIPTC="$PWD/node_modules/.bin/scriptc" scripts/scriptc-smoke/run.sh
+
   test:
     name: Test (${{ matrix.runtime }})
     runs-on: ubuntu-latest

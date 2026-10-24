@@ -134,7 +134,10 @@ function fromDays(days: number): ISODate {
   const m = mp < 10 ? mp + 3 : mp - 9;
   const y = yoe + era * 400 + (m <= 2 ? 1 : 0);
   const ys = y >= 1000 ? String(y) : String(y).padStart(4, "0");
-  return (ys + "-" + PAD2[m] + "-" + PAD2[d]) as ISODate;
+  // Template literal, not `+`: scriptc 0.4.4 mistypes `str + arr[i]` as
+  // `number | string` when the call result is used inline (`today().length`).
+  // Upstream: not filed yet.
+  return `${ys}-${PAD2[m]}-${PAD2[d]}` as ISODate;
 }
 
 function checkRange(days: number): number {

@@ -10,6 +10,9 @@ console.log(
     .map((x) => x.message)
     .join(" <- "),
 );
+const chained: string[] = [];
+for (const x of ErrorChain.chain(e)) chained.push(x.message);
+console.log(chained.length, chained.join(","));
 console.log(ErrorChain.find((x) => x instanceof TypeError, e)?.message);
 
 const p = JSONx.safeParse('{"a":1,"__proto__":{"x":1}}');

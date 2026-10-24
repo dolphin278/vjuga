@@ -27,8 +27,8 @@ Partly covered:
 
 | module        | does not compile                                         | why                                                              |
 | ------------- | -------------------------------------------------------- | ---------------------------------------------------------------- |
-| FunctionUtils | `pipe`, `partial`, `partialNamed`                        | variadic `any` implementation; `bind` on a generic; `Omit<>`     |
-| Memoization   | `memoize`                                                | default `Map` cache is not coerced to `MemoizationCache` (SC2002, vercel-labs/scriptc#2143) |
+| FunctionUtils | `pipe`, `partial`, `partialNamed`; `unreachable` on a string-literal union | variadic `any` implementation; `bind` on a generic; `Omit<>`; a `never`-narrowed string-literal argument (SC1090, unfiled) |
+| Memoization   | `memoize`                                                | generic `defaultCacheKeyFn` fallback is not monomorphized (SC2005); behind it, the default `Map` cache is not coerced to `MemoizationCache` (SC2002, vercel-labs/scriptc#2143) |
 | MemoryPool    | `withAcquire`                                            | one function returns either `R` or `Promise<R>`                  |
 | PromiseUtils  | `props`; `propsMap` with mixed values                    | mapped result type; vercel-labs/scriptc#2132                     |
 | schema/Schema | `toJsonSchema`, `fromJsonSchema`, `propertyMayBeAbsent` | reads `meta` on the whole `Schema` union                         |

@@ -41,3 +41,16 @@ for (const fail of [false, true]) {
   const later = await R.fromPromise(fetchCount(fail), (e) => (e as Error).message);
   console.log(R.isOk(later), R.unwrapOr(later, -1));
 }
+// E = unknown (fromThrowable's default) must also compile.
+console.log(
+  R.unwrapOr(
+    R.fromThrowable(() => JSON.parse("1") as number),
+    -1,
+  ),
+);
+console.log(
+  R.unwrapOr(
+    R.fromThrowable(() => JSON.parse("{") as number),
+    -1,
+  ),
+);

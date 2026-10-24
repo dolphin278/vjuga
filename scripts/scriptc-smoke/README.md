@@ -28,7 +28,7 @@ Partly covered:
 | module        | does not compile                                         | why                                                              |
 | ------------- | -------------------------------------------------------- | ---------------------------------------------------------------- |
 | FunctionUtils | `pipe`, `partial`, `partialNamed`                        | variadic `any` implementation; `bind` on a generic; `Omit<>`     |
-| Memoization   | `memoize`                                                | default `Map` cache is not coerced to `MemoizationCache` (SC2002) |
+| Memoization   | `memoize`                                                | default `Map` cache is not coerced to `MemoizationCache` (SC2002, vercel-labs/scriptc#2143) |
 | MemoryPool    | `withAcquire`                                            | one function returns either `R` or `Promise<R>`                  |
 | PromiseUtils  | `props`; `propsMap` with mixed values                    | mapped result type; vercel-labs/scriptc#2132                     |
 | schema/Schema | `toJsonSchema`, `fromJsonSchema`, `propertyMayBeAbsent` | reads `meta` on the whole `Schema` union                         |
@@ -37,7 +37,7 @@ Not supported:
 
 | module                                      | why                                                                    |
 | ------------------------------------------- | ---------------------------------------------------------------------- |
-| RadixTree                                   | scriptc miscompiles symbol-keyed recursive nodes (runtime TypeError)   |
+| RadixTree                                   | scriptc miscompiles symbol-keyed recursive nodes (vercel-labs/scriptc#2139) |
 | WeakCache                                   | no `WeakRef` lowering                                                  |
 | HttpServer                                  | `Socket` as a Map key; no `cork`/`uncork`/`writableNeedDrain` lowering |
 | SOA, Arbitrary, Property, StatefulTest      | mapped and generic container types, `BigUint64Array`, `Function.name`  |

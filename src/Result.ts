@@ -57,8 +57,8 @@ export function err<const E>(error: E): Err<E> {
 
 // The helpers below read a Result by destructuring, not `result[0]`: scriptc
 // 0.4.4 cannot index a union of differently typed tuples (SC1090 "element
-// access on non-array values") once T and E differ. Upstream: not filed yet,
-// draft in the vjuga scriptc PR. Switch back to indexing once scriptc lowers it.
+// access on non-array values") once T and E differ. Switch back to indexing
+// once https://github.com/vercel-labs/scriptc/issues/2140 is fixed.
 /**
  * Type guard — narrows to Ok<T>.
  */

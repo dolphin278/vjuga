@@ -136,7 +136,7 @@ function fromDays(days: number): ISODate {
   const ys = y >= 1000 ? String(y) : String(y).padStart(4, "0");
   // Template literal, not `+`: scriptc 0.4.4 mistypes `str + arr[i]` as
   // `number | string` when the call result is used inline (`today().length`).
-  // Upstream: not filed yet.
+  // Remove once https://github.com/vercel-labs/scriptc/issues/2141 is fixed.
   return `${ys}-${PAD2[m]}-${PAD2[d]}` as ISODate;
 }
 

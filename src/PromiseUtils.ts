@@ -152,7 +152,8 @@ export function pool<T, R>(
 // The `Promise<R>` overload comes first so scriptc 0.4.4 resolves calls to it:
 // scriptc has no lowering for `PromiseLike` (SC2009 on the callback type).
 // The `PromiseLike<R>` overload keeps custom thenables typed for tsc users.
-// Upstream: not filed yet. Drop the first overload once scriptc lowers PromiseLike.
+// Missing lowering, no upstream issue. Drop the first overload once scriptc
+// lowers PromiseLike.
 export function pool<T, R>(
   items: Iterable<T>,
   limit: number,

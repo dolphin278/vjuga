@@ -58,6 +58,7 @@ Property.check() runs property-based tests - generates random input, shrinks to 
 
 - **Zero dependencies** — import only the modules you use
 - **100% test coverage** — baseline unit tests + property-based + fuzz testing verifies correctness
+- **Typechecked three ways** — CI checks library and tests with `tsc` (TypeScript 7), `tsc-rs` and `bun check`; every change must pass all three
 - **Node.js + Bun** — every change profiled on both runtimes, sub-microsecond hot paths on hot code paths
 - **Fuzzed** — CoverageGuided.fuzz() finds crash inputs under a time budget and shrinks to a minimal reproducing case; fuzzAsync() uses V8 coverage feedback to steer generation (~5–10x slower per run than property tests)
 

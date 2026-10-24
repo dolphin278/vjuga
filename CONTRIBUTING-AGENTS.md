@@ -51,6 +51,11 @@ npx skills add dolphin278/prj-4187-skills --skill dolphin278-craft -y
   tests live in `src/tests/fuzz/schema/`.
 - **Profile and benchmark performance-sensitive changes.** This library is
   performance-oriented; avoid merging hot-path changes without verification.
+  `npm run bench:bun` / `bench:node` run the mitata suites in
+  `src/benchmarks/` (`bench:node` needs `npm run build:test` first);
+  `npm run bench:compare`
+  times `scripts/scriptc-bench/` under Bun, Node and as a scriptc native
+  binary (see its README).
 - **Module-level docstrings are required.** Every `src/*.ts` module must start
   with a JSDoc block before imports or code.
 - **Keep AI-facing docs in sync** when public modules change. Update

@@ -50,15 +50,20 @@ BloomFilter.add(bf, "x");
 console.log(BloomFilter.mightContain(bf, "x"), BloomFilter.count(bf), BloomFilter.hashCount(bf));
 
 // Past 10000 items the queue shrinks on drain (tryToShrinkList): cover the
-// non-wrapped case (plain push/shift) and the wrapped case (head past tail).
+// non-wrapped case (plain push/shift) and the wrapped case (tail < head when
+// the shrink fires: push 12000, shift 7000, push 6000 wraps the ring).
 for (const wrap of [false, true]) {
   const big = Queue.make<number>();
+  let sum = 0;
   if (wrap) {
     for (let i = 0; i < 12000; i++) Queue.push(big, i);
-    for (let i = 0; i < 12000; i++) Queue.shift(big);
+    for (let i = 0; i < 7000; i++) Queue.shift(big);
+    for (let i = 0; i < 6000; i++) Queue.push(big, -i);
+    for (let i = 0; i < 6910; i++) sum += Queue.shift(big) ?? 0;
+    for (let i = 0; i < 20; i++) Queue.push(big, 100000 + i);
+    console.log(Queue.toArray(big).slice(0, 3).join(","), Queue.toArray(big).slice(-3).join(","));
   }
   for (let i = 0; i < 20000; i++) Queue.push(big, i);
-  let sum = 0;
   for (let i = 0; i < 18000; i++) sum += Queue.shift(big) ?? 0;
   while (Queue.size(big) > 100) sum += Queue.pop(big) ?? 0;
   console.log(wrap, sum, Queue.size(big), Queue.peekFront(big), Queue.peekBack(big));

@@ -78,6 +78,9 @@ jobs:
       - run: npm ci
       - run: npm install --no-save scriptc@0.4.4
       - run: SCRIPTC="$PWD/node_modules/.bin/scriptc" scripts/scriptc-smoke/run.sh
+      # Builds the scriptc-bench programs and diffs their checksums on Bun,
+      # Node and native (no timing; ~15 s).
+      - run: npm run bench:scriptc:check
 
   test:
     name: Test (${{ matrix.runtime }})

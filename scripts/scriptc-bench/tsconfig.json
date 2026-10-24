@@ -1,0 +1,13 @@
+{
+  // Emits the bench programs and the library sources they import, so run.ts
+  // can hand Node plain JS from a temp dir (--outDir) without writing next to
+  // src/. Also type-checks the bench files: `tsc --noEmit -p` this file.
+  "extends": "../../tsconfig.json",
+  "include": ["./*.ts", "../../src/*.ts", "../../src/schema/*.ts"],
+  "compilerOptions": {
+    "rootDir": "../..",
+    "composite": false,
+    "incremental": false,
+    "declaration": false
+  }
+}

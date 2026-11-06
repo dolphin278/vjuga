@@ -39,9 +39,10 @@ export type JSONObject = { [key: string]: JSONValue };
  * Alias for JSON.stringify.
  */
 // Overloaded declarations forwarding to JSON.stringify, not
-// `export const stringify = JSON.stringify`: scriptc 0.4.4 compiles a function
-// value to one concrete signature and refuses an overloaded one (SC2007, by
-// design). The overloads mirror lib.es5.d.ts so the public type is unchanged.
+// `export const stringify = JSON.stringify`: scriptc compiles a function value
+// to one concrete signature. 0.4.4 refused an overloaded one (SC2007, by
+// design); 0.4.9 builds it but holds it as a checked-dynamic value (SC6104).
+// The overloads mirror lib.es5.d.ts so the public type is unchanged.
 export function stringify(
   value: any,
   replacer?: (this: any, key: string, value: any) => any,

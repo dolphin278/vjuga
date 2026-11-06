@@ -113,11 +113,11 @@ export function pop<T>(queue: Queue<T>): T | undefined {
 }
 
 // Array methods are called on `list` directly, not via
-// `Array.prototype.x.call(list, ...)`: scriptc 0.4.4 builds the latter, then
-// `copyWithin.call` and `fill.call` throw at runtime ("Array.prototype method
-// is not supported yet"; `slice.call` happens to work), see
-// https://github.com/vercel-labs/scriptc/issues/2142.
-// `list.length = list.length >>> 1` instead of `>>>=`: scriptc 0.4.4 refuses
+// `Array.prototype.x.call(list, ...)`: scriptc 0.4.4 threw on `copyWithin.call`
+// and `fill.call` (https://github.com/vercel-labs/scriptc/issues/2142, repro
+// passes on 0.4.8+), and 0.4.9 still throws on this holey list ("checked array
+// mutation over holes is not supported yet", SC2020, unfiled).
+// `list.length = list.length >>> 1` instead of `>>>=`: scriptc 0.4.9 refuses
 // compound assignment to `length` (SC1090, missing lowering, no issue).
 function tryToShrinkList<T>(queue: Queue<T>): void {
   const list = queue[kList];

@@ -373,7 +373,7 @@ export function isUuid(value: string): boolean {
 
 const ISO_DATETIME_PREFIX = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/;
 
-// Every entry is a `{ test }` record, not a bare RegExp: scriptc 0.4.4 refuses
+// Every entry is a `{ test }` record, not a bare RegExp: scriptc 0.4.9 refuses
 // to coerce a RegExp instance to the `FormatTester` record shape (SC2002).
 const FORMATS: Readonly<Record<FormatName, FormatTester>> = {
   "date-time": { test: isRfc3339DateTime },

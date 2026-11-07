@@ -76,7 +76,7 @@ function distinctLength(error: Error): number {
 export function* chain(error: Error): Generator<Error> {
   const n = distinctLength(error);
   let current: Error = error;
-  // Stop before reading the last error's cause: scriptc 0.4.4 type-checks the
+  // Stop before reading the last error's cause: scriptc 0.4.9 type-checks the
   // `as Error` assignment at runtime and throws on the trailing `undefined`.
   for (let i = 1; i < n; i++) {
     yield current;

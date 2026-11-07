@@ -45,10 +45,7 @@ export const MAX = "ffffffff-ffff-ffff-ffff-ffffffffffff" as UUID;
 /** Branded string guaranteed to be a valid UUID. */
 export type UUID = Branded<string, "UUID">;
 
-// Read through globalThis, not `typeof Bun`: scriptc 0.4.4 lowers `typeof` on an
-// undeclared global to a ReferenceError instead of "undefined". Remove once
-// https://github.com/vercel-labs/scriptc/issues/2134 is fixed.
-const bun = (globalThis as { Bun?: { randomUUIDv7?: () => string } }).Bun;
+declare const Bun: { randomUUIDv7: () => string } | undefined;
 
 /**
  * RFC 4122 structural regex with variant-1 constraint.
@@ -101,8 +98,8 @@ export function v4(): UUID {
 // (internal module `UUID.v7`, blocked in package exports).
 /* node:coverage ignore next 4 */
 export const v7: () => UUID =
-  bun !== undefined && typeof bun.randomUUIDv7 === "function"
-    ? () => bun.randomUUIDv7!() as UUID
+  typeof Bun !== "undefined" && typeof Bun.randomUUIDv7 === "function"
+    ? () => Bun.randomUUIDv7() as UUID
     : (v7Impl as () => UUID);
 
 /** Extracts the version number (4-bit nibble at position 12) from a UUID. */

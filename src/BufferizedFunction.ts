@@ -54,7 +54,7 @@ export function make<T>(fn: Fn1<T[]>, schedule?: ScheduleMode): Fn<T[]> {
   const scheduled = Ref.make(false);
   const queue: Queue.Queue<T> = Queue.make();
   // Explicit `<T>` instantiations here and in the schedulers below: scriptc
-  // 0.4.4 refuses a generic function used as a value without a pinned
+  // 0.4.9 refuses a generic function used as a value without a pinned
   // signature (SC1090). Type-only; the emitted JS is unchanged.
   const scheduler = schedule === "io" ? scheduleIO<T> : scheduleMacrotask<T>;
 

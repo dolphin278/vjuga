@@ -3,11 +3,11 @@
 Each `*.ts` here is a consumer program. `run.sh` compiles it with
 [scriptc](https://github.com/vercel-labs/scriptc), runs the native binary and
 diffs its stdout against the same program under Bun. CI runs it with the
-scriptc version pinned in `.github/workflows/ci.yml` (0.4.4).
+scriptc version pinned in `.github/workflows/ci.yml` (0.4.9).
 
 ```bash
 npm ci
-npm install --no-save scriptc@0.4.4
+npm install --no-save scriptc@0.4.9
 SCRIPTC="$PWD/node_modules/.bin/scriptc" scripts/scriptc-smoke/run.sh
 ```
 
@@ -15,7 +15,10 @@ Workarounds for scriptc limitations in `src/` carry a comment naming the
 limitation and, where filed, the upstream issue. Remove them when the issue is
 fixed and this suite still passes.
 
-## Module status (scriptc 0.4.4)
+## Module status (scriptc 0.4.9)
+
+The covered list and the RadixTree row were checked on 0.4.9; the other
+partial and unsupported rows were last checked on 0.4.4.
 
 Covered by a consumer here (builds, runs, matches Bun): BatchExecutor, BitSet,
 BloomFilter, BufferizedFunction, ErrorChain, HTML, Immutable, ISODate,
@@ -37,7 +40,7 @@ Not supported:
 
 | module                                      | why                                                                    |
 | ------------------------------------------- | ---------------------------------------------------------------------- |
-| RadixTree                                   | scriptc miscompiles symbol-keyed recursive nodes (vercel-labs/scriptc#2139) |
+| RadixTree                                   | builds since vercel-labs/scriptc#2139 was fixed, but the binary throws `TypeError: expected number at $[0]` (`T & null` arm held dynamic, SC6104; unfiled) |
 | WeakCache                                   | no `WeakRef` lowering                                                  |
 | HttpServer                                  | `Socket` as a Map key; no `cork`/`uncork`/`writableNeedDrain` lowering |
 | SOA, Arbitrary, Property, StatefulTest      | mapped and generic container types, `BigUint64Array`, `Function.name`  |

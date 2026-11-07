@@ -262,7 +262,7 @@ export function split(prng: PRNG): PRNG {
  * Use when you don't need a fixed seed for reproducibility.
  */
 export function randomSeed(): Seed {
-  // Two 32-bit words, not a BigUint64Array: scriptc 0.4.4 has no
+  // Two 32-bit words, not a BigUint64Array: scriptc 0.4.9 has no
   // BigUint64Array lowering (SC2020).
   const buf = new Uint32Array(2);
   crypto.getRandomValues(buf);

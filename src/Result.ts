@@ -55,26 +55,18 @@ export function err<const E>(error: E): Err<E> {
   return [false, error];
 }
 
-// scriptc 0.4.4 cannot index a union of differently typed tuples (SC1090
-// "element access on non-array values") once T and E differ, see
-// https://github.com/vercel-labs/scriptc/issues/2140. isOk/isErr read the tag
-// through a `readonly unknown[]` view; the other helpers index only after
-// isOk/isErr has narrowed the union to one tuple. Destructuring also compiles
-// but was ~2x slower on Node. Read `result[0]` directly once #2140 is fixed.
 /**
  * Type guard — narrows to Ok<T>.
  */
 export function isOk<T, E>(result: Result<T, E>): result is Ok<T> {
-  const view: readonly unknown[] = result;
-  return view[0] === true;
+  return result[0] === true;
 }
 
 /**
  * Type guard — narrows to Err<E>.
  */
 export function isErr<T, E>(result: Result<T, E>): result is Err<E> {
-  const view: readonly unknown[] = result;
-  return view[0] === false;
+  return result[0] === false;
 }
 
 /**
@@ -82,7 +74,7 @@ export function isErr<T, E>(result: Result<T, E>): result is Err<E> {
  * Passes Err through unchanged.
  */
 export function map<T, U, E>(result: Result<T, E>, fn: (value: T) => U): Result<U, E> {
-  if (isOk(result)) {
+  if (result[0]) {
     return ok(Reflect.apply(fn, undefined, [result[1]]) as U);
   }
   return result as Err<E>;
@@ -93,7 +85,7 @@ export function map<T, U, E>(result: Result<T, E>, fn: (value: T) => U): Result<
  * Passes Ok through unchanged.
  */
 export function mapErr<T, E, F>(result: Result<T, E>, fn: (error: E) => F): Result<T, F> {
-  if (isErr(result)) {
+  if (!result[0]) {
     return err(Reflect.apply(fn, undefined, [result[1]]) as F);
   }
   return result as Ok<T>;
@@ -107,7 +99,7 @@ export function flatMap<T, U, E>(
   result: Result<T, E>,
   fn: (value: T) => Result<U, E>,
 ): Result<U, E> {
-  if (isOk(result)) {
+  if (result[0]) {
     return Reflect.apply(fn, undefined, [result[1]]) as Result<U, E>;
   }
   return result as Err<E>;
@@ -117,7 +109,7 @@ export function flatMap<T, U, E>(
  * Extracts the Ok value, or returns `fallback` if the result is Err.
  */
 export function unwrapOr<T, E, U>(result: Result<T, E>, fallback: U): T | U {
-  if (isOk(result)) {
+  if (result[0]) {
     return result[1];
   }
   return fallback;
@@ -135,7 +127,7 @@ export function unwrapOr<T, E, U>(result: Result<T, E>, fallback: U): T | U {
  * `node:vm` context, an iframe) is wrapped, not re-thrown as-is.
  */
 export function unwrap<T, E>(result: Result<T, E>): T {
-  if (isOk(result)) {
+  if (result[0]) {
     return result[1];
   }
   const payload = result[1];

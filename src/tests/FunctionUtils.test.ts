@@ -14,7 +14,8 @@ import {
   positiveInteger,
   nonNegativeInteger,
 } from "../FunctionUtils.js";
-import type { Branded, NonNegativeInteger } from "../FunctionUtils.js";
+import type { Branded, Integer, NonNegativeInteger, PositiveNumber } from "../FunctionUtils.js";
+import { isoTimestamp, type ISOTimestamp } from "../ISOTimestamp.js";
 
 describe("FunctionUtils", () => {
   it("partial", () => {
@@ -183,5 +184,78 @@ describe("brands (type-level)", () => {
   it("PositiveInteger is assignable to NonNegativeInteger", () => {
     const nn: NonNegativeInteger = positiveInteger(1);
     assert.equal(nn, 1);
+  });
+});
+
+// The brand key is a module-private unique symbol: no literal outside
+// FunctionUtils can name it, so a brand is only minted by a cast or a guard.
+describe("Branded key is unforgeable (type-level)", () => {
+  type Fragment = Branded<{ id: string }, "Fragment">;
+  type UtcTimestamp = Branded<ISOTimestamp, "UtcTimestamp">;
+
+  it("an object literal cannot forge an object brand", () => {
+    // Non-fresh sources, so the excess-property check cannot be what rejects them.
+    const legacyNested = { id: "x", __brand: { Fragment: true as const } };
+    const legacyFlat = { id: "x", __brand_Fragment: true as const };
+    // @ts-expect-error the v<=11 nested string-key shape no longer forges a brand
+    const a: Fragment = legacyNested;
+    // @ts-expect-error the v12 flat string-key shape no longer forges a brand
+    const b: Fragment = legacyFlat;
+    // @ts-expect-error the v12 forgery as a fresh literal
+    const c: Fragment = { id: "x", __brand_Fragment: true };
+    assert.equal(a.id + b.id + c.id, "xxx");
+  });
+
+  it("the brand key is not exported", () => {
+    // @ts-expect-error brandKey is declared but not exported
+    type Key = typeof import("../FunctionUtils.js").brandKey;
+    const k: Key | undefined = undefined;
+    assert.equal(k, undefined);
+  });
+
+  it("a branded primitive is assignable to its base, the base is not branded", () => {
+    const ts = isoTimestamp("2024-01-01T00:00:00Z");
+    const s: string = ts;
+    // @ts-expect-error a plain string is not an ISOTimestamp
+    const bad: ISOTimestamp = s;
+    const n: number = positiveInteger(3);
+    assert.equal(s + bad + n, "2024-01-01T00:00:00Z2024-01-01T00:00:00Z3");
+  });
+
+  it("stacked brands are assignable to every layer and their base", () => {
+    const utc = brand<ISOTimestamp, "UtcTimestamp">(isoTimestamp("2024-01-01T00:00:00Z"));
+    const iso: ISOTimestamp = utc;
+    const s: string = utc;
+    // @ts-expect-error an ISOTimestamp is not a UtcTimestamp
+    const bad: UtcTimestamp = iso;
+    const pi = positiveInteger(2);
+    const pn: PositiveNumber = pi;
+    const int: Integer = pi;
+    assert.equal(`${iso}${s}${bad}${pn}${int}`.length, 62);
+  });
+
+  it("different kinds are mutually unassignable", () => {
+    type A = Branded<string, "A">;
+    type B = Branded<string, "B">;
+    const a = brand<string, "A">("a");
+    const b = brand<string, "B">("b");
+    // @ts-expect-error A is not B
+    const ab: B = a;
+    // @ts-expect-error B is not A
+    const ba: A = b;
+    assert.equal(ab + ba, "ab");
+  });
+
+  it("type-guard predicates narrow string and object bases without casts", () => {
+    type Slug = Branded<string, "Slug">;
+    const isSlug = (v: string): v is Slug => /^[a-z-]+$/.test(v);
+    const isFragment = (v: { id: string }): v is Fragment => v.id.length > 0;
+    const raw: string = "a-b";
+    const obj = { id: "x" };
+    if (!isSlug(raw) || !isFragment(obj)) assert.fail("guards rejected valid input");
+    const slug: Slug = raw;
+    const frag: Fragment = obj;
+    const spread: Fragment = { ...frag, id: "y" }; // documented: spread keeps the brand
+    assert.equal(slug + frag.id + spread.id, "a-bxy");
   });
 });

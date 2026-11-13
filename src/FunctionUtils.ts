@@ -4,9 +4,10 @@
  *
  * All function types (`Fn`, `Fn0`, `Fn1`, `Fn2`, `Predicate`, `Lazy`) bind
  * `this: void` to prevent accidental context leaks. `Branded<Base, Kind>`
- * attaches a phantom brand as one boolean-typed property per kind, so that
- * intersecting two branded types merges their brands — enabling compound
- * types like `PositiveInteger` (= `PositiveNumber & Integer`).
+ * attaches a phantom brand under a module-private `unique symbol` key, so no
+ * object literal outside this module can forge one, and intersecting two
+ * branded types merges their brands — enabling compound types like
+ * `PositiveInteger` (= `PositiveNumber & Integer`).
  *
  * When to use: `Fn` / `Fn1` / `Fn2` as callback types throughout the library.
  * Branded types for domain values that need compile-time distinction (validated
@@ -46,28 +47,40 @@ export type Fn2<T1, T2, R = void> = Fn<[T1, T2], R>;
 export type Lazy<T> = Fn0<T>;
 
 /**
+ * Phantom key of every brand. Declared, never defined or exported: it has no
+ * runtime value and code outside this module cannot import it. Its type is
+ * still reachable through `keyof`, but a value of that type needs a cast or a
+ * `declare`, so a branded value always comes from an explicit assertion
+ * (`brand()`, a constructor, a type guard, or `as`). Each installed copy of vjuga declares its own symbol, so brands from
+ * two copies of the package in one dependency tree are mutually unassignable.
+ */
+declare const brandKey: unique symbol;
+
+/**
  * Branded type — attaches a phantom brand to `Base` so that two values of the
  * same underlying type but different brands are not assignable to each other.
  *
- * Each kind becomes its own top-level property `__brand_<Kind>: true`, so
- * intersecting two branded types merges their brands, enabling compound types:
+ * The brand is a record of kinds under the private `brandKey` symbol, so
+ * intersecting two branded types merges their records, enabling compound types:
  *
  * ```ts
  * type PositiveNumber  = Branded<number, 'PositiveNumber'>
  * type Integer         = Branded<number, 'Integer'>
  * type PositiveInteger = PositiveNumber & Integer
- * // = number & { __brand_PositiveNumber: true } & { __brand_Integer: true }
+ * // = number & { [brandKey]: { PositiveNumber: true } & { Integer: true } }
  * // A PositiveInteger is assignable to both PositiveNumber and Integer ✓
  * ```
  *
- * Why flat `true` properties rather than a nested `__brand: { [K in Kind]: true }`
- * record: scriptc only lowers a primitive intersected with properties of
- * primitive (literal) type; a nested object brand makes every value of the
- * branded type uncompilable. A single `__brand: Kind` literal would compile
- * but cannot merge — `"A" & "B"` is `never`, so compound brands collapse.
+ * Why a symbol key: a string key (`__brand_<Kind>: true`, used up to v12) lets
+ * an object literal forge the brand of an object base with no cast. Why a
+ * record rather than `[brandKey]: Kind`: `"A" & "B"` is `never`, so compound
+ * brands would collapse. Spreading a branded object (`{ ...f, id: "y" }`) keeps
+ * the key and so keeps the brand; re-validate if a spread can break the
+ * invariant. scriptc 0.4.9 compiles this shape for primitive, object and
+ * stacked brands (scripts/scriptc-smoke/brands.ts).
  */
 export type Branded<Base, Kind extends string> = Base & {
-  readonly [K in `__brand_${Kind}`]: true;
+  readonly [brandKey]: { readonly [K in Kind]: true };
 };
 
 /**

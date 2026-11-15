@@ -122,3 +122,26 @@ test("daysInMonth agrees with Date for every year/month", () => {
     { numRuns: 1_000_000 },
   );
 });
+
+test("isoDate / Exn / is / assert agree with each other and with a reference classifier", () => {
+  Prop.assert(
+    Arb.oneOf(dateLike, Arb.string({ maxLength: 12 })),
+    (s) => {
+      const want = refIsDate(s)
+        ? undefined
+        : /^\d{4}-\d{2}-\d{2}$/.test(s)
+          ? "invalid-date"
+          : "malformed";
+      assert.deepEqual(ISODate.isoDate(s), want === undefined ? [true, s] : [false, want], s);
+      assert.equal(ISODate.isISODate(s), want === undefined);
+      if (want === undefined) {
+        assert.equal(ISODate.isoDateExn(s), s);
+        ISODate.assertISODate(s);
+      } else {
+        assert.throws(() => ISODate.isoDateExn(s), { name: "RangeError", cause: want });
+        assert.throws(() => ISODate.assertISODate(s), { name: "RangeError", cause: want });
+      }
+    },
+    { numRuns: 1_000_000 },
+  );
+});

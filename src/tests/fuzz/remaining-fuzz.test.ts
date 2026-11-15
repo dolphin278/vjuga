@@ -808,6 +808,91 @@ test("FunctionUtils: branded number validators", async () => {
   FU.nonNegativeIntegerExn(0); // ok
 });
 
+test("FunctionUtils: branded number standard set agrees with Number.isSafeInteger", async () => {
+  const FU = await import("../../FunctionUtils.js");
+  const num = Arb.oneOf(
+    Arb.integer(),
+    Arb.float(-1e20, 1e20),
+    Arb.constantFrom(0, -0, 1, -1, 0.5, NaN, Infinity, -Infinity, 2 ** 53, 2 ** 53 - 1, -(2 ** 53)),
+  );
+  const sets = [
+    [
+      FU.positiveNumber,
+      FU.positiveNumberExn,
+      FU.isPositiveNumber,
+      FU.assertPositiveNumber,
+      (n: number) => (n > 0 ? undefined : "not-positive"),
+    ],
+    [
+      FU.integer,
+      FU.integerExn,
+      FU.isInteger,
+      FU.assertInteger,
+      (n: number) =>
+        Number.isSafeInteger(n)
+          ? undefined
+          : Number.isInteger(n)
+            ? "unsafe-integer"
+            : "not-integer",
+    ],
+    [
+      FU.positiveInteger,
+      FU.positiveIntegerExn,
+      FU.isPositiveInteger,
+      FU.assertPositiveInteger,
+      (n: number) =>
+        !Number.isInteger(n)
+          ? "not-integer"
+          : !Number.isSafeInteger(n)
+            ? "unsafe-integer"
+            : n < 1
+              ? "not-positive"
+              : undefined,
+    ],
+    [
+      FU.nonNegativeInteger,
+      FU.nonNegativeIntegerExn,
+      FU.isNonNegativeInteger,
+      FU.assertNonNegativeInteger,
+      (n: number) =>
+        !Number.isInteger(n)
+          ? "not-integer"
+          : !Number.isSafeInteger(n)
+            ? "unsafe-integer"
+            : n < 0
+              ? "negative"
+              : undefined,
+    ],
+  ] as const;
+  Prop.assert(
+    num,
+    (n) => {
+      for (const [make, exn, is, assertX, ref] of sets) {
+        const want = ref(n);
+        assert.deepEqual(
+          (make as (n: number) => unknown)(n),
+          want === undefined ? [true, n] : [false, want],
+        );
+        assert.equal(is(n), want === undefined);
+        if (want === undefined) {
+          assert.equal((exn as (n: number) => number)(n), n);
+          (assertX as (v: unknown) => void)(n);
+        } else {
+          assert.throws(() => (exn as (n: number) => number)(n), {
+            name: "RangeError",
+            cause: want,
+          });
+          assert.throws(() => (assertX as (v: unknown) => void)(n), {
+            name: "RangeError",
+            cause: want,
+          });
+        }
+      }
+    },
+    { numRuns: 1_000_000 },
+  );
+});
+
 test("FunctionUtils: partial application", async () => {
   const FU = await import("../../FunctionUtils.js");
 

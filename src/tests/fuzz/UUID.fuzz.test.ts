@@ -92,3 +92,46 @@ test("uuid(): any-case input is normalized to lowercase; equal UUIDs compare equ
     { numRuns: 1_000_000 },
   );
 });
+
+const HEX = "0123456789abcdefABCDEFgx-";
+/** Near-miss UUIDs: a v4 with a few characters swapped for hex, case or junk. */
+const uuidLike: Arb.Arbitrary<string> = Arb.map(
+  Arb.tuple(
+    Arb.array(Arb.tuple(Arb.integer(0, 36), Arb.integer(0, HEX.length - 1)), { maxLength: 3 }),
+    Arb.constantFrom("v4", "nil", "max", "short"),
+  ),
+  ([edits, kind]) => {
+    let s = kind === "nil" ? UUID.NIL : kind === "max" ? UUID.MAX : (UUID.v4() as string);
+    if (kind === "short") s = s.slice(0, 35);
+    for (const [at, c] of edits) s = s.slice(0, at) + HEX[c] + s.slice(at + 1);
+    return s;
+  },
+);
+
+test("uuid / Exn / isUUID / assertUUID agree; isUUID is canonical-only", () => {
+  const SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  const VALID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  Prop.assert(
+    Arb.oneOf(uuidLike, Arb.string({ maxLength: 40 })),
+    (s) => {
+      const lower = s.toLowerCase();
+      const valid = VALID.test(lower) || lower === UUID.NIL || lower === UUID.MAX;
+      const want = valid ? undefined : SHAPE.test(lower) ? "invalid-variant" : "malformed";
+      assert.deepEqual(UUID.uuid(s), want === undefined ? [true, lower] : [false, want], s);
+      assert.equal(UUID.isUUID(s), valid && s === lower);
+      if (want === undefined) {
+        assert.equal(UUID.uuidExn(s), lower);
+        assert.equal(UUID.isUUID(UUID.uuidExn(s)), true);
+      } else {
+        assert.throws(() => UUID.uuidExn(s), { name: "RangeError", cause: want });
+      }
+      if (UUID.isUUID(s)) UUID.assertUUID(s);
+      else
+        assert.throws(() => UUID.assertUUID(s), {
+          name: "RangeError",
+          cause: want ?? "not-lowercase",
+        });
+    },
+    { numRuns: 1_000_000 },
+  );
+});

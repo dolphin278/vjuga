@@ -4,7 +4,7 @@ import * as UUID from "../UUID.js";
 import { resetV7State } from "../UUID.v7.js";
 import { ValidationError } from "../schema/ValidationError.js";
 
-// --- uuid (throwing constructor) ---
+// --- uuidExn (throwing constructor) ---
 
 test("uuid() accepts valid v4 UUID (lowercase)", () => {
   const id = UUID.uuidExn("550e8400-e29b-41d4-a716-446655440000");
@@ -237,4 +237,44 @@ test("validator() returns Err for invalid UUID string", () => {
   const r = v("not-a-uuid");
   assert.equal(r[0], false);
   assert.ok(r[1] instanceof ValidationError);
+});
+
+// --- standard set: uuid (Result), isUUID (unknown, canonical only), assertUUID ---
+
+test("uuid lower-cases and returns Ok, or the failed rule", () => {
+  const lower = "550e8400-e29b-41d4-a716-446655440000";
+  assert.deepEqual(UUID.uuid(lower.toUpperCase()), [true, lower]);
+  assert.deepEqual(UUID.uuid(UUID.NIL), [true, UUID.NIL]);
+  assert.deepEqual(UUID.uuid(UUID.MAX.toUpperCase()), [true, UUID.MAX]);
+  assert.deepEqual(UUID.uuid("550e8400-e29b-41d4-c716-446655440000"), [false, "invalid-variant"]);
+  assert.deepEqual(UUID.uuid("550E8400-E29B-41D4-0716-446655440000"), [false, "invalid-variant"]);
+  assert.deepEqual(UUID.uuid("550e8400e29b41d4a716446655440000"), [false, "malformed"]);
+  assert.deepEqual(UUID.uuid("not-a-uuid"), [false, "malformed"]);
+  assert.throws(() => UUID.uuidExn("g50e8400-e29b-41d4-a716-446655440000"), {
+    name: "RangeError",
+    cause: "malformed",
+  });
+});
+
+test("isUUID accepts only the canonical lower-case form; assertUUID says why", () => {
+  const lower = "550e8400-e29b-41d4-a716-446655440000";
+  assert.equal(UUID.isUUID(lower), true);
+  assert.equal(UUID.isUUID(UUID.NIL), true);
+  assert.equal(UUID.isUUID(UUID.MAX), true);
+  assert.equal(UUID.isUUID(lower.toUpperCase()), false);
+  assert.equal(UUID.isUUID(UUID.MAX.toUpperCase()), false);
+  assert.equal(UUID.isUUID(42), false);
+  assert.throws(() => UUID.assertUUID(lower.toUpperCase()), {
+    name: "RangeError",
+    cause: "not-lowercase",
+  });
+  assert.throws(() => UUID.assertUUID("550e8400-e29b-41d4-c716-446655440000"), {
+    cause: "invalid-variant",
+  });
+  assert.throws(() => UUID.assertUUID("x"), { cause: "malformed" });
+  assert.throws(() => UUID.assertUUID(null), TypeError);
+  const v: unknown = lower;
+  UUID.assertUUID(v);
+  const id: UUID.UUID = v;
+  assert.equal(UUID.version(id), 4);
 });

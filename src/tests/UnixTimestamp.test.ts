@@ -4,7 +4,7 @@ import * as UnixTimestamp from "../UnixTimestamp.js";
 import * as ISOTimestamp from "../ISOTimestamp.js";
 import { ValidationError } from "../schema/ValidationError.js";
 
-// --- unixTimestamp (throwing constructor) ---
+// --- unixTimestampExn (throwing constructor) ---
 
 test("unixTimestamp() accepts positive number", () => {
   const ts = UnixTimestamp.unixTimestampExn(1705312200);
@@ -200,4 +200,33 @@ test("unixTimestamp() accepts millisecond-magnitude values (documented: no unit 
 test("fromISO() accepts sub-millisecond fractions (truncated, never rounded up)", () => {
   const iso = ISOTimestamp.isoTimestampExn("2024-12-31T23:59:59.9999999Z");
   assert.equal(UnixTimestamp.fromISO(iso), Date.UTC(2024, 11, 31, 23, 59, 59) / 1000);
+});
+
+// --- standard set: unixTimestamp (Result), isUnixTimestamp (unknown), assertUnixTimestamp ---
+
+test("unixTimestamp returns Ok or not-finite", () => {
+  assert.deepEqual(UnixTimestamp.unixTimestamp(1705312200), [true, 1705312200]);
+  assert.deepEqual(UnixTimestamp.unixTimestamp(-1.5), [true, -1.5]);
+  assert.deepEqual(UnixTimestamp.unixTimestamp(NaN), [false, "not-finite"]);
+  assert.deepEqual(UnixTimestamp.unixTimestamp(-Infinity), [false, "not-finite"]);
+  assert.throws(() => UnixTimestamp.unixTimestampExn(Infinity), {
+    name: "RangeError",
+    cause: "not-finite",
+  });
+});
+
+test("isUnixTimestamp and assertUnixTimestamp accept unknown", () => {
+  for (const v of ["1", null, undefined, 1n]) {
+    assert.equal(UnixTimestamp.isUnixTimestamp(v), false);
+    assert.throws(() => UnixTimestamp.assertUnixTimestamp(v), TypeError);
+  }
+  assert.equal(UnixTimestamp.isUnixTimestamp(0), true);
+  assert.throws(() => UnixTimestamp.assertUnixTimestamp(NaN), {
+    name: "RangeError",
+    cause: "not-finite",
+  });
+  const v: unknown = 0;
+  UnixTimestamp.assertUnixTimestamp(v);
+  const ts: UnixTimestamp.UnixTimestamp = v;
+  assert.equal(UnixTimestamp.toDate(ts).getTime(), 0);
 });

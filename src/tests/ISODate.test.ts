@@ -149,3 +149,45 @@ test("validator() returns Ok / Err", () => {
   assert.equal(nonString[0], false);
   assert.ok(nonString[1] instanceof ValidationError);
 });
+
+// --- standard set: isoDate (Result), isoDateExn, isISODate (unknown), assertISODate ---
+
+test("isoDate returns Ok or the failed rule", () => {
+  assert.deepEqual(ISODate.isoDate("2024-02-29"), [true, "2024-02-29"]);
+  assert.deepEqual(ISODate.isoDate("2023-02-29"), [false, "invalid-date"]);
+  assert.deepEqual(ISODate.isoDate("2024-13-01"), [false, "invalid-date"]);
+  assert.deepEqual(ISODate.isoDate("2024-00-10"), [false, "invalid-date"]);
+  assert.deepEqual(ISODate.isoDate("2024-01-00"), [false, "invalid-date"]);
+  assert.deepEqual(ISODate.isoDate("2024-2-1"), [false, "malformed"]);
+  assert.deepEqual(ISODate.isoDate("2024-01-1x"), [false, "malformed"]);
+  assert.deepEqual(ISODate.isoDate("2024/01/10"), [false, "malformed"]);
+  assert.deepEqual(ISODate.isoDate("2024-01-10 "), [false, "malformed"]);
+  assert.deepEqual(ISODate.isoDate("x024-01-10"), [false, "malformed"]);
+  assert.deepEqual(ISODate.isoDate("20x4-01-10"), [false, "malformed"]);
+  assert.deepEqual(ISODate.isoDate("2024-0x-10"), [false, "malformed"]);
+  assert.deepEqual(ISODate.isoDate("2024-01x10"), [false, "malformed"]);
+});
+
+test("isoDateExn throws RangeError with the Result's literal as cause", () => {
+  assert.throws(() => ISODate.isoDateExn("2023-02-29"), {
+    name: "RangeError",
+    cause: "invalid-date",
+    message: 'Expected ISODate (invalid-date), got "2023-02-29"',
+  });
+  assert.throws(() => ISODate.isoDateExn(""), { cause: "malformed" });
+});
+
+test("isISODate and assertISODate accept unknown", () => {
+  for (const v of [20240101, null, undefined, {}, ["2024-01-01"]]) {
+    assert.equal(ISODate.isISODate(v), false);
+    assert.throws(() => ISODate.assertISODate(v), TypeError);
+  }
+  assert.throws(() => ISODate.assertISODate("2024-02-30"), {
+    name: "RangeError",
+    cause: "invalid-date",
+  });
+  const v: unknown = "2024-01-31";
+  ISODate.assertISODate(v);
+  const d: ISODate.ISODate = v;
+  assert.equal(ISODate.addDays(d, 1), "2024-02-01");
+});

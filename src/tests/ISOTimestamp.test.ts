@@ -4,7 +4,7 @@ import * as ISOTimestamp from "../ISOTimestamp.js";
 import { ValidationError } from "../schema/ValidationError.js";
 import { suiteCases } from "./fixtures/json-schema-test-suite/cases.js";
 
-// --- isoTimestamp (throwing constructor) ---
+// --- isoTimestampExn (throwing constructor) ---
 
 test("isoTimestamp() accepts full ISO datetime with Z", () => {
   const ts = ISOTimestamp.isoTimestampExn("2024-01-15T10:30:00.000Z");
@@ -377,4 +377,67 @@ test("isoTimestamp() rejects hour 24", () => {
   assert.throws(() => ISOTimestamp.isoTimestampExn("2024-01-15T24:00Z"), RangeError);
   assert.equal(ISOTimestamp.validator()("2024-01-15T24:00:00Z")[0], false);
   assert.equal(ISOTimestamp.isoTimestampExn("2024-01-15T23:59:59Z"), "2024-01-15T23:59:59Z");
+});
+
+// --- standard set: isoTimestamp (Result), isISOTimestamp (unknown), assertISOTimestamp ---
+
+test("isoTimestamp returns Ok or the first failed rule", () => {
+  const cases: Array<[string, string | true]> = [
+    ["2024-01-15T10:30:00Z", true],
+    ["2024-01-15T10:30Z", true],
+    ["2024-01-15T10:30:00.123456+05:30", true],
+    ["2024-01-15", "malformed"],
+    ["2024-01-15 10:30:00Z", "malformed"],
+    ["2024/01/15T10:30:00Z", "malformed"],
+    ["2024-01/15T10:30:00Z", "malformed"],
+    ["2024-01-15T10-30:00Z", "malformed"],
+    ["2024-01-15T1x:30:00Z", "malformed"],
+    ["2024-01-15T10:3x:00Z", "malformed"],
+    ["x024-01-15T10:30:00Z", "malformed"],
+    ["2x24-01-15T10:30:00Z", "malformed"],
+    ["2024-x1-15T10:30:00Z", "malformed"],
+    ["2024-01-x5T10:30:00Z", "malformed"],
+    ["2024-01-15T10:30:0xZ", "malformed"],
+    ["2024-01-15T10:30:00.Z", "malformed"],
+    ["2024-01-15T10:30:00", "malformed"],
+    ["2024-01-15T10:30:00Zx", "malformed"],
+    ["2024-01-15T10:30:00z", "malformed"],
+    ["2024-01-15T10:30:00+0530", "malformed"],
+    ["2024-01-15T10:30:00+05:3x", "malformed"],
+    ["2024-01-15T10:30:00+x5:30", "malformed"],
+    ["2024-01-15T10:30:00+05:300", "malformed"],
+    ["2023-02-29T10:30:00Z", "invalid-date"],
+    ["2024-13-01T10:30:00Z", "invalid-date"],
+    ["2024-01-15T24:00:00Z", "invalid-time"],
+    ["2024-01-15T10:60:00Z", "invalid-time"],
+    ["2024-01-15T10:30:60Z", "invalid-time"],
+    ["2024-01-15T10:30:00+24:00", "invalid-offset"],
+    ["2024-01-15T10:30:00-05:60", "invalid-offset"],
+  ];
+  for (const [s, want] of cases) {
+    const r = ISOTimestamp.isoTimestamp(s);
+    assert.deepEqual(r, want === true ? [true, s] : [false, want], s);
+    assert.equal(ISOTimestamp.isISOTimestamp(s), want === true, s);
+  }
+});
+
+test("isoTimestampExn throws RangeError with the Result's literal as cause", () => {
+  assert.throws(() => ISOTimestamp.isoTimestampExn("2024-01-15T25:00Z"), {
+    name: "RangeError",
+    cause: "invalid-time",
+  });
+});
+
+test("isISOTimestamp and assertISOTimestamp accept unknown", () => {
+  for (const v of [0, null, undefined, new Date()]) {
+    assert.equal(ISOTimestamp.isISOTimestamp(v), false);
+    assert.throws(() => ISOTimestamp.assertISOTimestamp(v), TypeError);
+  }
+  assert.throws(() => ISOTimestamp.assertISOTimestamp("2024-02-30T00:00Z"), {
+    cause: "invalid-date",
+  });
+  const v: unknown = "2024-01-15T10:30:00Z";
+  ISOTimestamp.assertISOTimestamp(v);
+  const ts: ISOTimestamp.ISOTimestamp = v;
+  assert.equal(ISOTimestamp.toDate(ts).getTime(), Date.UTC(2024, 0, 15, 10, 30));
 });

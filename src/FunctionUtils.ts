@@ -191,10 +191,12 @@ export interface Refinement<Base, T extends Base, E extends string> {
  * `makeExn` normalise before checking; `is` and `assert` never do.
  *
  * Performance: the derived functions are closures made once, here, and every
- * refinement's `is` shares one `check(value)` call site. With several
- * refinements in a program that site is polymorphic, so V8 does not inline
- * `check` into it. For a guard on a hot path, write it as a top-level
- * function: `function isSlug(v: string): v is Slug { return slugError(v) === undefined; }`.
+ * refinement's `is` shares one `check(value)` call site. With one refinement
+ * in use it runs as fast as a hand-written guard; with six in use that site is
+ * polymorphic and V8 stops inlining `check` (`src/benchmarks/Brands.bench.ts`:
+ * ~3.8x slower than six hand-written guards on Node 26, ~2.5x on Bun 1.4). On
+ * a hot path write the guard as a top-level function over the same check:
+ * `function isSlug(v: string): v is Slug { return slugError(v) === undefined; }`.
  *
  * Annotate the result with its type: TypeScript refuses an assertion called
  * through an unannotated name (TS2775).

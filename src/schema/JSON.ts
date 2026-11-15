@@ -43,8 +43,8 @@ import type { Result } from "../Result.js";
 import { ok, err } from "../Result.js";
 import { parse as jsonParse, escapeJsonString } from "../JSON.js";
 import type { Schema, Infer } from "./Schema.js";
-import type { SchemaError } from "./Validate.js";
-import { emitStandardRefs, emitValidation, validate } from "./Validate.js";
+import type { ValidateError, ValidateOptions } from "./Validate.js";
+import { emitRootValidation, emitStandardRefs, validate } from "./Validate.js";
 import { allOf, findDiscriminant, object, optional, propertyMayBeAbsent } from "./Schema.js";
 import { unreachable } from "../FunctionUtils.js";
 import {
@@ -119,7 +119,13 @@ function hasNoJson(x: unknown): boolean {
  */
 function mayHaveNoJson(schema: Schema): boolean {
   let s = schema;
-  while (s.kind === "optional" || s.kind === "nullable") s = s.meta.inner;
+  while (
+    s.kind === "optional" ||
+    s.kind === "nullable" ||
+    (s.kind === "refine" && s.meta.encode === undefined)
+  ) {
+    s = s.meta.inner;
+  }
   return s.kind === "unknown" || s.kind === "not";
 }
 
@@ -204,14 +210,87 @@ function walkStringify(buf: CodeBuffer, schema: Schema, accessor: string): strin
     case "allOf": {
       const merged = mergeAllOf(schema);
       if (merged !== null) return walkStringify(buf, merged, accessor);
-      return `_ix(${emitRef(buf, freshVar(buf), schema)}, ${accessor})`;
+      return combinatorStringify(buf, schema, accessor);
     }
     case "conditional":
       // The applicable shapes depend on the value: resolved per call
-      return `_ix(${emitRef(buf, freshVar(buf), schema)}, ${accessor})`;
+      return combinatorStringify(buf, schema, accessor);
+    case "refine": {
+      const encode = schema.meta.encode;
+      if (encode === undefined) return walkStringify(buf, schema.meta.inner, accessor);
+      // The output is not in `inner`'s form: encode it, then serialize as `inner`
+      const helperName = freshVar(buf);
+      const enc = emitRef(buf, freshVar(buf), encode);
+      const body = walkStringify(buf, schema.meta.inner, "x");
+      emitRef(buf, helperName, compileHelper(buf, `function ${helperName}(x) { return ${body}; }`));
+      return `${helperName}(${enc}(${accessor}))`;
+    }
     default:
       unreachable(schema);
   }
+}
+
+/**
+ * `_ix` call for an allOf / conditional resolved per call. It picks shapes by
+ * validating the value (conditional `if`, union variants), which would re-run
+ * a constructor on its own output — refused at compile time.
+ */
+function combinatorStringify(buf: CodeBuffer, schema: Schema, accessor: string): string {
+  if (containsConstruct(schema)) {
+    throw new TypeError(
+      "stringify: an allOf / conditional resolved per value cannot contain construct() " +
+        "(its shapes are chosen by validating the output); restructure the schema",
+    );
+  }
+  return `_ix(${emitRef(buf, freshVar(buf), schema)}, ${accessor})`;
+}
+
+/** Schemas known to contain (or not) a `construct()` node anywhere. */
+const constructs = new WeakMap<Schema, boolean>();
+
+/** True if a `construct()` node appears anywhere in `schema`. */
+function containsConstruct(schema: Schema): boolean {
+  const known = constructs.get(schema);
+  if (known !== undefined) return known;
+  let found = false;
+  switch (schema.kind) {
+    case "refine":
+      found = schema.meta.mode === "construct" || containsConstruct(schema.meta.inner);
+      break;
+    case "object": {
+      const props = schema.meta.properties as Readonly<Record<string, Schema>>;
+      for (const k of Object.keys(props)) if (containsConstruct(props[k])) found = true;
+      break;
+    }
+    case "array":
+      found = containsConstruct(schema.meta.items);
+      break;
+    case "tuple":
+      found = (schema.meta.items as readonly Schema[]).some(containsConstruct);
+      break;
+    case "record":
+      found = containsConstruct(schema.meta.values);
+      break;
+    case "union":
+    case "allOf":
+      found = (schema.meta.variants as readonly Schema[]).some(containsConstruct);
+      break;
+    case "optional":
+    case "nullable":
+    case "not":
+      found = containsConstruct(schema.meta.inner);
+      break;
+    case "conditional":
+      found =
+        containsConstruct(schema.meta.if) ||
+        containsConstruct(schema.meta.then) ||
+        containsConstruct(schema.meta.else);
+      break;
+    default:
+      break;
+  }
+  constructs.set(schema, found);
+  return found;
 }
 
 // ---------------------------------------------------------------------------
@@ -288,6 +367,11 @@ function collectStaticShapes(
     }
     case "optional":
       return collectStaticShapes(schema.meta.inner, out, guarded);
+    case "refine":
+      // Serialized as `inner`; an encoded output has no static shape
+      return (
+        schema.meta.encode === undefined && collectStaticShapes(schema.meta.inner, out, guarded)
+      );
     case "unknown":
     case "not":
       return true;
@@ -393,6 +477,10 @@ function collectShapes(schema: Schema, v: unknown, out: Schema[]): void {
       return;
     case "nullable":
       if (v !== null) collectShapes(schema.meta.inner, v, out);
+      return;
+    case "refine":
+      // No encode here: combinatorStringify refuses construct() subtrees
+      collectShapes(schema.meta.inner, v, out);
       return;
     case "unknown":
     case "not":
@@ -695,6 +783,13 @@ function walkStringifyUnion(
     for (let j = 0; j < variants.length; j++) {
       if (j !== i && tags[j].some((t: Tag) => tags[i].includes(t))) overlaps = true;
     }
+    if (overlaps && containsConstruct(variants[i])) {
+      // Picking it would re-validate the output, re-running its constructor
+      throw new TypeError(
+        "stringify: union variants with overlapping JSON types cannot contain construct() " +
+          "(discriminate them with a literal key instead)",
+      );
+    }
     const check = overlaps
       ? `${emitRef(buf, freshVar(buf), validate(variants[i]))}(v)[0]`
       : (typeCheckExpr(variants[i], "v") ?? tags[i].map((t: Tag) => TAG_CHECKS[t]).join(" || "));
@@ -748,6 +843,10 @@ function typeTags(schema: Schema): Tag[] {
       return [...typeTags(schema.meta.inner), "undefined"];
     case "nullable":
       return [...typeTags(schema.meta.inner), "null"];
+    case "refine":
+      // An encoded output may be anything; otherwise it has `inner`'s form
+      if (schema.meta.encode === undefined) return typeTags(schema.meta.inner);
+      return ["string", "number", "boolean", "null", "array", "object"];
     case "unknown":
     case "allOf":
     case "not":
@@ -764,14 +863,33 @@ function typeTags(schema: Schema): Tag[] {
 // ---------------------------------------------------------------------------
 
 /**
- * Compiles a schema into a JSON parse function.
+ * Compiles a schema into a JSON parse function: JSON text in, `Result<T,
+ * SchemaError>` out, never throws. Native `JSON.parse` builds the tree, then
+ * one generated pass validates it — the same checks, `SchemaError` paths and
+ * labels as `validate`, every schema kind. Invalid JSON is `{ path: "",
+ * expected: "valid JSON", received: json }`.
  *
- * Uses the safe `parse` from JSON module (returns undefined on invalid JSON,
- * never throws). Validates the result inline. Returns `Result<T, SchemaError>`.
+ * Refinements run in that same pass: `refine()` guards narrow the type, and
+ * `construct()` outputs are written into the freshly parsed tree (it belongs
+ * to the call, so nothing is copied), so `Infer<S>` holds branded or custom
+ * types with no second walk. `{ allErrors: true }` collects every failure as
+ * `validate` does (`SchemaError[]`).
+ *
+ * @example
+ * ```ts
+ * import * as S from "@dolphin278/vjuga/schema/Schema";
+ * import * as SJ from "@dolphin278/vjuga/schema/JSON";
+ * import { ok, err } from "@dolphin278/vjuga/Result";
+ * const Row = S.object({ id: S.construct(S.string(), (s) => (s.trim() ? ok(s.trim()) : err("blank"))) });
+ * SJ.parse(Row)('{"id":" a1 "}'); // [true, { id: "a1" }]
+ * SJ.parse(Row, { allErrors: true })('{"id":" ","x":1}'); // [false, [{ path: "id", cause: "blank", ... }, { path: "x", ... }]]
+ * ```
  */
-export function parse<S extends Schema>(
+export function parse<S extends Schema, O extends ValidateOptions = {}>(
   schema: S,
-): (json: string) => Result<Infer<S>, SchemaError> {
+  options?: O,
+): (json: string) => Result<Infer<S>, ValidateError<O>> {
+  const allErrors = options?.allErrors === true;
   const buf = createBuffer();
   emitStandardRefs(buf, ok, err);
   emitRef(buf, "_jp", jsonParse);
@@ -781,7 +899,8 @@ export function parse<S extends Schema>(
   buf.indent++;
   // jsonParse returns undefined on invalid JSON — no try/catch needed
   emit(buf, "var v = _jp(json);");
-  emit(buf, 'if (v === undefined) return _err(_me("", "valid JSON", json));');
+  const notJson = '_me("", "valid JSON", json)';
+  emit(buf, `if (v === undefined) return _err(${allErrors ? `[${notJson}]` : notJson});`);
   // Cheap pre-check on the raw text. A backslash-u escape can spell the key
   // without the literal token, but only by escaping one of its letters
   // (`_ p r o t`), so only those escapes trigger the walk — an unrelated
@@ -791,10 +910,10 @@ export function parse<S extends Schema>(
     buf,
     'if (json.indexOf("__proto__") !== -1 || (json.indexOf("\\\\u") !== -1 && _pe.test(json))) _strip(v);',
   );
-  emitValidation(buf, schema, "v", '""');
-  emit(buf, "return _ok(v);");
+  // The tree is the call's own: constructor outputs are written in place
+  emitRootValidation(buf, schema, allErrors, "inPlace");
   buf.indent--;
   emit(buf, "}");
 
-  return compileFunction<(json: string) => Result<Infer<S>, SchemaError>>(buf);
+  return compileFunction<(json: string) => Result<Infer<S>, ValidateError<O>>>(buf);
 }

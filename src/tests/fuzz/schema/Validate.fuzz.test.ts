@@ -314,6 +314,12 @@ function refValidate(s: S.Schema, v: unknown): boolean {
       return v !== undefined && !refValidate(s.meta.inner, v);
     case "conditional":
       return refValidate(s.meta.if, v) ? refValidate(s.meta.then, v) : refValidate(s.meta.else, v);
+    case "refine": {
+      // Generated refinements are guards (identity outputs): see Refine.fuzz for constructors
+      if (!refValidate(s.meta.inner, v)) return false;
+      const fn = s.meta.fn as (x: unknown) => unknown;
+      return s.meta.mode === "guard" ? fn(v) === true : (fn(v) as Result<unknown, unknown>)[0];
+    }
   }
 }
 

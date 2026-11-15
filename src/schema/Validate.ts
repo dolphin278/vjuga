@@ -80,6 +80,12 @@ export interface SchemaError {
   readonly path: string;
   readonly expected: string;
   readonly received: unknown;
+  /**
+   * Set only when a `construct()` constructor rejected the value: the error
+   * it returned (e.g. a string literal such as `"bad-url"`). Absent on every
+   * other error, so their shape is unchanged.
+   */
+  readonly cause?: unknown;
 }
 
 /**
@@ -89,6 +95,30 @@ export interface SchemaError {
  */
 export function makeError(path: string, expected: string, received: unknown): SchemaError {
   return { path, expected, received };
+}
+
+/** SchemaError of a rejecting `construct()` constructor (captured lazily as `_mc`). */
+function makeCauseError(
+  path: string,
+  expected: string,
+  received: unknown,
+  cause: unknown,
+): SchemaError {
+  return { path, expected, received, cause };
+}
+
+/** Join a path with a refinement's sub-path (`_pj`); either may be the root `""`. */
+function joinPath(base: string, sub: string): string {
+  if (base === "") return sub;
+  return sub === "" ? base : base + "." + sub;
+}
+
+/**
+ * Store `value` under `key` as an own data property (`_def`): a plain
+ * assignment of a `"__proto__"` key would call the Object.prototype setter.
+ */
+function defineData(o: object, key: string, value: unknown): void {
+  Object.defineProperty(o, key, { value, writable: true, enumerable: true, configurable: true });
 }
 
 // ---------------------------------------------------------------------------
@@ -174,7 +204,30 @@ export function validate<S extends Schema, O extends ValidateOptions = {}>(
 
   emit(buf, "return function validate(v) {");
   buf.indent++;
-  if (options?.allErrors === true) {
+  emitRootValidation(buf, schema, options?.allErrors === true, "copy");
+  buf.indent--;
+  emit(buf, "}");
+
+  return compileFunction<(value: unknown) => Result<Infer<S>, ValidateError<O>>>(buf);
+}
+
+/**
+ * Emit validation of the root value `v` followed by its `return`: first-error
+ * or collect-all (`allErrors`) code. `write` says where a `construct()`
+ * output goes: `"copy"` shallow-copies the containers above a changed value
+ * (the caller's input is never mutated), `"inPlace"` assigns into them (the
+ * caller owns the tree, e.g. one `JSON.parse` just built).
+ *
+ * @internal Exported for the schema code generators only — not part of the public API contract.
+ */
+export function emitRootValidation(
+  buf: CodeBuffer,
+  schema: Schema,
+  allErrors: boolean,
+  write: WriteMode,
+): void {
+  (buf as CollectBuffer).write = write;
+  if (allErrors) {
     // Collect mode: failures push onto a lazily allocated array and skip the
     // rest of the failing value's checks (see CollectState).
     (buf as CollectBuffer).collect = { label: "", nest: true };
@@ -185,10 +238,6 @@ export function validate<S extends Schema, O extends ValidateOptions = {}>(
     emitValidation(buf, schema, "v", '""');
     emit(buf, "return _ok(v);");
   }
-  buf.indent--;
-  emit(buf, "}");
-
-  return compileFunction<(value: unknown) => Result<Infer<S>, ValidateError<O>>>(buf);
 }
 
 /** Options for `validate`. */
@@ -234,10 +283,21 @@ interface CollectState {
   nest: boolean;
 }
 
-type CollectBuffer = CodeBuffer & { collect?: CollectState };
+/**
+ * Where a refinement's output is stored (`emitRootValidation`; boolean
+ * sub-validators use `"copy"` so a trial sees what the real run sees).
+ * Absent on TOON's leaf-constraint buffers, which hold no containers.
+ */
+type WriteMode = "copy" | "inPlace";
+
+type CollectBuffer = CodeBuffer & { collect?: CollectState; write?: WriteMode };
 
 function collectOf(buf: CodeBuffer): CollectState | undefined {
   return (buf as CollectBuffer).collect;
+}
+
+function writeOf(buf: CodeBuffer): WriteMode | undefined {
+  return (buf as CollectBuffer).write;
 }
 
 /**
@@ -251,7 +311,11 @@ function failStmt(
   received: string,
   soft = false,
 ): string {
-  const e = `_me(${pathExpr}, ${label}, ${received})`;
+  return failWith(buf, `_me(${pathExpr}, ${label}, ${received})`, soft);
+}
+
+/** `failStmt` for a ready SchemaError expression `e`. */
+function failWith(buf: CodeBuffer, e: string, soft = false): string {
   const c = collectOf(buf);
   if (c === undefined) return `return _err(${e});`;
   // Soft (collect + nest): record and keep checking the same value
@@ -296,7 +360,7 @@ function emitSingle(buf: CodeBuffer, schema: Schema, accessor: string, pathExpr:
 /**
  * Emit a validation check for any schema kind into the code buffer.
  *
- * Handles all 18 schema kinds with recursive descent into objects, arrays,
+ * Handles all 19 schema kinds with recursive descent into objects, arrays,
  * tuples, records, unions and the combinator kinds. Used by both `validate()` and `JSON.parse()`.
  * The buffer must have `emitStandardRefs` registered.
  *
@@ -410,6 +474,9 @@ export function emitValidation(
       );
       break;
     }
+    case "refine":
+      emitRefine(buf, schema, accessor, pathExpr);
+      break;
     case "conditional":
       if (schema.meta.then === schema.meta.else) {
         // Same branch either way (a shared `$ref`): `if` is irrelevant, and
@@ -460,6 +527,198 @@ function emitSoftFail(
   received: string,
 ): void {
   emit(buf, `if (${cond}) ${failStmt(buf, pathExpr, jsLiteral(label), received, true)}`);
+}
+
+// ---------------------------------------------------------------------------
+// Refinements: user guards and constructors
+// ---------------------------------------------------------------------------
+
+type RefineNode = Schema & { readonly kind: "refine" };
+
+/**
+ * `refine` / `construct`: `inner`'s checks, then the user function. In
+ * collect mode the function runs only when `inner` recorded no error for this
+ * value — it may assume a valid base value — tracked by the error count, so
+ * success still allocates nothing.
+ */
+function emitRefine(buf: CodeBuffer, schema: RefineNode, accessor: string, pathExpr: string): void {
+  const c = collectOf(buf);
+  if (c === undefined) {
+    emitValidation(buf, schema.meta.inner, accessor, pathExpr);
+    emitRefineCheck(buf, schema, accessor, pathExpr);
+    return;
+  }
+  const mark = freshVar(buf);
+  emit(buf, `var ${mark} = _es === null ? 0 : _es.length;`);
+  emitValidation(buf, schema.meta.inner, accessor, pathExpr);
+  emit(buf, `if ((_es === null ? 0 : _es.length) === ${mark}) {`);
+  buf.indent++;
+  emitRefineCheck(buf, schema, accessor, pathExpr);
+  buf.indent--;
+  emit(buf, "}");
+}
+
+/**
+ * Emit the user function of a refinement node for a value that already
+ * passed `inner` (its checks are not emitted here). The function is captured
+ * once per node as its own ref, so each call site stays monomorphic; a
+ * constructor's output is assigned back to `accessor` (a variable).
+ *
+ * @internal Exported for the schema code generators only — not part of the public API contract.
+ */
+export function emitRefineCheck(
+  buf: CodeBuffer,
+  schema: RefineNode,
+  accessor: string,
+  pathExpr: string,
+): void {
+  const meta = schema.meta;
+  const fn = emitRef(buf, freshVar(buf), meta.fn);
+  const label = jsLiteral(meta.name);
+  if (meta.mode === "guard") {
+    const at = meta.at;
+    const path = typeof at === "string" && at !== "" ? childPath(pathExpr, at) : pathExpr;
+    emit(buf, `if (!${fn}(${accessor})) ${failStmt(buf, path, label, accessor, true)}`);
+    return;
+  }
+  // Boolean sub-validators discard errors: neither build one nor call `at`
+  const discard = booleanBuffers.has(buf);
+  const r = freshVar(buf);
+  emit(buf, `var ${r} = ${fn}(${accessor});`);
+  let path = pathExpr;
+  if (typeof meta.at === "function" && !discard) {
+    emitRef(buf, "_pj", joinPath);
+    path = `_pj(${pathExpr}, ${emitRef(buf, freshVar(buf), meta.at)}(${r}[1]))`;
+  }
+  emitRef(buf, "_mc", discard ? noError : makeCauseError);
+  emit(buf, `if (!${r}[0]) ${failWith(buf, `_mc(${path}, ${label}, ${accessor}, ${r}[1])`)}`);
+  emit(buf, `${accessor} = ${r}[1];`);
+}
+
+/** Schemas known to contain (or not) a constructor whose output is used. */
+const transforms = new WeakMap<Schema, boolean>();
+
+/**
+ * True if validating `schema` may replace the value or a part of it: it holds
+ * a `construct()` node somewhere its output is kept (not under `not()` or a
+ * conditional's `if`, which only decide). Containers without one emit exactly
+ * the code they did before refinements existed.
+ *
+ * @internal Exported for the schema code generators only — not part of the public API contract.
+ */
+export function hasTransform(schema: Schema): boolean {
+  const known = transforms.get(schema);
+  if (known !== undefined) return known;
+  let t = false;
+  switch (schema.kind) {
+    case "refine":
+      t = schema.meta.mode === "construct" || hasTransform(schema.meta.inner);
+      break;
+    case "object": {
+      const properties = schema.meta.properties as Readonly<Record<string, Schema>>;
+      for (const key of Object.keys(properties)) if (hasTransform(properties[key])) t = true;
+      break;
+    }
+    case "array":
+      t = hasTransform(schema.meta.items);
+      break;
+    case "tuple":
+      t = (schema.meta.items as readonly Schema[]).some(hasTransform);
+      break;
+    case "record":
+      t = hasTransform(schema.meta.values);
+      break;
+    case "union":
+    case "allOf":
+      t = (schema.meta.variants as readonly Schema[]).some(hasTransform);
+      break;
+    case "optional":
+    case "nullable":
+      t = hasTransform(schema.meta.inner);
+      break;
+    case "conditional":
+      t = hasTransform(schema.meta.then) || hasTransform(schema.meta.else);
+      break;
+    default:
+      // leaves, unknown, not: nothing is replaced
+      break;
+  }
+  transforms.set(schema, t);
+  return t;
+}
+
+/**
+ * Write-back target of one container value (object, array, tuple, record) in
+ * write mode. `out` (copy mode) starts as the input and is replaced by a
+ * shallow copy at the first changed child, so an unchanged container is never
+ * copied; in-place mode (`out` null) assigns into `acc`.
+ */
+interface Sink {
+  readonly acc: string;
+  readonly out: string | null;
+  readonly array: boolean;
+}
+
+/** Open a sink for a container whose children may transform; null when nothing is written. */
+function openSink(
+  buf: CodeBuffer,
+  transforms: boolean,
+  accessor: string,
+  array: boolean,
+): Sink | null {
+  const write = writeOf(buf);
+  if (write === undefined || !transforms) return null;
+  if (write === "inPlace") return { acc: accessor, out: null, array };
+  const out = freshVar(buf);
+  emit(buf, `var ${out} = ${accessor};`);
+  return { acc: accessor, out, array };
+}
+
+/** Publish the container's output: in copy mode the accessor becomes the copy. */
+function closeSink(buf: CodeBuffer, sink: Sink | null): void {
+  if (sink !== null && sink.out !== null) emit(buf, `${sink.acc} = ${sink.out};`);
+}
+
+/** `var <orig> = local;` when `child` may change `local`; else null. */
+function trackChild(
+  buf: CodeBuffer,
+  sink: Sink | null,
+  child: Schema,
+  local: string,
+): string | null {
+  if (sink === null || !hasTransform(child)) return null;
+  const orig = freshVar(buf);
+  emit(buf, `var ${orig} = ${local};`);
+  return orig;
+}
+
+/**
+ * Store a child's new value when it is not `===` its input. `key` is a JS
+ * expression; `protoSafe` false when it may evaluate to `"__proto__"`.
+ */
+function emitStore(
+  buf: CodeBuffer,
+  sink: Sink,
+  local: string,
+  orig: string,
+  key: string,
+  protoSafe: boolean,
+): void {
+  if (!protoSafe) emitRef(buf, "_def", defineData);
+  const store = (target: string): string =>
+    protoSafe
+      ? `${target}[${key}] = ${local};`
+      : `if (${key} === "__proto__") _def(${target}, ${key}, ${local}); else ${target}[${key}] = ${local};`;
+  if (sink.out === null) {
+    emit(buf, `if (${local} !== ${orig}) { ${store(sink.acc)} }`);
+    return;
+  }
+  // Spread defines own data properties (an own "__proto__" key stays data)
+  const copy = sink.array ? `${sink.acc}.slice()` : `{ ...${sink.acc} }`;
+  emit(
+    buf,
+    `if (${local} !== ${orig}) { if (${sink.out} === ${sink.acc}) ${sink.out} = ${copy}; ${store(sink.out)} }`,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -781,6 +1040,11 @@ function checkConstants(schema: Schema): void {
       checkConstants(schema.meta.then);
       checkConstants(schema.meta.else);
       break;
+    case "refine":
+      jsLiteral(schema.meta.name);
+      if (typeof schema.meta.at === "string") jsLiteral(schema.meta.at);
+      checkConstants(schema.meta.inner);
+      break;
     default:
       unreachable(schema);
   }
@@ -793,6 +1057,9 @@ function acceptsUndefined(schema: Schema): boolean {
     case "optional":
       return true;
     case "nullable":
+    case "refine":
+      // refine: its function may still reject undefined — over-approximating
+      // only costs the extra-key fast path
       return acceptsUndefined(schema.meta.inner);
     case "literal":
       return schema.meta.value === undefined;
@@ -828,6 +1095,7 @@ function emitProperties(
   accessor: string,
   pathExpr: string,
   plainFlag: string | null,
+  sink: Sink | null,
 ): string {
   let fixed = skip === null ? 0 : 1;
   let present = "";
@@ -836,7 +1104,9 @@ function emitProperties(
     if (key === skip) continue;
     const child = properties[key];
     const local = emitOwnRead(buf, accessor, key, plainFlag);
+    const orig = trackChild(buf, sink, child, local);
     emitChild(buf, child, local, childPath(pathExpr, key));
+    if (orig !== null) emitStore(buf, sink!, local, orig, jsLiteral(key), key !== "__proto__");
     // Collect mode keeps going past a missing required key, so a static count
     // could hide an extra key; count every key by presence there instead.
     const c = collectOf(buf);
@@ -908,10 +1178,12 @@ function emitObjectValidation(
   const properties = schema.meta.properties as Readonly<Record<string, Schema>>;
   const keys = Object.keys(properties);
   const plainFlag = emitPlainFlag(buf, accessor, keys);
-  const present = emitProperties(buf, properties, keys, null, accessor, pathExpr, plainFlag);
+  const sink = openSink(buf, hasTransform(schema), accessor, false);
+  const present = emitProperties(buf, properties, keys, null, accessor, pathExpr, plainFlag, sink);
   if (!schema.meta.additionalProperties) {
     emitExtraKeyCheck(buf, keys, present, accessor, pathExpr);
   }
+  closeSink(buf, sink);
 }
 
 function emitArrayValidation(
@@ -930,15 +1202,19 @@ function emitArrayValidation(
     const n = jsLiteral(maxItems);
     emitSoftFail(buf, `${accessor}.length > ${n}`, pathExpr, `array(maxItems=${n})`, accessor);
   }
+  const sink = openSink(buf, hasTransform(schema), accessor, true);
   const idx = freshVar(buf);
   const len = freshVar(buf);
   emit(buf, `for (var ${idx} = 0, ${len} = ${accessor}.length; ${idx} < ${len}; ${idx}++) {`);
   buf.indent++;
   const elem = freshVar(buf);
   emit(buf, `var ${elem} = ${accessor}[${idx}];`);
+  const orig = trackChild(buf, sink, schema.meta.items, elem);
   emitChild(buf, schema.meta.items, elem, dynamicChildPath(pathExpr, idx));
+  if (orig !== null) emitStore(buf, sink!, elem, orig, idx, true);
   buf.indent--;
   emit(buf, "}");
+  closeSink(buf, sink);
 }
 
 function emitTupleValidation(
@@ -955,11 +1231,15 @@ function emitTupleValidation(
     `tuple[${items.length}]`,
     accessor,
   );
+  const sink = openSink(buf, hasTransform(schema), accessor, true);
   for (let i = 0; i < items.length; i++) {
     const elem = freshVar(buf);
     emit(buf, `var ${elem} = ${accessor}[${i}];`);
+    const orig = trackChild(buf, sink, items[i], elem);
     emitChild(buf, items[i], elem, childPath(pathExpr, String(i)));
+    if (orig !== null) emitStore(buf, sink!, elem, orig, String(i), true);
   }
+  closeSink(buf, sink);
 }
 
 function emitRecordValidation(
@@ -969,6 +1249,7 @@ function emitRecordValidation(
   pathExpr: string,
 ): void {
   emitObjectTypeCheck(buf, accessor, pathExpr);
+  const sink = openSink(buf, hasTransform(schema), accessor, false);
   const key = freshVar(buf);
   emit(buf, `for (var ${key} in ${accessor}) {`);
   buf.indent++;
@@ -976,9 +1257,12 @@ function emitRecordValidation(
   emit(buf, `if (!_hasOwn(${accessor}, ${key})) continue;`);
   const elem = freshVar(buf);
   emit(buf, `var ${elem} = ${accessor}[${key}];`);
+  const orig = trackChild(buf, sink, schema.meta.values, elem);
   emitChild(buf, schema.meta.values, elem, dynamicChildPath(pathExpr, key));
+  if (orig !== null) emitStore(buf, sink!, elem, orig, key, false);
   buf.indent--;
   emit(buf, "}");
+  closeSink(buf, sink);
 }
 
 /**
@@ -1010,16 +1294,23 @@ function emitUnionValidation(
   }
 
   const label = "u" + buf.varCounter++;
+  const write = writeOf(buf) !== undefined;
   emit(buf, `${label}: {`);
   buf.indent++;
   const last = variants.length - 1;
   for (let i = 0; i < last; i++) {
-    const check = exactCheck(variants[i], accessor);
-    if (check !== null) {
-      emit(buf, `if (${check}) break ${label};`);
+    const check = booleanCheck(buf, variants[i], accessor);
+    if (write && hasTransform(variants[i])) {
+      // The trial ran check-only: re-run the matched variant inline to keep
+      // its constructor outputs (it cannot fail now for pure constructors)
+      emit(buf, `if (${check}) {`);
+      buf.indent++;
+      emitSingle(buf, variants[i], accessor, pathExpr);
+      emit(buf, `break ${label};`);
+      buf.indent--;
+      emit(buf, "}");
     } else {
-      const ref = emitRef(buf, freshVar(buf), compileBooleanValidator(variants[i]));
-      emit(buf, `if (${ref}(${accessor})) break ${label};`);
+      emit(buf, `if (${check}) break ${label};`);
     }
   }
   if (last >= 0) {
@@ -1049,8 +1340,13 @@ function emitExclusiveValidation(
   }
   const count = freshVar(buf);
   emit(buf, `var ${count} = 0;`);
+  // Write mode with a transforming variant: remember the match to re-run it
+  const winner = writeOf(buf) !== undefined && variants.some(hasTransform) ? freshVar(buf) : null;
+  if (winner !== null) emit(buf, `var ${winner} = -1;`);
   for (let i = 0; i < variants.length; i++) {
-    emit(buf, `if (${booleanCheck(buf, variants[i], accessor)}) ${count}++;`);
+    const check = booleanCheck(buf, variants[i], accessor);
+    if (winner === null) emit(buf, `if (${check}) ${count}++;`);
+    else emit(buf, `if (${check}) { ${winner} = ${i}; ${count}++; }`);
   }
   if (booleanBuffers.has(buf)) {
     // Boolean sub-validator: the error is discarded, so re-running the last
@@ -1065,6 +1361,21 @@ function emitExclusiveValidation(
   emit(buf, `}`);
   const label = `"oneOf(exactly one, matched " + ${count} + ")"`;
   emit(buf, `if (${count} > 1) ${failStmt(buf, pathExpr, label, accessor)}`);
+  if (winner === null) return;
+  // Exactly one matched (any other count already failed): produce its output
+  emit(buf, `switch (${winner}) {`);
+  buf.indent++;
+  for (let i = 0; i < variants.length; i++) {
+    if (!hasTransform(variants[i])) continue;
+    emit(buf, `case ${i}: {`);
+    buf.indent++;
+    emitSingle(buf, variants[i], accessor, pathExpr);
+    emit(buf, "break;");
+    buf.indent--;
+    emit(buf, "}");
+  }
+  buf.indent--;
+  emit(buf, "}");
 }
 
 /**
@@ -1072,7 +1383,7 @@ function emitExclusiveValidation(
  * when one exists, otherwise a call to a compiled boolean sub-validator.
  */
 function booleanCheck(buf: CodeBuffer, schema: Schema, accessor: string): string {
-  const check = exactCheck(schema, accessor);
+  const check = exactCheck(buf, schema, accessor);
   if (check !== null) return check;
   return `${emitRef(buf, freshVar(buf), compileBooleanValidator(schema))}(${accessor})`;
 }
@@ -1102,6 +1413,9 @@ function compileBooleanValidator(schema: Schema): (v: unknown) => boolean {
   if (cached !== undefined) return cached;
   const buf = createBuffer();
   booleanBuffers.add(buf);
+  // Copy mode: a refinement inside a trial sees the same (transformed) value
+  // it sees in the real run, and the input is never mutated
+  (buf as CollectBuffer).write = "copy";
   emitStandardRefs(buf, returnTrue, returnFalse);
   emitRef(buf, "_me", noError);
   emit(buf, "return function variant(v) {");
@@ -1135,6 +1449,8 @@ function emitDiscriminatedValidation(
   // it with its own keys, so only the matched variant's keys are checked
   const tagFlag = emitPlainFlag(buf, accessor, [discriminant]);
   const tag = emitOwnRead(buf, accessor, discriminant, tagFlag);
+  // The tag is a literal (never changed): only the matched case's keys write
+  const sink = openSink(buf, variants.some(hasTransform), accessor, false);
   emit(buf, `switch (${tag}) {`);
   buf.indent++;
   const tagLabels: string[] = [];
@@ -1164,6 +1480,7 @@ function emitDiscriminatedValidation(
       accessor,
       pathExpr,
       plainFlag,
+      sink,
     );
     if (!obj.meta.additionalProperties) {
       emitExtraKeyCheck(buf, keys, present, accessor, pathExpr);
@@ -1177,6 +1494,7 @@ function emitDiscriminatedValidation(
   emit(buf, `default: ${failStmt(buf, discPathExpr, discLabelRef, tag)}`);
   buf.indent--;
   emit(buf, "}");
+  closeSink(buf, sink);
 }
 
 /**
@@ -1185,7 +1503,7 @@ function emitDiscriminatedValidation(
  * regex-checked strings, objects, arrays, ...). Only exact checks are safe for
  * union dispatch: a looser check would accept values the variant rejects.
  */
-function exactCheck(schema: Schema, accessor: string): string | null {
+function exactCheck(buf: CodeBuffer, schema: Schema, accessor: string): string | null {
   switch (schema.kind) {
     case "string": {
       const meta = schema.meta as StringMeta;
@@ -1218,7 +1536,7 @@ function exactCheck(schema: Schema, accessor: string): string | null {
     }
     case "optional":
     case "nullable": {
-      const inner = exactCheck(schema.meta.inner, accessor);
+      const inner = exactCheck(buf, schema.meta.inner, accessor);
       if (inner === null) return null;
       return `(${accessor} === ${schema.kind === "optional" ? "undefined" : "null"} || ${inner})`;
     }
@@ -1226,7 +1544,7 @@ function exactCheck(schema: Schema, accessor: string): string | null {
       const variants = schema.meta.variants as readonly Schema[];
       // A repeated variant changes a `oneOf` count, but never an `anyOf` result
       const exclusive = schema.meta.exclusive === true;
-      const checks = exactChecks(exclusive ? variants : distinctVariants(variants), accessor);
+      const checks = exactChecks(buf, exclusive ? variants : distinctVariants(variants), accessor);
       if (checks === null) return null;
       if (checks.length === 0) return "false";
       if (exclusive) {
@@ -1236,6 +1554,7 @@ function exactCheck(schema: Schema, accessor: string): string | null {
     }
     case "allOf": {
       const checks = exactChecks(
+        buf,
         distinctVariants(schema.meta.variants as readonly Schema[]),
         accessor,
       );
@@ -1245,19 +1564,28 @@ function exactCheck(schema: Schema, accessor: string): string | null {
     case "unknown":
       return `(${accessor} !== undefined)`;
     case "not": {
-      const inner = exactCheck(schema.meta.inner, accessor);
+      const inner = exactCheck(buf, schema.meta.inner, accessor);
       return inner === null ? null : `(${accessor} !== undefined && !${inner})`;
     }
     case "conditional": {
       if (schema.meta.then === schema.meta.else) {
         checkConstants(schema.meta.if);
-        return exactCheck(schema.meta.then, accessor);
+        return exactCheck(buf, schema.meta.then, accessor);
       }
       const checks = exactChecks(
+        buf,
         [schema.meta.if, schema.meta.then, schema.meta.else] as readonly Schema[],
         accessor,
       );
       return checks === null ? null : `(${checks[0]} ? ${checks[1]} : ${checks[2]})`;
+    }
+    case "refine": {
+      // A guard is exact on top of an exact inner check; a constructor's
+      // output must be kept, which an expression cannot do
+      if (schema.meta.mode !== "guard") return null;
+      const inner = exactCheck(buf, schema.meta.inner, accessor);
+      if (inner === null) return null;
+      return `(${inner} && ${emitRef(buf, freshVar(buf), schema.meta.fn)}(${accessor}))`;
     }
     default:
       return null;
@@ -1265,10 +1593,14 @@ function exactCheck(schema: Schema, accessor: string): string | null {
 }
 
 /** `exactCheck` of every schema, or null if any of them has none. */
-function exactChecks(schemas: readonly Schema[], accessor: string): string[] | null {
+function exactChecks(
+  buf: CodeBuffer,
+  schemas: readonly Schema[],
+  accessor: string,
+): string[] | null {
   const checks: string[] = [];
   for (let i = 0; i < schemas.length; i++) {
-    const c = exactCheck(schemas[i], accessor);
+    const c = exactCheck(buf, schemas[i], accessor);
     if (c === null) return null;
     checks.push(c);
   }

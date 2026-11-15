@@ -3,6 +3,7 @@ import * as assert from "node:assert/strict";
 import * as S from "../../schema/Schema.js";
 import { validate, type SchemaError } from "../../schema/Validate.js";
 import * as SJ from "../../schema/JSON.js";
+import * as ST from "../../schema/TOON.js";
 import { ok, err, type Result } from "../../Result.js";
 import type { Branded } from "../../FunctionUtils.js";
 import { assertOk, assertErr } from "./_helpers.js";
@@ -433,6 +434,9 @@ test("a malformed name throws TypeError at compile time, even in a skipped `if`"
   assert.equal(assertErr(validate(badAt)("A")).path, "");
   const x = S.string();
   assert.throws(() => validate(S.conditional(bad, x, x)), TypeError);
+  // well-formed refinements in a skipped `if` compile (with and without `at`)
+  assertOk(validate(S.conditional(S.refine(S.string(), isSlug, { at: "k" }), x, x))("A"));
+  assertOk(validate(S.conditional(S.refine(S.string(), isSlug), x, x))("A"));
 });
 
 test("propertyMayBeAbsent / isPrimitive see through refinements", () => {
@@ -496,4 +500,294 @@ test('toJsonSchema: { refinements: "base" } emits the base with a $comment', () 
   assert.equal(back[0], true);
   const check = validate(back[1] as S.StringSchema) as (x: unknown) => Result<unknown, unknown>;
   assert.equal(check({ a: "x", b: "y", c: 1 })[0], true);
+});
+
+// ---------------------------------------------------------------------------
+// schema/JSON: parse (one pass, in place) and stringify
+// ---------------------------------------------------------------------------
+
+test("JSON.parse: serialized text to branded / constructed values in one pass", () => {
+  const Row = S.object({
+    slug: S.refine(S.string(), isSlug),
+    tags: S.array(S.construct(S.string(), tag)),
+    rec: S.record(S.construct(S.string(), tag)),
+    pair: S.tuple(S.construct(S.string(), tag), S.integer()),
+  });
+  const parse = SJ.parse(Row);
+  assert.deepEqual(
+    assertOk(parse('{"slug":"a-b","tags":[" X "],"rec":{"k":" Y "},"pair":[" Z ",1]}')),
+    {
+      slug: "a-b",
+      tags: ["x"],
+      rec: { k: "y" },
+      pair: ["z", 1],
+    },
+  );
+  assert.deepEqual(assertErr(parse('{"slug":"A","tags":[],"rec":{},"pair":["a",1]}')), {
+    path: "slug",
+    expected: "isSlug",
+    received: "A",
+  });
+  assert.equal(
+    assertErr(parse('{"slug":"a","tags":["  "],"rec":{},"pair":["a",1]}')).cause,
+    "blank",
+  );
+  assert.equal(assertErr(parse("{")).expected, "valid JSON");
+});
+
+test("JSON.parse: same verdicts, paths and outputs as validate over JSON.parse", () => {
+  const Schema = S.object({
+    u: S.union(S.construct(S.string(), tag), S.number()),
+    d: S.union(
+      S.object({ kind: S.literal("a"), t: S.construct(S.string(), tag) }),
+      S.object({ kind: S.literal("b") }),
+    ),
+    p: S.optional(S.construct(S.string(), tag)),
+  });
+  const texts = [
+    '{"u":" A ","d":{"kind":"a","t":" T "}}',
+    '{"u":3,"d":{"kind":"b"},"p":" P "}',
+    '{"u":"  ","d":{"kind":"b"}}',
+    '{"u":"a","d":{"kind":"a","t":"  "}}',
+    '{"u":"a","d":{"kind":"c"}}',
+  ];
+  const parse = SJ.parse(Schema);
+  const check = validate(Schema);
+  for (const text of texts) assert.deepEqual(parse(text), check(JSON.parse(text)));
+});
+
+test("JSON.parse: a __proto__ key is stripped before refinements run", () => {
+  const parse = SJ.parse(
+    S.object({ a: S.construct(S.string(), tag) }, { additionalProperties: true }),
+  );
+  const out = assertOk(parse('{"a":" A ","__proto__":{"polluted":1}}'));
+  assert.deepEqual(out, { a: "a" });
+  assert.equal(Object.getPrototypeOf(out), Object.prototype);
+});
+
+test("JSON.parse: allErrors collects every failure, including invalid JSON", () => {
+  const parse = SJ.parse(
+    S.object({ a: S.construct(S.string(), tag), b: S.refine(S.integer(), isPositive) }),
+    { allErrors: true },
+  );
+  const r = parse('{"a":" ","b":0,"c":1}');
+  assert.equal(r[0], false);
+  assert.deepEqual(
+    (r[1] as SchemaError[]).map((e) => e.path),
+    ["a", "b", "c"],
+  );
+  assert.deepEqual(parse("nope"), [
+    false,
+    [{ path: "", expected: "valid JSON", received: "nope" }],
+  ]);
+  assert.deepEqual(parse('{"a":" A ","b":1}'), [true, { a: "a", b: 1 }]);
+});
+
+test("JSON.stringify: refinements serialize as their base; encode maps custom types back", () => {
+  const Row = S.object({
+    slug: S.refine(S.string(), isSlug),
+    tag: S.construct(S.string(), tag),
+    at: S.construct(S.string(), toDate, { encode: (d) => d.toISOString() }),
+    maybe: S.optional(S.construct(S.string(), toDate, { encode: (d) => d.toISOString() })),
+    any: S.optional(S.refine(S.unknown(), () => true)),
+  });
+  const stringify = SJ.stringify(Row);
+  const value = { slug: "s" as Slug, tag: "t" as Tag, at: new Date(0), any: () => 0 };
+  const text = stringify(value as S.Infer<typeof Row>);
+  assert.equal(text, '{"slug":"s","tag":"t","at":"1970-01-01T00:00:00.000Z"}');
+  // round trip through parse
+  const back = assertOk(SJ.parse(Row)(text));
+  assert.equal(back.at.getTime(), 0);
+});
+
+test("JSON.stringify: unions dispatch through refinements when types are disjoint", () => {
+  const U = S.union(S.construct(S.string(), tag), S.refine(S.number(), isPositive));
+  const s = SJ.stringify(U);
+  assert.equal(s("a" as Tag), '"a"');
+  assert.equal(s(2 as Positive), "2");
+  // overlapping variants with guards are picked by validation
+  const G = S.union(S.refine(S.string(), isSlug), S.string());
+  assert.equal(SJ.stringify(G)("A B"), '"A B"');
+  // a guarded object inside allOf merges statically
+  const M = S.allOf(
+    S.refine(S.object({ a: S.number() }, { additionalProperties: true }), () => true),
+    S.object({ b: S.number() }, { additionalProperties: true }),
+  );
+  assert.equal(SJ.stringify(M)({ a: 1, b: 2 } as S.Infer<typeof M>), '{"a":1,"b":2}');
+  // resolved per value: a guard inside a conditional
+  const C = S.conditional(
+    S.number(),
+    S.refine(S.number(), isPositive),
+    S.refine(S.object({ k: S.string() }), () => true),
+  );
+  assert.equal(SJ.stringify(C)({ k: "v" } as never), '{"k":"v"}');
+});
+
+test("JSON.stringify: constructors where a variant is chosen by validation are refused", () => {
+  // overlapping union variants: picking one would re-run its constructor on the output
+  assert.throws(
+    () => SJ.stringify(S.union(S.construct(S.string(), tag), S.string({ minLength: 1 }))),
+    /overlapping JSON types cannot contain construct/,
+  );
+  // an encoded output may be any JSON type: it always overlaps
+  assert.throws(
+    () =>
+      SJ.stringify(
+        S.union(S.construct(S.string(), toDate, { encode: (d) => d.toISOString() }), S.number()),
+      ),
+    /overlapping/,
+  );
+  // allOf / conditional resolved per value
+  assert.throws(
+    () => SJ.stringify(S.conditional(S.string(), S.construct(S.string(), tag))),
+    /cannot contain construct/,
+  );
+  const enc = S.construct(
+    S.object({ a: S.string() }, { additionalProperties: true }),
+    (o) => ok(o),
+    { encode: (o) => o },
+  );
+  assert.throws(
+    () => SJ.stringify(S.allOf(enc, S.object({ b: S.string() }, { additionalProperties: true }))),
+    /cannot contain construct/,
+  );
+  // every container kind is searched for a constructor
+  for (const inner of [
+    S.array(S.construct(S.string(), tag)),
+    S.tuple(S.construct(S.string(), tag)),
+    S.record(S.construct(S.string(), tag)),
+    S.not(S.construct(S.string(), tag)),
+    S.allOf(S.construct(S.string(), tag)),
+    S.nullable(S.object({ x: S.construct(S.string(), tag) })),
+    S.refine(S.construct(S.string(), tag), () => true),
+    S.conditional(S.construct(S.string(), tag), S.string()),
+  ]) {
+    assert.throws(
+      () => SJ.stringify(S.conditional(S.null_(), S.null_(), inner)),
+      /cannot contain construct/,
+    );
+  }
+});
+
+// ---------------------------------------------------------------------------
+// schema/TOON: layout of the base, refinements applied on parse
+// ---------------------------------------------------------------------------
+
+test("TOON: refinements round-trip in every layout position", () => {
+  const Row = S.object({
+    id: S.construct(S.string(), tag),
+    opt: S.optional(S.construct(S.string(), tag)),
+    tags: S.array(S.construct(S.string(), tag)),
+    pair: S.tuple(S.construct(S.string(), tag), S.refine(S.integer(), isPositive)),
+    rows: S.array(S.object({ a: S.construct(S.string(), tag), b: S.integer() })),
+    list: S.array(
+      S.construct(S.object({ x: S.integer() }), (o) =>
+        o.x > 0 ? ok({ x: o.x * 10 }) : err("neg"),
+      ),
+    ),
+    items: S.array(S.construct(S.string(), tag)),
+    nested: S.construct(S.object({ k: S.string() }), (o) => ok({ k: o.k.toUpperCase() })),
+    rec: S.record(S.construct(S.string(), tag)),
+    recObj: S.record(S.construct(S.object({ v: S.integer() }), (o) => ok({ v: o.v + 1 }))),
+  });
+  const value = {
+    id: "a",
+    opt: "z",
+    tags: ["b", "c"],
+    pair: ["p", 2],
+    rows: [{ a: "q", b: 1 }],
+    list: [{ x: 1 }],
+    items: [],
+    nested: { k: "n" },
+    rec: { k: "v" },
+    recObj: { o: { v: 1 } },
+  } as unknown as S.Infer<typeof Row>;
+  const text = ST.stringify(Row)(value);
+  const upper = text.replace(/\bq\b/, " Q ").replace("tags[2]: b,c", "tags[2]: B, C");
+  for (const opts of [undefined, { flexibleOrder: true }]) {
+    assert.deepEqual(assertOk(ST.parse(Row, opts)(upper)), {
+      id: "a",
+      opt: "z",
+      tags: ["b", "c"],
+      pair: ["p", 2],
+      rows: [{ a: "q", b: 1 }],
+      list: [{ x: 10 }],
+      items: [],
+      nested: { k: "N" },
+      rec: { k: "v" },
+      recObj: { o: { v: 2 } },
+    });
+  }
+  const neg = assertErr(ST.parse(Row)(text.replace("x: 1", "x: -1")));
+  assert.deepEqual([neg.path, neg.cause], ["list.0", "neg"]);
+  assert.equal(assertErr(ST.parse(Row)(text.replace("p,2", "p,0"))).path, "pair.1");
+});
+
+test("TOON: refinements on the root, wrappers and unions of primitives", () => {
+  assert.equal(assertOk(ST.parse(S.construct(S.string(), tag))(" X ")), "x");
+  assert.equal(assertOk(ST.parse(S.nullable(S.construct(S.string(), tag)))("null")), null);
+  assert.equal(assertOk(ST.parse(S.union(S.construct(S.string(), tag), S.null_()))("null")), null);
+  assert.equal(assertOk(ST.parse(S.union(S.construct(S.string(), tag), S.null_()))("Y")), "y");
+  assert.equal(assertOk(ST.parse(S.union(S.construct(S.string(), tag)))("Y")), "y");
+  // a union of primitives whose variant constructs: the union validator's output is kept
+  const U = ST.parse(S.union(S.construct(S.string(), tag), S.integer()));
+  assert.equal(assertOk(U("Ab")), "ab");
+  assert.equal(assertOk(U("3")), 3);
+  assert.equal(assertErr(U('"  "')).expected, "union");
+  const O = ST.parse(S.oneOf(S.construct(S.string(), tag), S.integer()));
+  assert.equal(assertOk(O("Ab")), "ab");
+  // core constraints still run when the chain holds a refinement
+  const C = ST.parse(S.object({ s: S.optional(S.refine(S.string({ minLength: 2 }), isSlug)) }));
+  assert.equal(assertErr(C("s: a")).expected, "string(minLength=2)");
+  assert.equal(assertErr(C("s: AB")).expected, "isSlug");
+  assert.deepEqual(assertOk(C("")), {});
+  // root compound with a nullable refined core
+  const R = ST.parse(
+    S.nullable(S.construct(S.object({ a: S.integer() }), (o) => ok({ a: o.a * 2 }))),
+  );
+  assert.equal(assertOk(R("null")), null);
+  assert.deepEqual(assertOk(R("a: 2")), { a: 4 });
+});
+
+test("TOON: an absent key still reaches a refinement outside its optional", () => {
+  const P = ST.parse(
+    S.object({ n: S.construct(S.optional(S.integer()), (x) => ok(x ?? 0)), m: S.integer() }),
+  );
+  assert.deepEqual(assertOk(P("m: 1")), { n: 0, m: 1 });
+  assert.deepEqual(assertOk(P("n: 5\nm: 1")), { n: 5, m: 1 });
+  const L = ST.parse(
+    S.array(
+      S.object({
+        n: S.construct(S.optional(S.integer()), (x) => ok(x ?? -1)),
+        o: S.optional(S.array(S.integer())),
+      }),
+    ),
+  );
+  assert.deepEqual(assertOk(L("[2]:\n  - n: 4\n    o[0]:\n  - o[1]: 1")), [
+    { n: 4, o: [] },
+    { n: -1, o: [1] },
+  ]);
+});
+
+test("TOON: construct() with encode has no TOON layout", () => {
+  const Dated = S.construct(S.string(), toDate, { encode: (d) => d.toISOString() });
+  for (const s of [
+    Dated,
+    S.object({ d: Dated }),
+    S.array(Dated),
+    S.tuple(Dated),
+    S.record(Dated),
+    S.union(Dated, S.null_()),
+    S.optional(Dated),
+    S.nullable(Dated),
+    S.refine(Dated, () => true),
+  ]) {
+    assert.throws(
+      () => ST.stringify(s as unknown as S.StringSchema),
+      /construct\(\) with encode has no TOON layout/,
+    );
+    assert.throws(() => ST.parse(s as unknown as S.StringSchema), /construct\(\) with encode/);
+  }
+  // refinements without encode are fine anywhere TOON has a layout
+  assert.equal(ST.stringify(S.refine(S.string(), isSlug))("ab" as Slug), "ab");
 });

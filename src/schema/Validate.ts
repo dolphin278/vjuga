@@ -967,27 +967,32 @@ function distinctVariants(variants: readonly Schema[]): readonly Schema[] {
 }
 
 /**
- * allOf variants in emission order. Every variant checks the INPUT value, so
- * at most one may replace it (`hasTransform`); that one runs last and its
- * output is the allOf's. Two would each claim the output (and the second
- * would check the first's output): refused with `TypeError` at compile time.
+ * allOf variants run in declared order, each on the value as the variants
+ * before it left it (a constructor's output is what later variants check).
+ * A field that one object variant constructs may not be declared by another
+ * variant: that one would check the output instead of the input, or (same
+ * constructor) apply it twice. Refused with `TypeError` at compile time.
  */
 function allOfOrder(variants: readonly Schema[]): readonly Schema[] {
-  let t = -1;
   for (let i = 0; i < variants.length; i++) {
-    if (!hasTransform(variants[i])) continue;
-    if (t !== -1) {
-      throw new TypeError(
-        "allOf: at most one variant may contain construct() (its output replaces the value); " +
-          "declare the constructed field in one variant only",
-      );
+    const v = variants[i];
+    if (v.kind !== "object" || !hasTransform(v)) continue;
+    const props = v.meta.properties as Readonly<Record<string, Schema>>;
+    for (const key of Object.keys(props)) {
+      if (!hasTransform(props[key])) continue;
+      for (let j = 0; j < variants.length; j++) {
+        const w = variants[j];
+        if (j !== i && w.kind === "object" && Object.hasOwn(w.meta.properties, key)) {
+          throw new TypeError(
+            "allOf: field " +
+              JSON.stringify(key) +
+              " is constructed by one variant and declared by another; declare it in one variant only",
+          );
+        }
+      }
     }
-    t = i;
   }
-  if (t === -1 || t === variants.length - 1) return variants;
-  const ordered = variants.filter((_, i) => i !== t);
-  ordered.push(variants[t]);
-  return ordered;
+  return variants;
 }
 
 /** Schemas whose compile-time checks (`checkConstants`) already passed. */

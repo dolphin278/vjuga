@@ -180,10 +180,11 @@ export type RefineSchema<I extends Schema, T, W = unknown> = SchemaBase<"refine"
 };
 
 /**
- * The type `schema/JSON.stringify` (and TOON) accept for a schema's value:
- * `Infer<S>` for a plain schema; through refinements without `encode`, the
- * wire type of their base (a brand chained on a brand is still a string); a
- * `construct()` with `encode` accepts its own output (`encode` maps it back).
+ * The type a `construct()` output must be assignable to for its base to
+ * serialize it without `encode`: `Infer<S>` for a plain schema; through
+ * refinements without `encode`, the wire type of their base (a brand chained
+ * on a brand still serializes as a string); for a `construct()` with
+ * `encode`, its own output type (`encode` maps it back).
  */
 export type Wire<S extends Schema> =
   S extends RefineSchema<Schema, unknown, infer W> ? W : Infer<S>;
@@ -642,9 +643,11 @@ export function refine<I extends Schema, G extends (value: Input<I>) => boolean>
  * `===` the input, so identity constructors allocate nothing); `JSON.parse`
  * writes into the tree it just parsed. Each constructor runs once per value,
  * also inside unions (their trials keep the output). Under `not()` and a
- * `conditional`'s `if` it only decides (its output is unused). Every `allOf`
- * variant checks the input, and at most one may contain a constructor (its
- * output is the result; two throw `TypeError` at compile time). `make` must
+ * `conditional`'s `if` it only decides (its output is unused). `allOf`
+ * variants run in order, each on the value as the earlier ones left it (so a
+ * guard after a constructor checks the output; `refine(construct(..), guard)`
+ * always does); a field one variant constructs may not be declared by
+ * another (`TypeError` at compile time). `make` must
  * be pure and must not throw (an exception propagates out of the validator).
  *
  * `JSON.stringify` serializes the output as `inner` unless `options.encode`

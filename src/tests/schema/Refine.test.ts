@@ -339,26 +339,53 @@ test("construct: oneOf produces the single winner's output, else reports", () =>
   assert.match(assertErr(two("a")).expected, /matched 2/);
 });
 
-test("construct: allOf checks the input with every variant; one variant may construct", () => {
-  const v = validate(
-    S.allOf(
-      S.construct(S.string(), tag),
-      S.refine(S.string(), (s) => s.trim() !== "", { name: "not blank" }),
-    ),
-  );
-  // the guard saw the input " ABC " (not the output); the output is the constructor's
-  assert.equal(assertOk(v(" ABC ")), "abc");
-  assert.equal(assertErr(v("   ")).expected, "not blank");
-  // two variants that construct would both claim the output: refused at compile time
-  const Base = S.object({ at: S.construct(S.string(), tag) }, { additionalProperties: true });
+test("construct: allOf variants run in order on the value as earlier ones left it", () => {
+  // a guard / constraint after the constructor checks its output
+  const after = validate(S.allOf(S.construct(S.string(), tag), S.string({ minLength: 2 })));
+  assert.equal(assertOk(after(" ABC ")), "abc");
+  assert.equal(assertErr(after(" a ")).expected, "string(minLength=2)");
+  // before it, the input
+  const before = validate(S.allOf(S.string({ minLength: 2 }), S.construct(S.string(), tag)));
+  assert.equal(assertOk(before(" a ")), "a");
+  // disjoint constructed fields in different variants
+  const Base = S.object({ id: S.construct(S.string(), tag) }, { additionalProperties: true });
   const Ext = S.object(
-    { at: S.construct(S.string(), tag), n: S.integer() },
+    { at: S.construct(S.string(), toDate, { encode: (d) => d.toISOString() }) },
     { additionalProperties: true },
   );
-  assert.throws(() => validate(S.allOf(Base, Ext)), /at most one variant may contain construct/);
-  assert.throws(() => SJ.parse(S.allOf(Base, Ext)), /at most one variant/);
-  // repeating the same variant is one variant
-  assert.equal(assertOk(validate(S.allOf(Base, Base))({ at: " X " })).at, "x");
+  const row = { id: " A ", at: "2024-01-01T00:00:00Z" };
+  for (const out of [
+    assertOk(validate(S.allOf(Base, Ext))(row)),
+    assertOk(SJ.parse(S.allOf(Base, Ext))(JSON.stringify(row))),
+  ]) {
+    assert.equal(out.id, "a");
+    assert.ok(out.at instanceof Date);
+  }
+  // a field one variant constructs may not be declared by another
+  const Twice = S.object(
+    { id: S.construct(S.string(), tag), n: S.integer() },
+    { additionalProperties: true },
+  );
+  const Plain = S.object({ id: S.string() }, { additionalProperties: true });
+  assert.throws(() => validate(S.allOf(Base, Twice)), /field "id" is constructed by one variant/);
+  assert.throws(() => SJ.parse(S.allOf(Plain, Base)), /field "id"/);
+  // repeating the same variant is one variant; non-object siblings never conflict
+  assert.equal(assertOk(validate(S.allOf(Base, Base))({ id: " X " })).id, "x");
+  assert.equal(assertOk(validate(S.allOf(Base, S.unknown()))({ id: " X " })).id, "x");
+  const Mixed = S.object(
+    { n: S.integer(), id: S.construct(S.string(), tag) },
+    { additionalProperties: true },
+  );
+  assert.deepEqual(
+    assertOk(
+      validate(S.allOf(Mixed, S.object({ m: S.integer() }, { additionalProperties: true })))({
+        n: 1,
+        m: 2,
+        id: " Y ",
+      }),
+    ),
+    { n: 1, m: 2, id: "y" },
+  );
 });
 
 test("construct: conditional branches transform; not() and if only decide", () => {

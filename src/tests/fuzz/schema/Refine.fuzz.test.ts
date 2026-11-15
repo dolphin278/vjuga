@@ -275,15 +275,15 @@ function ref(s: S.Schema, v: unknown): Run {
     case "unknown":
       return v !== undefined ? [true, v] : FAIL;
     case "allOf": {
-      // Every variant checks the input (a repeat by identity once); the one
-      // variant that may construct gives the output
-      let out = v;
+      // In order, each variant on the value as the earlier ones left it (a
+      // variant repeated by identity runs once)
+      let cur = v;
       for (const variant of new Set(s.meta.variants as S.Schema[])) {
-        const r = ref(variant, v);
+        const r = ref(variant, cur);
         if (!r[0]) return FAIL;
-        if (constructs(variant)) out = r[1];
+        cur = r[1];
       }
-      return [true, out];
+      return [true, cur];
     }
     case "not":
       return v !== undefined && !ref(s.meta.inner, v)[0] ? [true, v] : FAIL;
@@ -303,38 +303,15 @@ function ref(s: S.Schema, v: unknown): Run {
   }
 }
 
-/** Whether a constructor's output is kept somewhere in `s` (mirrors `hasTransform`). */
-function constructs(s: S.Schema): boolean {
-  switch (s.kind) {
-    case "refine":
-      return s.meta.mode === "construct" || constructs(s.meta.inner);
-    case "object":
-      return Object.values(s.meta.properties as Record<string, S.Schema>).some(constructs);
-    case "array":
-      return constructs(s.meta.items);
-    case "tuple":
-      return (s.meta.items as S.Schema[]).some(constructs);
-    case "record":
-      return constructs(s.meta.values);
-    case "union":
-    case "allOf":
-      return (s.meta.variants as S.Schema[]).some(constructs);
-    case "optional":
-    case "nullable":
-      return constructs(s.meta.inner);
-    case "conditional":
-      return constructs(s.meta.then) || constructs(s.meta.else);
-    default:
-      return false;
-  }
-}
-
-/** Compile, or null for an allOf with two constructing variants (refused by design). */
+/** Compile, or null for an allOf whose variants share a constructed field (refused by design). */
 function compile<F>(make: () => F): F | null {
   try {
     return make();
   } catch (e) {
-    if (e instanceof TypeError && /at most one variant may contain construct/.test(e.message)) {
+    if (
+      e instanceof TypeError &&
+      /is constructed by one variant and declared by another/.test(e.message)
+    ) {
       return null;
     }
     throw e;

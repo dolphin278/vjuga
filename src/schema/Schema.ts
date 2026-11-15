@@ -514,6 +514,13 @@ export function conditional<
 // oxlint-disable-next-line no-explicit-any -- matches a predicate of any parameter type
 export type Guarded<G, B> = G extends ((value: any) => value is infer T) ? T : B;
 
+/**
+ * The value type a refinement receives: `Infer<I>`, or `unknown` when `I` is
+ * the wide `Schema` type (a schema built at run time), whose `Infer` is too
+ * deep for tsc.
+ */
+export type Input<I extends Schema> = Schema extends I ? unknown : Infer<I>;
+
 /** Options for `refine()`. */
 export interface RefineOptions {
   /** `SchemaError.expected` on rejection. Default: the guard's `name`, else `"refine"`. */
@@ -531,7 +538,7 @@ export interface RefineOptions {
  * not assignable to the input type and no `encode` was given — a type that is
  * not a `Schema`, so using it is a compile-time error naming the fix.
  */
-export type Constructed<I extends Schema, T, O> = [T] extends [Infer<I>]
+export type Constructed<I extends Schema, T, O> = [T] extends [Input<I>]
   ? RefineSchema<I, T>
   : O extends { readonly encode: (value: never) => unknown }
     ? RefineSchema<I, T>
@@ -586,11 +593,11 @@ export interface ConstructOptions<T, E, B> {
  * });
  * ```
  */
-export function refine<I extends Schema, G extends (value: Infer<I>) => boolean>(
+export function refine<I extends Schema, G extends (value: Input<I>) => boolean>(
   inner: I,
   guard: G,
   options?: RefineOptions,
-): RefineSchema<I, Guarded<G, Infer<I>>> {
+): RefineSchema<I, Guarded<G, Input<I>>> {
   return {
     kind: "refine",
     meta: {
@@ -645,8 +652,8 @@ export function construct<
   I extends Schema,
   T,
   E,
-  O extends ConstructOptions<T, E, Infer<I>> = ConstructOptions<T, E, Infer<I>>,
->(inner: I, make: (value: Infer<I>) => Result<T, E>, options?: O): Constructed<I, T, O> {
+  O extends ConstructOptions<T, E, Input<I>> = ConstructOptions<T, E, Input<I>>,
+>(inner: I, make: (value: Input<I>) => Result<T, E>, options?: O): Constructed<I, T, O> {
   const opts = options as
     | { readonly name?: string; readonly at?: Function; readonly encode?: Function }
     | undefined;

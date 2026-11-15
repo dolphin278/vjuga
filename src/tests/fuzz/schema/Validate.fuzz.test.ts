@@ -419,7 +419,7 @@ function genNumericMeta(pick: Arb.GenPick): S.NumberConstraints | undefined {
 
 function genSchema(pick: Arb.GenPick, depth: number): S.Schema {
   const leafOnly = depth <= 0;
-  switch (choose(pick, leafOnly ? 7 : 21)) {
+  switch (choose(pick, leafOnly ? 7 : 22)) {
     case 0: {
       if (choose(pick, 2) === 0) return S.string();
       const m: Record<string, unknown> = {};
@@ -530,10 +530,22 @@ function genSchema(pick: Arb.GenPick, depth: number): S.Schema {
           return S.oneOf(x, x);
       }
     }
+    case 20:
+      // Guards keep the value's identity, so every property below still holds
+      return S.refine(genSchema(pick, depth - 1), oneOfValues(pick, GUARDS));
     default:
       return S.unknown();
   }
 }
+
+/** Deterministic guards over any input (refine() nodes; constructors: Refine.fuzz). */
+const GUARDS: readonly ((v: unknown) => boolean)[] = [
+  (v) => typeof v !== "number" || v % 2 === 0,
+  (v) => typeof v !== "string" || v.length !== 1,
+  (v) => !Array.isArray(v) || v.length < 3,
+  (v) => v !== null,
+  (v) => typeof v !== "object" || v === null || !Object.hasOwn(v, "a"),
+];
 
 /** A value shaped like `s` (often, not always, valid), with random corruptions. */
 function genValue(pick: Arb.GenPick, s: S.Schema, depth: number): unknown {
@@ -610,6 +622,8 @@ function genValue(pick: Arb.GenPick, s: S.Schema, depth: number): unknown {
     }
     case "conditional":
       return genValue(pick, choose(pick, 2) === 0 ? s.meta.then : s.meta.if, depth);
+    case "refine":
+      return genValue(pick, s.meta.inner, depth);
     default:
       return oneOfValues(pick, VALUE_POOL);
   }

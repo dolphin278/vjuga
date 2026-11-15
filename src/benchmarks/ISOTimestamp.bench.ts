@@ -2,7 +2,7 @@ import { bench, run } from "mitata";
 import { reportOptimizationStatus } from "./_v8.js";
 import {
   now,
-  isoTimestamp,
+  isoTimestampExn,
   fromDate,
   toDate,
   validator,
@@ -17,7 +17,7 @@ import {
   }
   reportOptimizationStatus(now, "ISOTimestamp.now");
   reportOptimizationStatus(fromDate, "ISOTimestamp.fromDate");
-  reportOptimizationStatus(isoTimestamp, "ISOTimestamp.isoTimestamp");
+  reportOptimizationStatus(isoTimestampExn, "ISOTimestamp.isoTimestampExn");
 }
 
 // --- Benchmarks ---
@@ -30,8 +30,8 @@ bench("new Date().toISOString() (baseline)", () => {
   return new Date().toISOString();
 });
 
-bench("ISOTimestamp.isoTimestamp() (validation)", () => {
-  return isoTimestamp("2024-01-15T10:30:00.000Z");
+bench("ISOTimestamp.isoTimestampExn() (validation)", () => {
+  return isoTimestampExn("2024-01-15T10:30:00.000Z");
 });
 
 bench("ISOTimestamp.fromDate()", () => {
@@ -49,8 +49,8 @@ bench("ISOTimestamp.validator() (valid)", () => {
   return v("2024-01-15T10:30:00.000Z");
 });
 
-bench("ISOTimestamp.isoTimestamp() (microseconds)", () => {
-  return isoTimestamp("2024-01-15T10:30:00.123456Z");
+bench("ISOTimestamp.isoTimestampExn() (microseconds)", () => {
+  return isoTimestampExn("2024-01-15T10:30:00.123456Z");
 });
 
 bench("ISOTimestamp.toDate() (nanoseconds, truncated)", () => {

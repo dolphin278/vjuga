@@ -9,13 +9,13 @@ import {
   tupled,
   brand,
   unreachable,
-  positiveNumber,
-  integer,
-  positiveInteger,
-  nonNegativeInteger,
+  positiveNumberExn,
+  integerExn,
+  positiveIntegerExn,
+  nonNegativeIntegerExn,
 } from "../FunctionUtils.js";
 import type { Branded, Integer, NonNegativeInteger, PositiveNumber } from "../FunctionUtils.js";
-import { isoTimestamp, type ISOTimestamp } from "../ISOTimestamp.js";
+import { isoTimestampExn, type ISOTimestamp } from "../ISOTimestamp.js";
 
 describe("FunctionUtils", () => {
   it("partial", () => {
@@ -120,51 +120,51 @@ describe("Branded", () => {
   });
 
   it("positiveNumber accepts valid values", () => {
-    assert.equal(positiveNumber(1), 1);
-    assert.equal(positiveNumber(0.5), 0.5);
-    assert.equal(positiveNumber(Infinity), Infinity);
+    assert.equal(positiveNumberExn(1), 1);
+    assert.equal(positiveNumberExn(0.5), 0.5);
+    assert.equal(positiveNumberExn(Infinity), Infinity);
   });
 
   it("positiveNumber rejects invalid values", () => {
-    assert.throws(() => positiveNumber(0), RangeError);
-    assert.throws(() => positiveNumber(-1), RangeError);
-    assert.throws(() => positiveNumber(NaN), RangeError);
+    assert.throws(() => positiveNumberExn(0), RangeError);
+    assert.throws(() => positiveNumberExn(-1), RangeError);
+    assert.throws(() => positiveNumberExn(NaN), RangeError);
   });
 
   it("integer accepts valid values", () => {
-    assert.equal(integer(0), 0);
-    assert.equal(integer(-1), -1);
-    assert.equal(integer(42), 42);
+    assert.equal(integerExn(0), 0);
+    assert.equal(integerExn(-1), -1);
+    assert.equal(integerExn(42), 42);
   });
 
   it("integer rejects invalid values", () => {
-    assert.throws(() => integer(1.5), RangeError);
-    assert.throws(() => integer(NaN), RangeError);
-    assert.throws(() => integer(Infinity), RangeError);
+    assert.throws(() => integerExn(1.5), RangeError);
+    assert.throws(() => integerExn(NaN), RangeError);
+    assert.throws(() => integerExn(Infinity), RangeError);
   });
 
   it("positiveInteger accepts valid values", () => {
-    assert.equal(positiveInteger(1), 1);
-    assert.equal(positiveInteger(100), 100);
+    assert.equal(positiveIntegerExn(1), 1);
+    assert.equal(positiveIntegerExn(100), 100);
   });
 
   it("positiveInteger rejects invalid values", () => {
-    assert.throws(() => positiveInteger(0), RangeError);
-    assert.throws(() => positiveInteger(-1), RangeError);
-    assert.throws(() => positiveInteger(1.5), RangeError);
-    assert.throws(() => positiveInteger(NaN), RangeError);
+    assert.throws(() => positiveIntegerExn(0), RangeError);
+    assert.throws(() => positiveIntegerExn(-1), RangeError);
+    assert.throws(() => positiveIntegerExn(1.5), RangeError);
+    assert.throws(() => positiveIntegerExn(NaN), RangeError);
   });
 
   it("nonNegativeInteger accepts valid values", () => {
-    assert.equal(nonNegativeInteger(0), 0);
-    assert.equal(nonNegativeInteger(1), 1);
-    assert.equal(nonNegativeInteger(100), 100);
+    assert.equal(nonNegativeIntegerExn(0), 0);
+    assert.equal(nonNegativeIntegerExn(1), 1);
+    assert.equal(nonNegativeIntegerExn(100), 100);
   });
 
   it("nonNegativeInteger rejects invalid values", () => {
-    assert.throws(() => nonNegativeInteger(-1), RangeError);
-    assert.throws(() => nonNegativeInteger(1.5), RangeError);
-    assert.throws(() => nonNegativeInteger(NaN), RangeError);
+    assert.throws(() => nonNegativeIntegerExn(-1), RangeError);
+    assert.throws(() => nonNegativeIntegerExn(1.5), RangeError);
+    assert.throws(() => nonNegativeIntegerExn(NaN), RangeError);
   });
 
   it("Branded compound type: PositiveNumber & Integer merge correctly", () => {
@@ -182,7 +182,7 @@ describe("Branded", () => {
 // G1-11: PositiveInteger is assignable to NonNegativeInteger (type-level).
 describe("brands (type-level)", () => {
   it("PositiveInteger is assignable to NonNegativeInteger", () => {
-    const nn: NonNegativeInteger = positiveInteger(1);
+    const nn: NonNegativeInteger = positiveIntegerExn(1);
     assert.equal(nn, 1);
   });
 });
@@ -214,21 +214,21 @@ describe("Branded key is unforgeable (type-level)", () => {
   });
 
   it("a branded primitive is assignable to its base, the base is not branded", () => {
-    const ts = isoTimestamp("2024-01-01T00:00:00Z");
+    const ts = isoTimestampExn("2024-01-01T00:00:00Z");
     const s: string = ts;
     // @ts-expect-error a plain string is not an ISOTimestamp
     const bad: ISOTimestamp = s;
-    const n: number = positiveInteger(3);
+    const n: number = positiveIntegerExn(3);
     assert.equal(s + bad + n, "2024-01-01T00:00:00Z2024-01-01T00:00:00Z3");
   });
 
   it("stacked brands are assignable to every layer and their base", () => {
-    const utc = brand<ISOTimestamp, "UtcTimestamp">(isoTimestamp("2024-01-01T00:00:00Z"));
+    const utc = brand<ISOTimestamp, "UtcTimestamp">(isoTimestampExn("2024-01-01T00:00:00Z"));
     const iso: ISOTimestamp = utc;
     const s: string = utc;
     // @ts-expect-error an ISOTimestamp is not a UtcTimestamp
     const bad: UtcTimestamp = iso;
-    const pi = positiveInteger(2);
+    const pi = positiveIntegerExn(2);
     const pn: PositiveNumber = pi;
     const int: Integer = pi;
     assert.equal(`${iso}${s}${bad}${pn}${int}`.length, 62);

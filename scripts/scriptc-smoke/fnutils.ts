@@ -1,15 +1,20 @@
 import {
-  positiveInteger,
-  integer,
-  nonNegativeInteger,
-  positiveNumber,
+  positiveIntegerExn,
+  integerExn,
+  nonNegativeIntegerExn,
+  positiveNumberExn,
   tupled,
   spread,
 } from "../../src/FunctionUtils.js";
-console.log(positiveInteger(5), integer(-3), nonNegativeInteger(0), positiveNumber(0.5));
+console.log(
+  positiveIntegerExn(5),
+  integerExn(-3),
+  nonNegativeIntegerExn(0),
+  positiveNumberExn(0.5),
+);
 let threw = false;
 try {
-  positiveInteger(0);
+  positiveIntegerExn(0);
 } catch (e) {
   threw = e instanceof RangeError;
 }

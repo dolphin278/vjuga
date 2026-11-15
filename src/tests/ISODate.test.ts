@@ -35,7 +35,7 @@ test("daysInMonth() handles leap rules and invalid months", () => {
 
 test("isoDate() brands valid dates", () => {
   for (const s of ["2024-02-29", "0000-01-01", "9999-12-31", "2026-10-01", "1582-10-10"]) {
-    assert.equal(ISODate.isoDate(s), s);
+    assert.equal(ISODate.isoDateExn(s), s);
     assert.equal(ISODate.isISODate(s), true);
   }
 });
@@ -60,7 +60,7 @@ test("isoDate() rejects impossible dates and wrong shapes with RangeError", () =
     "2026-01-0a",
     "2026-01-01 ",
   ]) {
-    assert.throws(() => ISODate.isoDate(s), RangeError, s);
+    assert.throws(() => ISODate.isoDateExn(s), RangeError, s);
     assert.equal(ISODate.isISODate(s), false, s);
   }
 });
@@ -85,19 +85,19 @@ test("fromDate() throws RangeError for invalid Date and years outside 0000-9999"
 
 test("toDate() returns UTC midnight", () => {
   assert.equal(
-    ISODate.toDate(ISODate.isoDate("2024-02-29")).toISOString(),
+    ISODate.toDate(ISODate.isoDateExn("2024-02-29")).toISOString(),
     "2024-02-29T00:00:00.000Z",
   );
   assert.equal(
-    ISODate.toDate(ISODate.isoDate("0000-01-01")).toISOString(),
+    ISODate.toDate(ISODate.isoDateExn("0000-01-01")).toISOString(),
     "0000-01-01T00:00:00.000Z",
   );
   assert.equal(
-    ISODate.toDate(ISODate.isoDate("9999-12-31")).toISOString(),
+    ISODate.toDate(ISODate.isoDateExn("9999-12-31")).toISOString(),
     "9999-12-31T00:00:00.000Z",
   );
   assert.equal(
-    ISODate.toDate(ISODate.isoDate("1969-07-20")).toISOString(),
+    ISODate.toDate(ISODate.isoDateExn("1969-07-20")).toISOString(),
     "1969-07-20T00:00:00.000Z",
   );
 });
@@ -113,7 +113,7 @@ test("today() is the current UTC date", () => {
 // --- addDays ---
 
 test("addDays() rolls over months, years and leap days", () => {
-  const d = ISODate.isoDate;
+  const d = ISODate.isoDateExn;
   assert.equal(ISODate.addDays(d("2024-02-28"), 1), "2024-02-29");
   assert.equal(ISODate.addDays(d("2023-02-28"), 1), "2023-03-01");
   assert.equal(ISODate.addDays(d("2024-12-31"), 1), "2025-01-01");
@@ -129,12 +129,12 @@ test("addDays() rolls over months, years and leap days", () => {
 });
 
 test("addDays() throws RangeError for non-integer n or out-of-range results", () => {
-  const x = ISODate.isoDate("2024-01-01");
+  const x = ISODate.isoDateExn("2024-01-01");
   for (const n of [0.5, NaN, Infinity, -Infinity, 2 ** 53]) {
     assert.throws(() => ISODate.addDays(x, n), RangeError, String(n));
   }
-  assert.throws(() => ISODate.addDays(ISODate.isoDate("9999-12-31"), 1), RangeError);
-  assert.throws(() => ISODate.addDays(ISODate.isoDate("0000-01-01"), -1), RangeError);
+  assert.throws(() => ISODate.addDays(ISODate.isoDateExn("9999-12-31"), 1), RangeError);
+  assert.throws(() => ISODate.addDays(ISODate.isoDateExn("0000-01-01"), -1), RangeError);
 });
 
 // --- validator ---

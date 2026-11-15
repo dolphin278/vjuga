@@ -13,7 +13,7 @@ test("v7: valid, version 7, timestamp prefix matches clock, unique across pool r
     const before = Date.now();
     const id = UUID.v7();
     const after = Date.now();
-    assert.equal(UUID.uuid(id), id);
+    assert.equal(UUID.uuidExn(id), id);
     assert.equal(UUID.version(id), 7);
     const ms = parseInt(id.slice(0, 8) + id.slice(9, 13), 16);
     assert.ok(ms >= before && (ahead || ms <= after));
@@ -56,7 +56,7 @@ test("v7 (model): strictly increasing under random clock jumps, stalls and step-
           for (const d of deltas) {
             clock = Math.max(0, clock + d);
             const id = UUID.v7();
-            assert.equal(UUID.uuid(id), id);
+            assert.equal(UUID.uuidExn(id), id);
             assert.equal(UUID.version(id), 7);
             assert.ok(id > prev, `${id} > ${prev}`);
             if (clock > modelMs) {
@@ -86,7 +86,7 @@ test("uuid(): any-case input is normalized to lowercase; equal UUIDs compare equ
     (flips) => {
       const base = UUID.v4() as string;
       const mixed = [...base].map((c, i) => (flips[i] ? c.toUpperCase() : c)).join("");
-      assert.equal(UUID.uuid(mixed), base);
+      assert.equal(UUID.uuidExn(mixed), base);
       assert.equal(UUID.validator()(mixed)[1], base);
     },
     { numRuns: 1_000_000 },

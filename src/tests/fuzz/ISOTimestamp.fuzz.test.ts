@@ -42,7 +42,7 @@ test("fromEpochMs matches native for fractional ms; Unix.toISO/toDate keep exact
     Arb.oneOf(Arb.float(-1e13, 4e14), Arb.float(MIN_4Y - 2, MIN_4Y + 2)),
     (ms) => {
       expectEpochMs(ms, () => ISO.fromEpochMs(ms));
-      const s = Unix.unixTimestamp(ms / 1000);
+      const s = Unix.unixTimestampExn(ms / 1000);
       // toDate: the exact ms whose own double is `s`, else Date's truncation.
       const got = Unix.toDate(s).getTime();
       assert.ok(got / 1000 === s || got === Math.trunc(s * 1000), `${s} -> ${got}`);
@@ -62,7 +62,7 @@ test("Unix.toDate/toISO round-trip every exact millisecond over the full Date ra
       Arb.map(Arb.float(MIN_4Y, MAX_4Y), (x) => Math.trunc(x) + 0),
     ),
     (ms) => {
-      const s = Unix.unixTimestamp(ms / 1000);
+      const s = Unix.unixTimestampExn(ms / 1000);
       assert.equal(Unix.toDate(s).getTime(), ms, String(s));
       expectEpochMs(ms, () => Unix.toISO(s));
     },
@@ -75,9 +75,9 @@ test("isoTimestamp round-trips every valid Date in 0000-9999 and rejects rolled-
     Arb.tuple(Arb.integer(-62167219200000, 253402300799999), Arb.integer(29, 31)),
     ([ms, badDay]) => {
       const s = new Date(ms).toISOString();
-      assert.equal(ISO.isoTimestamp(s), s);
+      assert.equal(ISO.isoTimestampExn(s), s);
       assert.equal(ISO.validator()(s)[0], true);
-      assert.equal(ISO.toDate(ISO.isoTimestamp(s)).getTime(), ms);
+      assert.equal(ISO.toDate(ISO.isoTimestampExn(s)).getTime(), ms);
 
       // Swap in a day-of-month that may not exist in this month: must be accepted
       // iff the calendar date really exists (no roll-over).
@@ -282,7 +282,7 @@ function oldIsValid(s: string): boolean {
 
 const accepts = (s: string): boolean => {
   try {
-    ISO.isoTimestamp(s);
+    ISO.isoTimestampExn(s);
     return true;
   } catch {
     return false;
@@ -306,7 +306,7 @@ test("isoTimestamp keeps the old gate for <= 3 fraction digits and truncates lon
       const short = truncateFraction(s);
       assert.equal(now, oldIsValid(short), s);
       if (now) {
-        assert.equal(ISO.toDate(ISO.isoTimestamp(s)).getTime(), new Date(short).getTime(), s);
+        assert.equal(ISO.toDate(ISO.isoTimestampExn(s)).getTime(), new Date(short).getTime(), s);
       }
     },
     { numRuns: 1_000_000 },

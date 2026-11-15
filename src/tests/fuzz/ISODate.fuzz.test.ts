@@ -68,8 +68,8 @@ test("isISODate agrees with a Date-based reference and with ajv-formats on near-
       // ajv-formats full-mode `date` implements the same RFC 3339 full-date grammar.
       assert.equal(ajvDate.validate(s), expected, s);
       assert.equal(ISODate.validator()(s)[0], expected, s);
-      if (expected) assert.equal(ISODate.isoDate(s), s);
-      else assert.throws(() => ISODate.isoDate(s), RangeError);
+      if (expected) assert.equal(ISODate.isoDateExn(s), s);
+      else assert.throws(() => ISODate.isoDateExn(s), RangeError);
     },
     { numRuns: 1_000_000 },
   );
@@ -81,7 +81,7 @@ test("fromDate / toDate / isoDate round-trip over the full 0000-9999 range", () 
     ([day, msInDay]) => {
       const d = ISODate.fromDate(new Date(day * MS_PER_DAY + msInDay));
       assert.equal(d, refFromDay(day));
-      assert.equal(ISODate.isoDate(d), d);
+      assert.equal(ISODate.isoDateExn(d), d);
       assert.equal(ISODate.toDate(d).getTime(), day * MS_PER_DAY);
       assert.equal(ISODate.fromDate(ISODate.toDate(d)), d);
     },
@@ -96,7 +96,7 @@ test("addDays agrees with Date UTC arithmetic and round-trips", () => {
       Arb.oneOf(Arb.integer(-400, 400), Arb.integer(-4_000_000, 4_000_000)),
     ),
     ([day, n]) => {
-      const d = ISODate.isoDate(refFromDay(day));
+      const d = ISODate.isoDateExn(refFromDay(day));
       const target = day + n;
       if (target < MIN_DAY || target > MAX_DAY) {
         assert.throws(() => ISODate.addDays(d, n), RangeError);

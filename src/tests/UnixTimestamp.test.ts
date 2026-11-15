@@ -7,35 +7,35 @@ import { ValidationError } from "../schema/ValidationError.js";
 // --- unixTimestamp (throwing constructor) ---
 
 test("unixTimestamp() accepts positive number", () => {
-  const ts = UnixTimestamp.unixTimestamp(1705312200);
+  const ts = UnixTimestamp.unixTimestampExn(1705312200);
   assert.equal(ts, 1705312200);
 });
 
 test("unixTimestamp() accepts zero", () => {
-  const ts = UnixTimestamp.unixTimestamp(0);
+  const ts = UnixTimestamp.unixTimestampExn(0);
   assert.equal(ts, 0);
 });
 
 test("unixTimestamp() accepts negative number (pre-epoch)", () => {
-  const ts = UnixTimestamp.unixTimestamp(-86400);
+  const ts = UnixTimestamp.unixTimestampExn(-86400);
   assert.equal(ts, -86400);
 });
 
 test("unixTimestamp() accepts fractional seconds", () => {
-  const ts = UnixTimestamp.unixTimestamp(1705312200.5);
+  const ts = UnixTimestamp.unixTimestampExn(1705312200.5);
   assert.equal(ts, 1705312200.5);
 });
 
 test("unixTimestamp() rejects NaN", () => {
-  assert.throws(() => UnixTimestamp.unixTimestamp(NaN), RangeError);
+  assert.throws(() => UnixTimestamp.unixTimestampExn(NaN), RangeError);
 });
 
 test("unixTimestamp() rejects Infinity", () => {
-  assert.throws(() => UnixTimestamp.unixTimestamp(Infinity), RangeError);
+  assert.throws(() => UnixTimestamp.unixTimestampExn(Infinity), RangeError);
 });
 
 test("unixTimestamp() rejects -Infinity", () => {
-  assert.throws(() => UnixTimestamp.unixTimestamp(-Infinity), RangeError);
+  assert.throws(() => UnixTimestamp.unixTimestampExn(-Infinity), RangeError);
 });
 
 // --- fromDate / toDate roundtrip ---
@@ -47,7 +47,7 @@ test("fromDate() converts Date to epoch seconds (floored)", () => {
 });
 
 test("toDate() converts UnixTimestamp to Date", () => {
-  const ts = UnixTimestamp.unixTimestamp(1705312200);
+  const ts = UnixTimestamp.unixTimestampExn(1705312200);
   const date = UnixTimestamp.toDate(ts);
   assert.equal(date.getTime(), 1705312200 * 1000);
 });
@@ -71,21 +71,21 @@ test("now() returns a reasonable epoch value", () => {
 // --- fromISO / toISO ---
 
 test("fromISO() converts ISOTimestamp to UnixTimestamp", () => {
-  const iso = ISOTimestamp.isoTimestamp("2024-01-15T10:30:00.000Z");
+  const iso = ISOTimestamp.isoTimestampExn("2024-01-15T10:30:00.000Z");
   const unix = UnixTimestamp.fromISO(iso);
   assert.equal(unix, Math.floor(new Date("2024-01-15T10:30:00.000Z").getTime() / 1000));
 });
 
 test("toISO() converts UnixTimestamp to ISOTimestamp", () => {
-  const unix = UnixTimestamp.unixTimestamp(1705312200);
+  const unix = UnixTimestamp.unixTimestampExn(1705312200);
   const iso = UnixTimestamp.toISO(unix);
   // Should be valid ISO
-  ISOTimestamp.isoTimestamp(iso);
+  ISOTimestamp.isoTimestampExn(iso);
   assert.equal(typeof iso, "string");
 });
 
 test("fromISO/toISO roundtrip preserves second precision", () => {
-  const iso = ISOTimestamp.isoTimestamp("2024-01-15T10:30:00.000Z");
+  const iso = ISOTimestamp.isoTimestampExn("2024-01-15T10:30:00.000Z");
   const unix = UnixTimestamp.fromISO(iso);
   const back = UnixTimestamp.toISO(unix);
   assert.equal(new Date(back as string).getTime(), new Date(iso as string).getTime());
@@ -130,10 +130,10 @@ test("validator() returns Err for Infinity", () => {
 
 test("toISO() matches native for negative and fractional seconds", () => {
   for (const s of [-1, -86400, -0.5, 1.0005, 1705312200.25]) {
-    const iso = UnixTimestamp.toISO(UnixTimestamp.unixTimestamp(s));
+    const iso = UnixTimestamp.toISO(UnixTimestamp.unixTimestampExn(s));
     assert.equal(iso, new Date(s * 1000).toISOString());
   }
-  assert.equal(UnixTimestamp.toISO(UnixTimestamp.unixTimestamp(-1)), "1969-12-31T23:59:59.000Z");
+  assert.equal(UnixTimestamp.toISO(UnixTimestamp.unixTimestampExn(-1)), "1969-12-31T23:59:59.000Z");
 });
 
 test("toDate()/toISO() keep exact milliseconds despite float error (G8-1)", () => {
@@ -148,49 +148,56 @@ test("toDate()/toISO() keep exact milliseconds despite float error (G8-1)", () =
     [-4435527859354.766, -4435527859354766],
   ];
   for (const [s, ms] of cases) {
-    assert.equal(UnixTimestamp.toDate(UnixTimestamp.unixTimestamp(s)).getTime(), ms, String(s));
+    assert.equal(UnixTimestamp.toDate(UnixTimestamp.unixTimestampExn(s)).getTime(), ms, String(s));
   }
-  assert.equal(UnixTimestamp.toISO(UnixTimestamp.unixTimestamp(1.005)), "1970-01-01T00:00:01.005Z");
   assert.equal(
-    UnixTimestamp.toISO(UnixTimestamp.unixTimestamp(1094491586.718)),
+    UnixTimestamp.toISO(UnixTimestamp.unixTimestampExn(1.005)),
+    "1970-01-01T00:00:01.005Z",
+  );
+  assert.equal(
+    UnixTimestamp.toISO(UnixTimestamp.unixTimestampExn(1094491586.718)),
     "2004-09-06T17:26:26.718Z",
   );
   // Every exact-ms value in a small range survives the round trip.
   for (let ms = -5000; ms <= 5000; ms++) {
-    assert.equal(UnixTimestamp.toDate(UnixTimestamp.unixTimestamp(ms / 1000)).getTime(), ms);
+    assert.equal(UnixTimestamp.toDate(UnixTimestamp.unixTimestampExn(ms / 1000)).getTime(), ms);
   }
 });
 
 test("toDate()/toISO() still truncate sub-millisecond fractions toward zero (G8-1)", () => {
-  assert.equal(UnixTimestamp.toDate(UnixTimestamp.unixTimestamp(1.0009999)).getTime(), 1000);
-  assert.equal(UnixTimestamp.toDate(UnixTimestamp.unixTimestamp(1.0005)).getTime(), 1000);
-  assert.ok(Object.is(UnixTimestamp.toDate(UnixTimestamp.unixTimestamp(-0.0005)).getTime(), 0));
-  assert.equal(UnixTimestamp.toDate(UnixTimestamp.unixTimestamp(-1.0005)).getTime(), -1000);
+  assert.equal(UnixTimestamp.toDate(UnixTimestamp.unixTimestampExn(1.0009999)).getTime(), 1000);
+  assert.equal(UnixTimestamp.toDate(UnixTimestamp.unixTimestampExn(1.0005)).getTime(), 1000);
+  assert.ok(Object.is(UnixTimestamp.toDate(UnixTimestamp.unixTimestampExn(-0.0005)).getTime(), 0));
+  assert.equal(UnixTimestamp.toDate(UnixTimestamp.unixTimestampExn(-1.0005)).getTime(), -1000);
   assert.equal(
-    UnixTimestamp.toISO(UnixTimestamp.unixTimestamp(1.0009999)),
+    UnixTimestamp.toISO(UnixTimestamp.unixTimestampExn(1.0009999)),
     "1970-01-01T00:00:01.000Z",
   );
 });
 
 test("toISO() throws RangeError outside years 0000-9999 (G8-3)", () => {
   assert.equal(
-    UnixTimestamp.toISO(UnixTimestamp.unixTimestamp(253402300799.999)),
+    UnixTimestamp.toISO(UnixTimestamp.unixTimestampExn(253402300799.999)),
     "9999-12-31T23:59:59.999Z",
   );
   assert.equal(
-    UnixTimestamp.toISO(UnixTimestamp.unixTimestamp(-62167219200)),
+    UnixTimestamp.toISO(UnixTimestamp.unixTimestampExn(-62167219200)),
     "0000-01-01T00:00:00.000Z",
   );
   for (const s of [253402300800, -62167219200.001, 8.64e12, 1e300]) {
-    assert.throws(() => UnixTimestamp.toISO(UnixTimestamp.unixTimestamp(s)), RangeError, String(s));
+    assert.throws(
+      () => UnixTimestamp.toISO(UnixTimestamp.unixTimestampExn(s)),
+      RangeError,
+      String(s),
+    );
   }
 });
 
 test("unixTimestamp() accepts millisecond-magnitude values (documented: no unit check)", () => {
-  assert.equal(UnixTimestamp.unixTimestamp(1705312200000), 1705312200000);
+  assert.equal(UnixTimestamp.unixTimestampExn(1705312200000), 1705312200000);
 });
 
 test("fromISO() accepts sub-millisecond fractions (truncated, never rounded up)", () => {
-  const iso = ISOTimestamp.isoTimestamp("2024-12-31T23:59:59.9999999Z");
+  const iso = ISOTimestamp.isoTimestampExn("2024-12-31T23:59:59.9999999Z");
   assert.equal(UnixTimestamp.fromISO(iso), Date.UTC(2024, 11, 31, 23, 59, 59) / 1000);
 });

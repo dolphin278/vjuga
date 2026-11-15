@@ -54,11 +54,11 @@ test("nonBlank / nonBlankExn trim, then check", () => {
   });
 });
 
-test("assertNonBlank: TypeError, or RangeError naming empty / untrimmed", () => {
+test("assertNonBlank: TypeError, or RangeError naming blank / untrimmed", () => {
   assert.throws(() => Text.assertNonBlank(5), TypeError);
-  assert.throws(() => Text.assertNonBlank(""), { name: "RangeError", cause: "empty" });
+  assert.throws(() => Text.assertNonBlank(""), { name: "RangeError", cause: "blank" });
   assert.throws(() => Text.assertNonBlank(" a"), { name: "RangeError", cause: "untrimmed" });
-  assert.throws(() => Text.assertNonBlank("   "), { cause: "untrimmed" });
+  assert.throws(() => Text.assertNonBlank("   "), { cause: "blank" });
   const v: unknown = "a";
   Text.assertNonBlank(v);
   const nb: Text.NonBlank = v;

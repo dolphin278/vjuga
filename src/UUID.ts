@@ -50,9 +50,11 @@ declare const Bun: { randomUUIDv7: () => string } | undefined;
 /**
  * Why a string is not a `UUID`: not 8-4-4-4-12 hex digits (`"malformed"`),
  * or the right shape with a variant nibble (first digit of group 4) outside
- * 8/9/a/b and not Nil/Max (`"invalid-variant"`).
+ * 8/9/a/b and not Nil/Max (`"invalid-variant"`), or a valid UUID not in the
+ * canonical lower-case form (`"not-lowercase"`: only from `assertUUID`, since
+ * `uuid` / `uuidExn` lower-case first).
  */
-export type UUIDError = "malformed" | "invalid-variant";
+export type UUIDError = "malformed" | "invalid-variant" | "not-lowercase";
 
 /** Canonical (lower-case) form with variant-1 bits: what the brand holds. */
 const UUID_LOWER_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -76,7 +78,7 @@ export function isUUID(value: unknown): value is UUID {
 }
 
 /** The rule a lower-cased string that is not a UUID breaks. */
-function uuidError(lower: string): UUIDError {
+function uuidError(lower: string): "malformed" | "invalid-variant" {
   return UUID_SHAPE_RE.test(lower) ? "invalid-variant" : "malformed";
 }
 
@@ -127,7 +129,7 @@ export function uuidExn(value: string): UUID {
  */
 export function assertUUID(value: unknown): asserts value is UUID {
   if (!isUUID(value)) {
-    let code: string | undefined;
+    let code: UUIDError | undefined;
     if (typeof value === "string") {
       const lower = value.toLowerCase();
       code = isUUID(lower) ? "not-lowercase" : uuidError(lower);

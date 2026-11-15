@@ -58,7 +58,7 @@ test("isNonBlank equals the regex; nonBlank equals trim-then-check; assert/Exn a
       }
       if (strict) Text.assertNonBlank(s);
       else {
-        const cause = s.length === 0 ? "empty" : "untrimmed";
+        const cause = t.length === 0 ? "blank" : "untrimmed";
         assert.throws(() => Text.assertNonBlank(s), { name: "RangeError", cause });
       }
       assert.equal(Text.isNonEmptyString(s), s.length > 0);

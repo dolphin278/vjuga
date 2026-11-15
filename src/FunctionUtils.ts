@@ -198,6 +198,10 @@ export interface Refinement<Base, T extends Base, E extends string> {
  * a hot path write the guard as a top-level function over the same check:
  * `function isSlug(v: string): v is Slug { return slugError(v) === undefined; }`.
  *
+ * Unlike the built-in guards, `is` and `assert` take `Base`, not `unknown`,
+ * and never throw TypeError: check the base first at a boundary
+ * (`isPositiveInteger(u) && Revision.is(u)`).
+ *
  * Annotate the result with its type: TypeScript refuses an assertion called
  * through an unannotated name (TS2775).
  *

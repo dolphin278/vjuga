@@ -42,8 +42,12 @@ export type NonBlank = Branded<NonEmptyString, "NonBlank">;
 /** Why a string is not a `NonEmptyString`. */
 export type NonEmptyStringError = "empty";
 
-/** Why a string is not a `NonBlank` once trimmed: nothing but whitespace was left. */
-export type NonBlankError = "blank";
+/**
+ * Why a string is not a `NonBlank`: `"blank"` (empty or only whitespace) or
+ * `"untrimmed"` (whitespace at either end). `nonBlank` / `nonBlankExn` trim
+ * first, so they only ever report `"blank"`; `assertNonBlank` reports both.
+ */
+export type NonBlankError = "blank" | "untrimmed";
 
 /**
  * Guard: `value` is a string of length >= 1. Accepts `unknown`.
@@ -184,8 +188,8 @@ export function nonBlankExn(raw: string): NonBlank {
 
 /**
  * Assertion for `NonBlank`; never trims. TypeError for a non-string,
- * RangeError otherwise with `cause` `"empty"` for `""` or `"untrimmed"` for
- * a string with whitespace at either end (all-whitespace included).
+ * RangeError otherwise with `cause` `"blank"` (empty or only whitespace) or
+ * `"untrimmed"` (whitespace at either end).
  *
  * @example
  * ```ts
@@ -196,8 +200,8 @@ export function nonBlankExn(raw: string): NonBlank {
  */
 export function assertNonBlank(value: unknown): asserts value is NonBlank {
   if (!isNonBlank(value)) {
-    let code: string | undefined;
-    if (typeof value === "string") code = value.length === 0 ? "empty" : "untrimmed";
+    let code: NonBlankError | undefined;
+    if (typeof value === "string") code = value.trim().length === 0 ? "blank" : "untrimmed";
     throw brandError("NonBlank", code, value);
   }
 }

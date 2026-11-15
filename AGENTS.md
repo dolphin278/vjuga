@@ -79,13 +79,15 @@ Add that paragraph to your app's `AGENTS.md`. In a monorepo, resolve `node_modul
 
 | Goal | Module | Key exports |
 |---|---|---|
-| ISO 8601 timestamp strings | `ISOTimestamp` | `isoTimestamp` (any fraction length, rejects impossible dates and hour 24), `fromDate` / `fromEpochMs` (throw `RangeError` outside years 0000–9999), `toDate` (truncates to ms), `now`, `validator()`; RFC 3339 predicates `isRfc3339DateTime(s)`, `isRfc3339Time(s)` |
-| Date-only `YYYY-MM-DD` strings | `ISODate` | `isoDate` (rejects impossible dates), `isISODate(s)`, `fromDate` / `today()` (UTC), `addDays(d, n)`, `toDate` (UTC midnight), `daysInMonth(y, m)`, `validator()` |
-| Unix epoch seconds | `UnixTimestamp` | `unixTimestamp` (brand does not enforce seconds or integers), `fromDate`, `toDate` / `toISO` (exact ms, sub-ms truncated; `toISO` throws `RangeError` outside years 0000–9999), `now`, `fromISO`, `validator()` |
-| UUID strings (v4 / v7) | `UUID` | `uuid` (lowercases; accepts Nil/Max; requires variant 8/9/a/b, stricter than schema `format: "uuid"`), `v4`, `v7` (strictly increasing per thread), `version`, `validator()`, `NIL`, `MAX` |
+| ISO 8601 timestamp strings | `ISOTimestamp` | standard set `isoTimestamp` / `isoTimestampExn` / `isISOTimestamp` / `assertISOTimestamp` (any fraction length; errors `"malformed"`, `"invalid-date"`, `"invalid-time"`, `"invalid-offset"`), `fromDate` / `fromEpochMs` (throw `RangeError` outside years 0000–9999), `toDate` (truncates to ms), `now`, `validator()`; RFC 3339 predicates `isRfc3339DateTime(s)`, `isRfc3339Time(s)` |
+| Date-only `YYYY-MM-DD` strings | `ISODate` | standard set `isoDate` / `isoDateExn` / `isISODate` / `assertISODate` (errors `"malformed"`, `"invalid-date"`), `fromDate` / `today()` (UTC), `addDays(d, n)`, `toDate` (UTC midnight), `daysInMonth(y, m)`, `validator()` |
+| Unix epoch seconds | `UnixTimestamp` | standard set `unixTimestamp` / `unixTimestampExn` / `isUnixTimestamp` / `assertUnixTimestamp` (error `"not-finite"`; does not enforce seconds or integers), `fromDate`, `toDate` / `toISO` (exact ms, sub-ms truncated; `toISO` throws `RangeError` outside years 0000–9999), `now`, `fromISO`, `validator()` |
+| UUID strings (v4 / v7) | `UUID` | standard set `uuid` / `uuidExn` (lower-case; Nil/Max; variant 8/9/a/b, stricter than schema `format: "uuid"`; errors `"malformed"`, `"invalid-variant"`) / `isUUID` (canonical lower-case only) / `assertUUID`, `v4`, `v7` (strictly increasing per thread), `version`, `validator()`, `NIL`, `MAX` |
+| Non-empty / non-blank text | `Text` | `NonEmptyString`: `nonEmptyString` / `nonEmptyStringExn` / `isNonEmptyString` / `assertNonEmptyString`; `NonBlank` (starts and ends with non-whitespace; also a `NonEmptyString`): `nonBlank` / `nonBlankExn` trim first (error `"blank"`), `isNonBlank` / `assertNonBlank` never trim |
 | Deep readonly at API boundary | `Immutable` | `make(value)` — zero-cost type cast, no runtime enforcement |
 | Pass-by-reference for primitives into closures | `Ref` | `make`, `get`, `set` |
-| Branded numbers (positive int, etc.) | `FunctionUtils` | `positiveInteger` (also a `NonNegativeInteger`), `nonNegativeInteger`, `integer`, `positiveNumber`; `brand<Base, Kind>(v)` is an unchecked cast for your own brands |
+| Branded numbers (positive int, etc.) | `FunctionUtils` | `PositiveInteger` (also a `NonNegativeInteger`), `NonNegativeInteger`, `Integer`, `PositiveNumber`, each with the standard set (`positiveInteger` / `positiveIntegerExn` / `isPositiveInteger` / `assertPositiveInteger`; errors `"not-integer"`, `"unsafe-integer"`, `"not-positive"`, `"negative"`) |
+| Your own brand with the same four functions | `FunctionUtils` | `refine(kind, check, normalize?)` → `{ make, makeExn, is, assert, check, kind }` (annotate it as `Refinement<Base, T, E>`: TS2775); `Guard<Base, T>`, `Assertion<Base, T>`, `brandError(kind, code, value)`; `brand<Base, Kind>(v)` is an unchecked cast |
 
 ### Schema & validation
 
@@ -124,6 +126,8 @@ Add that paragraph to your app's `AGENTS.md`. In a monorepo, resolve `node_modul
 | Left-to-right function composition | `FunctionUtils` | `pipe(f, g, h)` — needs at least 1 function; up to 5 with full TypeScript type inference. |
 | Partial application | `FunctionUtils` | `partial(fn, ...args)`, `partialNamed(fn, { key: val })`. |
 | Cross-thread / cross-process function dispatch | `FunctionReference` | `resolve("./module.ts#export")` via dynamic `import()`. String refs are `file:` URLs or cwd-relative paths; prefer `new URL("./x.js#fn", import.meta.url)`. The hash is stripped before `import()`, so all references into one file share one module instance. Not needed for same-thread callbacks. |
+
+**Branded-type convention.** Every branded type (`Branded<Base, Kind>`) has four functions: `x(v)` returns `Result<X, XError>` where `XError` is a union of string literals, one per rule; `xExn(v)` returns the value or throws a `RangeError` whose `cause` is that literal; `isX(v: unknown)` is a guard; `assertX(v: unknown)` is an assertion function (`TypeError` for a wrong base type, `RangeError` otherwise). Guards and assertions check and never repair; constructors may normalise (`uuid` lower-cases, `nonBlank` trims). A stacked brand (`Branded<PositiveInteger, "Revision">`) stays assignable to its base. Up to v13 the plain names (`positiveInteger`, `isoDate`, `uuid`, ...) threw; they now return a `Result`, and the throwing forms are `*Exn`.
 
 ---
 

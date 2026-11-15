@@ -459,7 +459,7 @@ export function emitValidation(
       break;
     case "allOf": {
       // Sequential inline checks: the first failing variant reports its error
-      const variants = distinctVariants(schema.meta.variants as readonly Schema[]);
+      const variants = allOfOrder(distinctVariants(schema.meta.variants as readonly Schema[]));
       for (let i = 0; i < variants.length; i++) {
         emitValidation(buf, variants[i], accessor, pathExpr);
       }
@@ -966,6 +966,30 @@ function distinctVariants(variants: readonly Schema[]): readonly Schema[] {
   return [...seen];
 }
 
+/**
+ * allOf variants in emission order. Every variant checks the INPUT value, so
+ * at most one may replace it (`hasTransform`); that one runs last and its
+ * output is the allOf's. Two would each claim the output (and the second
+ * would check the first's output): refused with `TypeError` at compile time.
+ */
+function allOfOrder(variants: readonly Schema[]): readonly Schema[] {
+  let t = -1;
+  for (let i = 0; i < variants.length; i++) {
+    if (!hasTransform(variants[i])) continue;
+    if (t !== -1) {
+      throw new TypeError(
+        "allOf: at most one variant may contain construct() (its output replaces the value); " +
+          "declare the constructed field in one variant only",
+      );
+    }
+    t = i;
+  }
+  if (t === -1 || t === variants.length - 1) return variants;
+  const ordered = variants.filter((_, i) => i !== t);
+  ordered.push(variants[t]);
+  return ordered;
+}
+
 /** Schemas whose compile-time checks (`checkConstants`) already passed. */
 const checkedConstants = new WeakSet<Schema>();
 
@@ -1113,7 +1137,9 @@ function emitProperties(
     // could hide an extra key; count every key by presence there instead.
     const c = collectOf(buf);
     if (acceptsUndefined(child) || (c !== undefined && c.nest)) {
-      present += ` + (${local} !== undefined ? 1 : 0)`;
+      // Presence of the INPUT key: a constructor may turn an absent key's
+      // undefined into a default, which must not count as present here
+      present += ` + (${orig ?? local} !== undefined ? 1 : 0)`;
     } else fixed++;
   }
   return String(fixed) + present;
@@ -1301,18 +1327,15 @@ function emitUnionValidation(
   buf.indent++;
   const last = variants.length - 1;
   for (let i = 0; i < last; i++) {
-    const check = booleanCheck(buf, variants[i], accessor);
     if (write && hasTransform(variants[i])) {
-      // The trial ran check-only: re-run the matched variant inline to keep
-      // its constructor outputs (it cannot fail now for pure constructors)
-      emit(buf, `if (${check}) {`);
-      buf.indent++;
-      emitSingle(buf, variants[i], accessor, pathExpr);
-      emit(buf, `break ${label};`);
-      buf.indent--;
-      emit(buf, "}");
+      // One trial that also returns the output: constructors run once per
+      // value, however deeply such unions nest
+      const r = freshVar(buf);
+      const trial = emitRef(buf, freshVar(buf), compileTrialValidator(variants[i]));
+      emit(buf, `var ${r} = ${trial}(${accessor});`);
+      emit(buf, `if (${r} !== false) { ${accessor} = ${r}[1]; break ${label}; }`);
     } else {
-      emit(buf, `if (${check}) break ${label};`);
+      emit(buf, `if (${booleanCheck(buf, variants[i], accessor)}) break ${label};`);
     }
   }
   if (last >= 0) {
@@ -1342,42 +1365,35 @@ function emitExclusiveValidation(
   }
   const count = freshVar(buf);
   emit(buf, `var ${count} = 0;`);
-  // Write mode with a transforming variant: remember the match to re-run it
+  // Write mode with a transforming variant: keep the first match's output
+  // (trial validators: each constructor runs once)
   const winner = writeOf(buf) !== undefined && variants.some(hasTransform) ? freshVar(buf) : null;
-  if (winner !== null) emit(buf, `var ${winner} = -1;`);
+  if (winner !== null) emit(buf, `var ${winner} = ${accessor};`);
   for (let i = 0; i < variants.length; i++) {
-    const check = booleanCheck(buf, variants[i], accessor);
-    if (winner === null) emit(buf, `if (${check}) ${count}++;`);
-    else emit(buf, `if (${check}) { ${winner} = ${i}; ${count}++; }`);
+    if (winner !== null && hasTransform(variants[i])) {
+      const r = freshVar(buf);
+      const trial = emitRef(buf, freshVar(buf), compileTrialValidator(variants[i]));
+      emit(buf, `var ${r} = ${trial}(${accessor});`);
+      emit(buf, `if (${r} !== false) { if (${count} === 0) ${winner} = ${r}[1]; ${count}++; }`);
+    } else {
+      emit(buf, `if (${booleanCheck(buf, variants[i], accessor)}) ${count}++;`);
+    }
   }
   if (booleanBuffers.has(buf)) {
     // Boolean sub-validator: the error is discarded, so re-running the last
     // variant for it would only double the work at every nesting level
     emit(buf, `if (${count} !== 1) ${failStmt(buf, pathExpr, '"oneOf"', accessor)}`);
-    return;
-  }
-  emit(buf, `if (${count} === 0) {`);
-  buf.indent++;
-  emitSingle(buf, variants[variants.length - 1], accessor, pathExpr);
-  buf.indent--;
-  emit(buf, `}`);
-  const label = `"oneOf(exactly one, matched " + ${count} + ")"`;
-  emit(buf, `if (${count} > 1) ${failStmt(buf, pathExpr, label, accessor)}`);
-  if (winner === null) return;
-  // Exactly one matched (any other count already failed): produce its output
-  emit(buf, `switch (${winner}) {`);
-  buf.indent++;
-  for (let i = 0; i < variants.length; i++) {
-    if (!hasTransform(variants[i])) continue;
-    emit(buf, `case ${i}: {`);
+  } else {
+    emit(buf, `if (${count} === 0) {`);
     buf.indent++;
-    emitSingle(buf, variants[i], accessor, pathExpr);
-    emit(buf, "break;");
+    emitSingle(buf, variants[variants.length - 1], accessor, pathExpr);
     buf.indent--;
-    emit(buf, "}");
+    emit(buf, `}`);
+    const label = `"oneOf(exactly one, matched " + ${count} + ")"`;
+    emit(buf, `if (${count} > 1) ${failStmt(buf, pathExpr, label, accessor)}`);
   }
-  buf.indent--;
-  emit(buf, "}");
+  // Exactly one matched (any other count already failed): its output
+  if (winner !== null) emit(buf, `${accessor} = ${winner};`);
 }
 
 /**
@@ -1428,6 +1444,34 @@ function compileBooleanValidator(schema: Schema): (v: unknown) => boolean {
   emit(buf, "}");
   const fn = compileFunction<(v: unknown) => boolean>(buf);
   booleanValidators.set(schema, fn);
+  return fn;
+}
+
+/** Trial validators by schema identity (see `compileTrialValidator`). */
+const trialValidators = new WeakMap<Schema, (v: unknown) => Result<unknown, never> | false>();
+
+/**
+ * Compile `schema` into `(v) => Ok(output) | false`: a union trial that keeps
+ * a constructor's output, so the matched variant is not run a second time.
+ * Errors are discarded as in a boolean sub-validator (nothing is built on
+ * failure); success allocates the `Ok` (only variants that construct use it).
+ */
+function compileTrialValidator(schema: Schema): (v: unknown) => Result<unknown, never> | false {
+  const cached = trialValidators.get(schema);
+  if (cached !== undefined) return cached;
+  const buf = createBuffer();
+  booleanBuffers.add(buf);
+  (buf as CollectBuffer).write = "copy";
+  emitStandardRefs(buf, ok, returnFalse);
+  emitRef(buf, "_me", noError);
+  emit(buf, "return function trial(v) {");
+  buf.indent++;
+  emitValidation(buf, schema, "v", '""');
+  emit(buf, "return _ok(v);");
+  buf.indent--;
+  emit(buf, "}");
+  const fn = compileFunction<(v: unknown) => Result<unknown, never> | false>(buf);
+  trialValidators.set(schema, fn);
   return fn;
 }
 

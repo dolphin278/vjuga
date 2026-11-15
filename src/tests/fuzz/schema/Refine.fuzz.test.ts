@@ -275,15 +275,15 @@ function ref(s: S.Schema, v: unknown): Run {
     case "unknown":
       return v !== undefined ? [true, v] : FAIL;
     case "allOf": {
-      // In order, each variant on the value as transformed so far; a variant
-      // repeated by identity runs once (as emitted)
-      let cur = v;
+      // Every variant checks the input (a repeat by identity once); the one
+      // variant that may construct gives the output
+      let out = v;
       for (const variant of new Set(s.meta.variants as S.Schema[])) {
-        const r = ref(variant, cur);
+        const r = ref(variant, v);
         if (!r[0]) return FAIL;
-        cur = r[1];
+        if (constructs(variant)) out = r[1];
       }
-      return [true, cur];
+      return [true, out];
     }
     case "not":
       return v !== undefined && !ref(s.meta.inner, v)[0] ? [true, v] : FAIL;
@@ -300,6 +300,44 @@ function ref(s: S.Schema, v: unknown): Run {
     }
     default:
       return FAIL;
+  }
+}
+
+/** Whether a constructor's output is kept somewhere in `s` (mirrors `hasTransform`). */
+function constructs(s: S.Schema): boolean {
+  switch (s.kind) {
+    case "refine":
+      return s.meta.mode === "construct" || constructs(s.meta.inner);
+    case "object":
+      return Object.values(s.meta.properties as Record<string, S.Schema>).some(constructs);
+    case "array":
+      return constructs(s.meta.items);
+    case "tuple":
+      return (s.meta.items as S.Schema[]).some(constructs);
+    case "record":
+      return constructs(s.meta.values);
+    case "union":
+    case "allOf":
+      return (s.meta.variants as S.Schema[]).some(constructs);
+    case "optional":
+    case "nullable":
+      return constructs(s.meta.inner);
+    case "conditional":
+      return constructs(s.meta.then) || constructs(s.meta.else);
+    default:
+      return false;
+  }
+}
+
+/** Compile, or null for an allOf with two constructing variants (refused by design). */
+function compile<F>(make: () => F): F | null {
+  try {
+    return make();
+  } catch (e) {
+    if (e instanceof TypeError && /at most one variant may contain construct/.test(e.message)) {
+      return null;
+    }
+    throw e;
   }
 }
 
@@ -326,7 +364,8 @@ test("validate: verdict and output match the reference; input untouched; no need
   Prop.assert(
     cases,
     ({ schema, values }) => {
-      const v = validate(schema as S.StringSchema) as Check;
+      const v = compile(() => validate(schema as S.StringSchema) as Check);
+      if (v === null) return true;
       for (const value of values) {
         const snapshot = structuredClone(value);
         const got = v(value);
@@ -347,7 +386,8 @@ test("allErrors: same verdict and output; errors[0] is the first-error result", 
   Prop.assert(
     cases,
     ({ schema, values }) => {
-      const first = validate(schema as S.StringSchema) as Check;
+      const first = compile(() => validate(schema as S.StringSchema) as Check);
+      if (first === null) return true;
       const all = validate(schema as S.StringSchema, { allErrors: true }) as CheckAll;
       for (const value of values) {
         const a = first(value);
@@ -366,7 +406,8 @@ test("JSON.parse: one in-place pass agrees with validate over the parsed tree", 
   Prop.assert(
     cases,
     ({ schema, values }) => {
-      const parse = SJ.parse(schema as S.StringSchema) as ParseFn;
+      const parse = compile(() => SJ.parse(schema as S.StringSchema) as ParseFn);
+      if (parse === null) return true;
       const v = validate(schema as S.StringSchema) as Check;
       for (const value of values) {
         const text = JSON.stringify(value);

@@ -339,14 +339,26 @@ test("construct: oneOf produces the single winner's output, else reports", () =>
   assert.match(assertErr(two("a")).expected, /matched 2/);
 });
 
-test("construct: allOf runs its variants in order on the transformed value", () => {
+test("construct: allOf checks the input with every variant; one variant may construct", () => {
   const v = validate(
     S.allOf(
       S.construct(S.string(), tag),
-      S.refine(S.string(), (s) => s === s.toLowerCase(), { name: "lower" }),
+      S.refine(S.string(), (s) => s.trim() !== "", { name: "not blank" }),
     ),
   );
+  // the guard saw the input " ABC " (not the output); the output is the constructor's
   assert.equal(assertOk(v(" ABC ")), "abc");
+  assert.equal(assertErr(v("   ")).expected, "not blank");
+  // two variants that construct would both claim the output: refused at compile time
+  const Base = S.object({ at: S.construct(S.string(), tag) }, { additionalProperties: true });
+  const Ext = S.object(
+    { at: S.construct(S.string(), tag), n: S.integer() },
+    { additionalProperties: true },
+  );
+  assert.throws(() => validate(S.allOf(Base, Ext)), /at most one variant may contain construct/);
+  assert.throws(() => SJ.parse(S.allOf(Base, Ext)), /at most one variant/);
+  // repeating the same variant is one variant
+  assert.equal(assertOk(validate(S.allOf(Base, Base))({ at: " X " })).at, "x");
 });
 
 test("construct: conditional branches transform; not() and if only decide", () => {
@@ -377,12 +389,25 @@ test("construct: a refinement over an object sees its transformed fields", () =>
   assertOk(C({ t: " X " }));
 });
 
-test("construct: an untagged union runs the winner's constructor twice (trial + output)", () => {
+test("construct: constructors run once per value, however deeply untagged unions nest", () => {
+  let schema: S.Schema = S.object({ a: S.construct(S.string(), tag) });
+  for (let d = 1; d <= 5; d++) schema = S.union(S.array(schema), S.number());
+  let value: unknown = { a: " A " };
+  for (let d = 1; d <= 5; d++) value = [value];
   tagCalls = 0;
-  validate(S.union(S.construct(S.string(), tag), S.number()))(" a ");
-  assert.equal(tagCalls, 2);
+  const out = (
+    validate(schema as unknown as S.StringSchema) as (x: unknown) => Result<unknown, unknown>
+  )(value);
+  assert.equal(tagCalls, 1);
+  assert.deepEqual(out, [true, [[[[[{ a: "a" }]]]]]]);
   tagCalls = 0;
-  validate(S.construct(S.string(), tag))(" a ");
+  (SJ.parse(schema as unknown as S.StringSchema) as (x: string) => Result<unknown, unknown>)(
+    JSON.stringify(value),
+  );
+  assert.equal(tagCalls, 1);
+  // oneOf keeps the first match's output from its trial as well
+  tagCalls = 0;
+  validate(S.oneOf(S.construct(S.string(), tag), S.number()))(" a ");
   assert.equal(tagCalls, 1);
 });
 
@@ -790,4 +815,43 @@ test("TOON: construct() with encode has no TOON layout", () => {
   }
   // refinements without encode are fine anywhere TOON has a layout
   assert.equal(ST.stringify(S.refine(S.string(), isSlug))("ab" as Slug), "ab");
+});
+
+test("types: a brand constructor chained on a brand needs no encode", () => {
+  type Url = Branded<string, "Url">;
+  const mkUrl = (s: string): Result<Url, "bad-url"> =>
+    s.length > 0 ? ok(s as Url) : err("bad-url");
+  const toSlug = (u: Url): Result<Slug, "bad-slug"> => (isSlug(u) ? ok(u) : err("bad-slug"));
+  const Chained = S.construct(S.construct(S.string(), mkUrl), toSlug);
+  const slug: S.Infer<typeof Chained> = "a" as Slug;
+  // but chained on an encoded custom type, the output must map back to that type
+  const Dated = S.construct(S.string(), toDate, { encode: (d) => d.toISOString() });
+  // @ts-expect-error — a string is not the Date the inner encode expects
+  validate(S.construct(Dated, (d) => ok(d.toISOString())));
+  const Day = S.construct(Dated, (d) => ok(d.toISOString().slice(0, 10)), {
+    encode: (s) => new Date(s),
+  });
+  assert.equal(
+    SJ.stringify(S.object({ d: Day }))({ d: "2024-01-02" }),
+    '{"d":"2024-01-02T00:00:00.000Z"}',
+  );
+  void slug;
+  assert.equal(assertOk(validate(Chained)("a-b") as Result<Slug, SchemaError>), "a-b");
+});
+
+test("construct: a default filled for an absent key does not hide an undeclared key", () => {
+  const Row = S.object({
+    a: S.construct(S.optional(S.string()), (s) => ok(s ?? "d")),
+    b: S.number(),
+  });
+  const text = '{"b":1,"evil":"x"}';
+  for (const r of [validate(Row)(JSON.parse(text)), SJ.parse(Row)(text)]) {
+    assert.deepEqual(r, [
+      false,
+      { path: "evil", expected: "no additional properties", received: "x" },
+    ]);
+  }
+  const all = validate(Row, { allErrors: true })({ b: 1, evil: "x" });
+  assert.equal(all[0], false);
+  assert.deepEqual(assertOk(validate(Row)({ b: 1 })), { b: 1, a: "d" });
 });

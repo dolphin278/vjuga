@@ -167,13 +167,26 @@ export interface RefineMeta<I extends Schema> {
 /** Phantom key carrying a refinement's output type; never present at run time. */
 declare const refinedType: unique symbol;
 
+/** Phantom key carrying the type a refinement's serializer accepts (see `Wire`). */
+declare const wireType: unique symbol;
+
 /**
  * A schema whose values are `inner`'s values narrowed (guard) or turned into
  * `T` (constructor). `Infer` yields `T`.
  */
-export type RefineSchema<I extends Schema, T> = SchemaBase<"refine", RefineMeta<I>> & {
+export type RefineSchema<I extends Schema, T, W = unknown> = SchemaBase<"refine", RefineMeta<I>> & {
   readonly [refinedType]?: T;
+  readonly [wireType]?: W;
 };
+
+/**
+ * The type `schema/JSON.stringify` (and TOON) accept for a schema's value:
+ * `Infer<S>` for a plain schema; through refinements without `encode`, the
+ * wire type of their base (a brand chained on a brand is still a string); a
+ * `construct()` with `encode` accepts its own output (`encode` maps it back).
+ */
+export type Wire<S extends Schema> =
+  S extends RefineSchema<Schema, unknown, infer W> ? W : Infer<S>;
 
 /**
  * Discriminated union of all schema node types.
@@ -521,6 +534,9 @@ export type Guarded<G, B> = G extends ((value: any) => value is infer T) ? T : B
  */
 export type Input<I extends Schema> = Schema extends I ? unknown : Infer<I>;
 
+/** `Wire<I>`, or `unknown` for the wide `Schema` type (as `Input`). */
+export type WireOf<I extends Schema> = Schema extends I ? unknown : Wire<I>;
+
 /** Options for `refine()`. */
 export interface RefineOptions {
   /** `SchemaError.expected` on rejection. Default: the guard's `name`, else `"refine"`. */
@@ -535,13 +551,15 @@ export interface RefineOptions {
 
 /**
  * What `construct()` returns: the refine node, or — when the output type is
- * not assignable to the input type and no `encode` was given — a type that is
- * not a `Schema`, so using it is a compile-time error naming the fix.
+ * not assignable to the base's wire type (`Wire`) and no `encode` was given
+ * — a type that is not a `Schema`, so using it is a compile-time error.
  */
-export type Constructed<I extends Schema, T, O> = [T] extends [Input<I>]
-  ? RefineSchema<I, T>
-  : O extends { readonly encode: (value: never) => unknown }
-    ? RefineSchema<I, T>
+export type Constructed<I extends Schema, T, O> = O extends {
+  readonly encode: (value: never) => unknown;
+}
+  ? RefineSchema<I, T, T>
+  : [T] extends [WireOf<I>]
+    ? RefineSchema<I, T, WireOf<I>>
     : ConstructNeedsEncode;
 
 /** Not a `Schema`: `construct()` of a foreign output type without `encode`. */
@@ -597,7 +615,7 @@ export function refine<I extends Schema, G extends (value: Input<I>) => boolean>
   inner: I,
   guard: G,
   options?: RefineOptions,
-): RefineSchema<I, Guarded<G, Input<I>>> {
+): RefineSchema<I, Guarded<G, Input<I>>, WireOf<I>> {
   return {
     kind: "refine",
     meta: {
@@ -622,13 +640,16 @@ export function refine<I extends Schema, G extends (value: Input<I>) => boolean>
  * Where the output goes: `validate` never mutates its input — containers on
  * the way to a changed value are shallow-copied (only when the output is not
  * `===` the input, so identity constructors allocate nothing); `JSON.parse`
- * writes into the tree it just parsed. Under `not()` and a `conditional`'s
- * `if`, the constructor only decides (its output is unused). An untagged
- * union runs the matching variant's constructor twice (once to match, once
- * to produce), so `make` must be pure and deterministic, and must not throw.
+ * writes into the tree it just parsed. Each constructor runs once per value,
+ * also inside unions (their trials keep the output). Under `not()` and a
+ * `conditional`'s `if` it only decides (its output is unused). Every `allOf`
+ * variant checks the input, and at most one may contain a constructor (its
+ * output is the result; two throw `TypeError` at compile time). `make` must
+ * be pure and must not throw (an exception propagates out of the validator).
  *
  * `JSON.stringify` serializes the output as `inner` unless `options.encode`
- * is given. When `T` is not assignable to `inner`'s type, `encode` is
+ * is given. When `T` is not assignable to the type `inner` serializes
+ * (`Wire<I>`: a brand on a string base serializes as a string), `encode` is
  * required: without it `construct()` returns `ConstructNeedsEncode`, which
  * is not a `Schema`, so any use of it is a compile-time error.
  *
@@ -652,7 +673,7 @@ export function construct<
   I extends Schema,
   T,
   E,
-  O extends ConstructOptions<T, E, Input<I>> = ConstructOptions<T, E, Input<I>>,
+  O extends ConstructOptions<T, E, WireOf<I>> = ConstructOptions<T, E, WireOf<I>>,
 >(inner: I, make: (value: Input<I>) => Result<T, E>, options?: O): Constructed<I, T, O> {
   const opts = options as
     | { readonly name?: string; readonly at?: Function; readonly encode?: Function }

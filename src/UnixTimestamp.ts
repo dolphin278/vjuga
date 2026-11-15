@@ -24,15 +24,15 @@
  *
  * @example
  * ```ts
- * import { unixTimestamp, fromDate, toDate, now } from "@dolphin278/vjuga/UnixTimestamp";
- * const ts = unixTimestamp(1705312200);   // branded
+ * import { unixTimestampExn, fromDate, toDate, now } from "@dolphin278/vjuga/UnixTimestamp";
+ * const ts = unixTimestampExn(1705312200); // branded
  * const date = toDate(ts);                // Date object
  * const back = fromDate(date);            // UnixTimestamp (floored)
  * const current = now();                  // current epoch seconds
  * ```
  */
 
-import type { Branded } from "./FunctionUtils.js";
+import { brandError, type Branded } from "./FunctionUtils.js";
 import { type Result, ok, err } from "./Result.js";
 import { ValidationError, type Validator } from "./schema/ValidationError.js";
 import { type ISOTimestamp, fromEpochMs, toDate as isoToDate } from "./ISOTimestamp.js";
@@ -40,16 +40,68 @@ import { type ISOTimestamp, fromEpochMs, toDate as isoToDate } from "./ISOTimest
 /** Branded number guaranteed to be a finite Unix epoch timestamp in seconds. */
 export type UnixTimestamp = Branded<number, "UnixTimestamp">;
 
+/** Why a number is not a `UnixTimestamp`: NaN or ±Infinity. */
+export type UnixTimestampError = "not-finite";
+
 /**
- * Validates and brands a number as a UnixTimestamp.
- * Accepts any finite number (negative values = pre-epoch; no unit or range
- * check, so milliseconds are not rejected). Throws RangeError if the value is
- * NaN, Infinity, or -Infinity.
+ * Guard: `value` is a finite number (negative = pre-epoch; no unit or range
+ * check, so milliseconds pass). Accepts `unknown`.
+ *
+ * @example
+ * ```ts
+ * import { isUnixTimestamp } from "@dolphin278/vjuga/UnixTimestamp";
+ * isUnixTimestamp(1705312200); // true
+ * isUnixTimestamp(NaN);        // false
+ * ```
  */
-export function unixTimestamp(value: number): UnixTimestamp {
-  if (!Number.isFinite(value))
-    throw new RangeError(`Expected finite number for Unix timestamp, got ${value}`);
-  return value as UnixTimestamp;
+export function isUnixTimestamp(value: unknown): value is UnixTimestamp {
+  return Number.isFinite(value);
+}
+
+/**
+ * Result constructor: `value` as a UnixTimestamp, or `"not-finite"`.
+ *
+ * @example
+ * ```ts
+ * import { unixTimestamp } from "@dolphin278/vjuga/UnixTimestamp";
+ * unixTimestamp(1705312200); // [true, 1705312200]
+ * unixTimestamp(Infinity);   // [false, "not-finite"]
+ * ```
+ */
+export function unixTimestamp(value: number): Result<UnixTimestamp, UnixTimestampError> {
+  return isUnixTimestamp(value) ? ok(value) : err("not-finite");
+}
+
+/**
+ * Throwing constructor: `value` as a UnixTimestamp, or a RangeError whose
+ * `cause` is `"not-finite"`.
+ *
+ * @example
+ * ```ts
+ * import { unixTimestampExn } from "@dolphin278/vjuga/UnixTimestamp";
+ * const ts = unixTimestampExn(1705312200);
+ * ```
+ */
+export function unixTimestampExn(value: number): UnixTimestamp {
+  if (!isUnixTimestamp(value)) throw brandError("UnixTimestamp", "not-finite", value);
+  return value;
+}
+
+/**
+ * Assertion: TypeError for a non-number, RangeError (`cause` `"not-finite"`)
+ * for NaN and ±Infinity.
+ *
+ * @example
+ * ```ts
+ * import { assertUnixTimestamp } from "@dolphin278/vjuga/UnixTimestamp";
+ * const v: unknown = 0;
+ * assertUnixTimestamp(v); // v: UnixTimestamp from here on
+ * ```
+ */
+export function assertUnixTimestamp(value: unknown): asserts value is UnixTimestamp {
+  if (!isUnixTimestamp(value)) {
+    throw brandError("UnixTimestamp", typeof value === "number" ? "not-finite" : undefined, value);
+  }
 }
 
 /** Converts a Date to a branded UnixTimestamp (seconds, floored). */
@@ -106,8 +158,7 @@ export function toISO(ts: UnixTimestamp): ISOTimestamp {
 /** Returns a `Validator<UnixTimestamp>` that validates unknown values as Unix timestamps. */
 export function validator(): Validator<UnixTimestamp> {
   return function validateUnixTimestamp(value: unknown): Result<UnixTimestamp, ValidationError> {
-    if (typeof value !== "number" || !Number.isFinite(value))
-      return err(new ValidationError("finite number (Unix timestamp)", value));
-    return ok(value as UnixTimestamp);
+    if (isUnixTimestamp(value)) return ok(value);
+    return err(new ValidationError("finite number (Unix timestamp)", value));
   };
 }

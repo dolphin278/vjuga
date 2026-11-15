@@ -44,7 +44,7 @@ import { availableParallelism } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolve as resolvePath } from "node:path";
 import * as PQ from "./PriorityQueue.js";
-import { positiveInteger, nonNegativeInteger } from "./FunctionUtils.js";
+import { positiveIntegerExn, nonNegativeIntegerExn } from "./FunctionUtils.js";
 import type { PositiveInteger, NonNegativeInteger } from "./FunctionUtils.js";
 import {
   MSG_TASK,
@@ -215,11 +215,13 @@ function toModuleSpecifier(filename: string | URL): string {
 export function make<I, O>(config: WorkerPoolConfig): WorkerPool<I, O> {
   const filename = toModuleSpecifier(config.filename);
   const minThreads =
-    config.minThreads !== undefined ? nonNegativeInteger(config.minThreads) : nonNegativeInteger(0);
+    config.minThreads !== undefined
+      ? nonNegativeIntegerExn(config.minThreads)
+      : nonNegativeIntegerExn(0);
   const maxThreads =
     config.maxThreads !== undefined
-      ? positiveInteger(config.maxThreads)
-      : positiveInteger(availableParallelism());
+      ? positiveIntegerExn(config.maxThreads)
+      : positiveIntegerExn(availableParallelism());
   let idleTimeout = config.idleTimeout !== undefined ? config.idleTimeout : 30_000;
   if (idleTimeout === Infinity) {
     idleTimeout = 0;

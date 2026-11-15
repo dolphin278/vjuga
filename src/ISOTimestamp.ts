@@ -25,15 +25,15 @@
  *
  * @example
  * ```ts
- * import { isoTimestamp, fromDate, toDate, now } from "@dolphin278/vjuga/ISOTimestamp";
- * const ts = isoTimestamp("2024-01-15T10:30:00.123456Z"); // branded
+ * import { isoTimestampExn, fromDate, toDate, now } from "@dolphin278/vjuga/ISOTimestamp";
+ * const ts = isoTimestampExn("2024-01-15T10:30:00.123456Z"); // branded
  * const date = toDate(ts);                 // Date (…00.123Z, truncated)
  * const back = fromDate(date);             // ISOTimestamp
  * const current = now();                   // current time
  * ```
  */
 
-import type { Branded } from "./FunctionUtils.js";
+import { brandError, type Branded } from "./FunctionUtils.js";
 import { type Result, ok, err } from "./Result.js";
 import { ValidationError, type Validator } from "./schema/ValidationError.js";
 import { daysInMonth } from "./ISODate.js";
@@ -192,12 +192,135 @@ export function isRfc3339Time(value: string): boolean {
 }
 
 /**
- * Validates and brands a string as an ISOTimestamp.
- * Throws RangeError if the string is not a valid ISO 8601 datetime.
+ * Why a string is not an `ISOTimestamp`: not the profile's shape
+ * (`"malformed"`: digits, separators, optional `:ss` / `.fraction`, `Z` or
+ * `±HH:MM`), or the right shape with a field out of range: no such calendar
+ * day (`"invalid-date"`), hour > 23 or minute/second > 59 (`"invalid-time"`),
+ * offset hour > 23 or minute > 59 (`"invalid-offset"`). The first failing
+ * rule in that order wins.
  */
-export function isoTimestamp(value: string): ISOTimestamp {
-  if (!isValid(value)) throw new RangeError(`Expected ISO 8601 datetime, got "${value}"`);
+export type ISOTimestampError = "malformed" | "invalid-date" | "invalid-time" | "invalid-offset";
+
+/**
+ * Guard: `value` is a string in the documented ISO 8601 profile.
+ * Allocation-free; accepts `unknown`.
+ *
+ * @example
+ * ```ts
+ * import { isISOTimestamp } from "@dolphin278/vjuga/ISOTimestamp";
+ * isISOTimestamp("2024-01-15T10:30:00.123Z"); // true
+ * isISOTimestamp("2024-01-15 10:30Z");        // false
+ * ```
+ */
+export function isISOTimestamp(value: unknown): value is ISOTimestamp {
+  return typeof value === "string" && isValid(value);
+}
+
+/** Two ASCII digits at `i`, i.e. `num2(s, i) >= 0`. */
+function digits2(s: string, i: number): boolean {
+  return num2(s, i) >= 0;
+}
+
+/**
+ * The rule a string that fails `isValid` breaks: shape first (so a range
+ * error is reported only for a well-formed string), then date, time, offset.
+ */
+function isoTimestampError(value: string): ISOTimestampError {
+  if (
+    value.length < 17 ||
+    value.charCodeAt(4) !== 45 ||
+    value.charCodeAt(7) !== 45 ||
+    value.charCodeAt(10) !== 84 ||
+    value.charCodeAt(13) !== 58 ||
+    !digits2(value, 0) ||
+    !digits2(value, 2) ||
+    !digits2(value, 5) ||
+    !digits2(value, 8) ||
+    !digits2(value, 11) ||
+    !digits2(value, 14)
+  ) {
+    return "malformed";
+  }
+  let p = 16;
+  let sec = 0;
+  if (value.charCodeAt(p) === 58) {
+    if (!digits2(value, 17)) return "malformed";
+    sec = num2(value, 17);
+    p = 19;
+    if (value.charCodeAt(p) === 46) {
+      p = skipDigits(value, 20);
+      if (p === 20) return "malformed";
+    }
+  }
+  const c = value.charCodeAt(p);
+  if (c === 90) {
+    if (p + 1 !== value.length) return "malformed";
+  } else {
+    if (
+      (c !== 43 && c !== 45) ||
+      p + 6 !== value.length ||
+      value.charCodeAt(p + 3) !== 58 ||
+      !digits2(value, p + 1) ||
+      !digits2(value, p + 4)
+    ) {
+      return "malformed";
+    }
+  }
+  if (!fullDate(value)) return "invalid-date";
+  if (num2(value, 11) > 23 || num2(value, 14) > 59 || sec > 59) return "invalid-time";
+  // Called only for a string `isValid` refused, and every other rule passed,
+  // so the offset's hour or minute is out of range.
+  return "invalid-offset";
+}
+
+/**
+ * Result constructor: `value` as an ISOTimestamp, or the rule it breaks.
+ * Never normalises (an offset stays an offset; use `fromDate(toDate(ts))`
+ * for the UTC `…Z` spelling).
+ *
+ * @example
+ * ```ts
+ * import { isoTimestamp } from "@dolphin278/vjuga/ISOTimestamp";
+ * isoTimestamp("2024-01-15T10:30:00Z"); // [true, "2024-01-15T10:30:00Z"]
+ * isoTimestamp("2024-01-15T24:00Z");    // [false, "invalid-time"]
+ * isoTimestamp("2024-01-15");           // [false, "malformed"]
+ * ```
+ */
+export function isoTimestamp(value: string): Result<ISOTimestamp, ISOTimestampError> {
+  return isValid(value) ? ok(value as ISOTimestamp) : err(isoTimestampError(value));
+}
+
+/**
+ * Throwing constructor: `value` as an ISOTimestamp, or a RangeError whose
+ * `cause` is the `ISOTimestampError` literal.
+ *
+ * @example
+ * ```ts
+ * import { isoTimestampExn } from "@dolphin278/vjuga/ISOTimestamp";
+ * const ts = isoTimestampExn("2024-01-15T10:30:00.123456Z");
+ * ```
+ */
+export function isoTimestampExn(value: string): ISOTimestamp {
+  if (!isValid(value)) throw brandError("ISOTimestamp", isoTimestampError(value), value);
   return value as ISOTimestamp;
+}
+
+/**
+ * Assertion: TypeError for a non-string, RangeError (with the
+ * `ISOTimestampError` as `cause`) for any other non-ISOTimestamp.
+ *
+ * @example
+ * ```ts
+ * import { assertISOTimestamp } from "@dolphin278/vjuga/ISOTimestamp";
+ * const v: unknown = "2024-01-15T10:30:00Z";
+ * assertISOTimestamp(v); // v: ISOTimestamp from here on
+ * ```
+ */
+export function assertISOTimestamp(value: unknown): asserts value is ISOTimestamp {
+  if (!isISOTimestamp(value)) {
+    const code = typeof value === "string" ? isoTimestampError(value) : undefined;
+    throw brandError("ISOTimestamp", code, value);
+  }
 }
 
 /**
@@ -313,9 +436,7 @@ export function now(): ISOTimestamp {
 /** Returns a `Validator<ISOTimestamp>` that validates unknown values as ISO timestamps. */
 export function validator(): Validator<ISOTimestamp> {
   return function validateISOTimestamp(value: unknown): Result<ISOTimestamp, ValidationError> {
-    if (typeof value !== "string")
-      return err(new ValidationError("ISO 8601 datetime string", value));
-    if (!isValid(value)) return err(new ValidationError("ISO 8601 datetime string", value));
-    return ok(value as ISOTimestamp);
+    if (isISOTimestamp(value)) return ok(value);
+    return err(new ValidationError("ISO 8601 datetime string", value));
   };
 }

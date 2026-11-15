@@ -24,6 +24,8 @@
  * a single error per untagged union / `oneOf` / `not` (a `conditional`'s
  * chosen branch and a tagged union's variant collect normally);
  * `errors[0]` is always the first-error result. Cyclic schemas unsupported.
+ * Refinements run after their base checks; a `construct` output copies only
+ * the containers above it (the input is never mutated).
  *
  * @example Compile once, validate many
  * ```ts

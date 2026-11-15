@@ -20,12 +20,12 @@
  *   cannot encode unambiguously throw `TypeError("TOON: unsupported ...")` at
  *   compile time: `optional(compound)` outside an object field, unions
  *   mixing compound variants unless they are discriminated object unions,
- *   and `unknown` / `allOf` / `not` / `conditional`. Unions of primitives
- *   decode the token's type (quoted → string), then pick the first variant
- *   that validates (`oneOf`: exactly one must). Parsing is strict (`strict` is a no-op):
- *   exact counts, JSON-grammar numbers, §7.1 escapes only, space-trimmed
- *   values (§12), empty cell = "absent"; constraints enforced like `validate`.
- *   `__proto__` keys are dropped on parse; non-finite numbers emit `null`.
+ *   `unknown` / `allOf` / `not` / `conditional`, `construct` with `encode`
+ *   (refinements take the base layout). Unions of primitives decode the
+ *   token's type, then pick the first variant that validates (`oneOf`:
+ *   exactly one). Parsing is strict: exact counts, JSON-grammar numbers,
+ *   §7.1 escapes only, space-trimmed values (§12), empty cell = "absent",
+ *   constraints as `validate`; drops `__proto__` keys; non-finite → `null`.
  *
  * @example Objects, tabular arrays, round-trip
  * ```ts

@@ -19,7 +19,8 @@
  *   Non-finite numbers emit `null`; static `allOf` shapes merge at compile
  *   time, others resolve per call (slower). parse: native `JSON.parse` +
  *   generated validation; own `__proto__` keys (also `\u`-escaped
- *   spellings) are stripped. `constructor` is kept.
+ *   spellings) are stripped. `constructor` is kept. Refinements: `construct`
+ *   outputs are written into the parsed tree; stringify writes the base form.
  *
  * @example Compile once at init, call on hot path
  * ```ts

@@ -40,7 +40,7 @@
  * ```
  */
 
-import { type Result, type Ok, type Err, ok, err } from "../Result.js";
+import { type Result, ok, err } from "../Result.js";
 import { unreachable } from "../FunctionUtils.js";
 import { type FormatName, isKnownFormat } from "./Formats.js";
 
@@ -526,32 +526,21 @@ export interface RefineOptions {
   readonly at?: string;
 }
 
-/** The output type of a `Result`-returning constructor. */
-export type Made<F> = F extends (value: never) => infer R
-  ? R extends Ok<infer T>
-    ? T
-    : never
-  : never;
-
-/** The error type of a `Result`-returning constructor. */
-export type Failed<F> = F extends (value: never) => infer R
-  ? R extends Err<infer E>
-    ? E
-    : never
-  : never;
-
 /**
- * `construct()`'s options parameter: optional when the output is assignable
- * to the input type (it serializes as the input), otherwise required with
- * an `encode`.
+ * What `construct()` returns: the refine node, or — when the output type is
+ * not assignable to the input type and no `encode` was given — a type that is
+ * not a `Schema`, so using it is a compile-time error naming the fix.
  */
-export type ConstructArgs<I extends Schema, F> = [Made<F>] extends [Infer<I>]
-  ? [options?: ConstructOptions<Made<F>, Failed<F>, Infer<I>>]
-  : [
-      options: ConstructOptions<Made<F>, Failed<F>, Infer<I>> & {
-        readonly encode: (value: Made<F>) => Infer<I>;
-      },
-    ];
+export type Constructed<I extends Schema, T, O> = [T] extends [Infer<I>]
+  ? RefineSchema<I, T>
+  : O extends { readonly encode: (value: never) => unknown }
+    ? RefineSchema<I, T>
+    : ConstructNeedsEncode;
+
+/** Not a `Schema`: `construct()` of a foreign output type without `encode`. */
+export interface ConstructNeedsEncode {
+  readonly "construct(): the output type is not the input type; pass options.encode": never;
+}
 
 /** Options for `construct()`. */
 export interface ConstructOptions<T, E, B> {
@@ -632,8 +621,9 @@ export function refine<I extends Schema, G extends (value: Infer<I>) => boolean>
  * to produce), so `make` must be pure and deterministic, and must not throw.
  *
  * `JSON.stringify` serializes the output as `inner` unless `options.encode`
- * is given; when `T` is not assignable to `inner`'s type, `encode` is
- * required (a compile-time error otherwise).
+ * is given. When `T` is not assignable to `inner`'s type, `encode` is
+ * required: without it `construct()` returns `ConstructNeedsEncode`, which
+ * is not a `Schema`, so any use of it is a compile-time error.
  *
  * @example A normalizing branded constructor, with errors mapped to fields
  * ```ts
@@ -653,12 +643,14 @@ export function refine<I extends Schema, G extends (value: Infer<I>) => boolean>
  */
 export function construct<
   I extends Schema,
-  F extends (value: Infer<I>) => Result<unknown, unknown>,
->(inner: I, make: F, ...options: ConstructArgs<I, F>): RefineSchema<I, Made<F>> {
-  const opts = options[0] as
+  T,
+  E,
+  O extends ConstructOptions<T, E, Infer<I>> = ConstructOptions<T, E, Infer<I>>,
+>(inner: I, make: (value: Infer<I>) => Result<T, E>, options?: O): Constructed<I, T, O> {
+  const opts = options as
     | { readonly name?: string; readonly at?: Function; readonly encode?: Function }
     | undefined;
-  return {
+  const node: RefineSchema<Schema, unknown> = {
     kind: "refine",
     meta: {
       inner,
@@ -669,6 +661,8 @@ export function construct<
       encode: opts?.encode as ((value: never) => unknown) | undefined,
     },
   };
+  // The conditional return type cannot be checked against a generic T
+  return node as unknown as Constructed<I, T, O>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1627,8 +1621,6 @@ function rejectsNull(s: Schema): boolean {
       return (s.meta.variants as readonly Schema[]).some(rejectsNull);
     case "conditional":
       return rejectsNull(s.meta.then) && rejectsNull(s.meta.else);
-    case "refine": // never produced by lowering
-      return rejectsNull(s.meta.inner);
     default:
       // string, number, integer, boolean, enum (strings/numbers), object, array, tuple, record
       return true;

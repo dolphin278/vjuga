@@ -784,28 +784,113 @@ test("FunctionUtils: branded number validators", async () => {
   const FU = await import("../../FunctionUtils.js");
 
   // positiveNumber
-  assert.throws(() => FU.positiveNumber(0), RangeError);
-  assert.throws(() => FU.positiveNumber(-1), RangeError);
-  assert.throws(() => FU.positiveNumber(NaN), RangeError);
-  FU.positiveNumber(0.001); // should not throw
+  assert.throws(() => FU.positiveNumberExn(0), RangeError);
+  assert.throws(() => FU.positiveNumberExn(-1), RangeError);
+  assert.throws(() => FU.positiveNumberExn(NaN), RangeError);
+  FU.positiveNumberExn(0.001); // should not throw
 
   // integer
-  assert.throws(() => FU.integer(1.5), RangeError);
-  assert.throws(() => FU.integer(NaN), RangeError);
-  assert.throws(() => FU.integer(Infinity), RangeError);
-  FU.integer(0); // ok
-  FU.integer(-42); // ok
+  assert.throws(() => FU.integerExn(1.5), RangeError);
+  assert.throws(() => FU.integerExn(NaN), RangeError);
+  assert.throws(() => FU.integerExn(Infinity), RangeError);
+  FU.integerExn(0); // ok
+  FU.integerExn(-42); // ok
 
   // positiveInteger
-  assert.throws(() => FU.positiveInteger(0), RangeError);
-  assert.throws(() => FU.positiveInteger(-1), RangeError);
-  assert.throws(() => FU.positiveInteger(1.5), RangeError);
-  FU.positiveInteger(1); // ok
+  assert.throws(() => FU.positiveIntegerExn(0), RangeError);
+  assert.throws(() => FU.positiveIntegerExn(-1), RangeError);
+  assert.throws(() => FU.positiveIntegerExn(1.5), RangeError);
+  FU.positiveIntegerExn(1); // ok
 
   // nonNegativeInteger
-  assert.throws(() => FU.nonNegativeInteger(-1), RangeError);
-  assert.throws(() => FU.nonNegativeInteger(1.5), RangeError);
-  FU.nonNegativeInteger(0); // ok
+  assert.throws(() => FU.nonNegativeIntegerExn(-1), RangeError);
+  assert.throws(() => FU.nonNegativeIntegerExn(1.5), RangeError);
+  FU.nonNegativeIntegerExn(0); // ok
+});
+
+test("FunctionUtils: branded number standard set agrees with Number.isSafeInteger", async () => {
+  const FU = await import("../../FunctionUtils.js");
+  const num = Arb.oneOf(
+    Arb.integer(),
+    Arb.float(-1e20, 1e20),
+    Arb.constantFrom(0, -0, 1, -1, 0.5, NaN, Infinity, -Infinity, 2 ** 53, 2 ** 53 - 1, -(2 ** 53)),
+  );
+  const sets = [
+    [
+      FU.positiveNumber,
+      FU.positiveNumberExn,
+      FU.isPositiveNumber,
+      FU.assertPositiveNumber,
+      (n: number) => (n > 0 ? undefined : "not-positive"),
+    ],
+    [
+      FU.integer,
+      FU.integerExn,
+      FU.isInteger,
+      FU.assertInteger,
+      (n: number) =>
+        Number.isSafeInteger(n)
+          ? undefined
+          : Number.isInteger(n)
+            ? "unsafe-integer"
+            : "not-integer",
+    ],
+    [
+      FU.positiveInteger,
+      FU.positiveIntegerExn,
+      FU.isPositiveInteger,
+      FU.assertPositiveInteger,
+      (n: number) =>
+        !Number.isInteger(n)
+          ? "not-integer"
+          : !Number.isSafeInteger(n)
+            ? "unsafe-integer"
+            : n < 1
+              ? "not-positive"
+              : undefined,
+    ],
+    [
+      FU.nonNegativeInteger,
+      FU.nonNegativeIntegerExn,
+      FU.isNonNegativeInteger,
+      FU.assertNonNegativeInteger,
+      (n: number) =>
+        !Number.isInteger(n)
+          ? "not-integer"
+          : !Number.isSafeInteger(n)
+            ? "unsafe-integer"
+            : n < 0
+              ? "negative"
+              : undefined,
+    ],
+  ] as const;
+  Prop.assert(
+    num,
+    (n) => {
+      for (const [make, exn, is, assertX, ref] of sets) {
+        const want = ref(n);
+        assert.deepEqual(
+          (make as (n: number) => unknown)(n),
+          want === undefined ? [true, n] : [false, want],
+        );
+        assert.equal(is(n), want === undefined);
+        if (want === undefined) {
+          assert.equal((exn as (n: number) => number)(n), n);
+          (assertX as (v: unknown) => void)(n);
+        } else {
+          assert.throws(() => (exn as (n: number) => number)(n), {
+            name: "RangeError",
+            cause: want,
+          });
+          assert.throws(() => (assertX as (v: unknown) => void)(n), {
+            name: "RangeError",
+            cause: want,
+          });
+        }
+      }
+    },
+    { numRuns: 1_000_000 },
+  );
 });
 
 test("FunctionUtils: partial application", async () => {
@@ -855,7 +940,7 @@ test("UUID: v4() produces valid UUIDs", async () => {
   for (let i = 0; i < 100; i++) {
     const id = UUID.v4();
     // Should not throw when re-validated
-    UUID.uuid(id as string);
+    UUID.uuidExn(id as string);
     assert.equal(UUID.version(id), 4);
   }
 });
@@ -872,7 +957,7 @@ test("UUID: uuid() rejects invalid strings", async () => {
   ];
 
   for (const s of invalid) {
-    assert.throws(() => UUID.uuid(s), RangeError);
+    assert.throws(() => UUID.uuidExn(s), RangeError);
   }
 });
 
@@ -915,7 +1000,7 @@ test("ISOTimestamp: rejects invalid strings", async () => {
 
   const invalid = ["", "not-a-date", "2024-99-99T00:00:00Z", "Tuesday"];
   for (const s of invalid) {
-    assert.throws(() => ISO.isoTimestamp(s));
+    assert.throws(() => ISO.isoTimestampExn(s));
   }
 });
 
@@ -929,7 +1014,7 @@ test("UnixTimestamp: fromDate/toDate round-trip", async () => {
   Prop.assert(
     Arb.integer(0, 2000000000),
     (epochSec) => {
-      const ts = UT.unixTimestamp(epochSec);
+      const ts = UT.unixTimestampExn(epochSec);
       const date = UT.toDate(ts);
       const back = UT.fromDate(date);
       return back === epochSec;
@@ -941,14 +1026,14 @@ test("UnixTimestamp: fromDate/toDate round-trip", async () => {
 test("UnixTimestamp: rejects non-finite values", async () => {
   const UT = await import("../../UnixTimestamp.js");
 
-  assert.throws(() => UT.unixTimestamp(NaN), RangeError);
-  assert.throws(() => UT.unixTimestamp(Infinity), RangeError);
-  assert.throws(() => UT.unixTimestamp(-Infinity), RangeError);
+  assert.throws(() => UT.unixTimestampExn(NaN), RangeError);
+  assert.throws(() => UT.unixTimestampExn(Infinity), RangeError);
+  assert.throws(() => UT.unixTimestampExn(-Infinity), RangeError);
 
   // Finite values should work (including negative for pre-epoch)
-  UT.unixTimestamp(0);
-  UT.unixTimestamp(-1000);
-  UT.unixTimestamp(2000000000);
+  UT.unixTimestampExn(0);
+  UT.unixTimestampExn(-1000);
+  UT.unixTimestampExn(2000000000);
 });
 
 test("UnixTimestamp: now() returns current time", async () => {

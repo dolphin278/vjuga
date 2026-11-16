@@ -22,6 +22,7 @@ const modules = [
   "./BatchExecutor.bench.js",
   "./Memoization.bench.js",
   "./FunctionUtils.bench.js",
+  "./Brands.bench.js",
   "./HTML.bench.js",
   "./Immutable.bench.js",
   "./JSON.bench.js",

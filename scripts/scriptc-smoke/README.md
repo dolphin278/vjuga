@@ -23,8 +23,8 @@ partial and unsupported rows were last checked on 0.4.4.
 Covered by a consumer here (builds, runs, matches Bun): BatchExecutor, BitSet,
 BloomFilter, BufferizedFunction, ErrorChain, HTML, Immutable, ISODate,
 ISOTimestamp, JSON, LRUCache, MemoryPool, OrderedMap, PRNG, PriorityQueue,
-PromiseUtils, Queue, Ref, Result, TaggedUnion, TimedFunction, UnixTimestamp,
-UUID, schema/Formats, schema/Schema.
+PromiseUtils, Queue, Ref, Result, TaggedUnion, Text, TimedFunction,
+UnixTimestamp, UUID, schema/Formats, schema/Schema.
 
 Partly covered:
 

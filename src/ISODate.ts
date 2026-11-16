@@ -23,8 +23,8 @@
  *
  * @example
  * ```ts
- * import { isoDate, fromDate, today, addDays, toDate } from "@dolphin278/vjuga/ISODate";
- * const d = isoDate("2024-02-28");          // branded
+ * import { isoDateExn, fromDate, today, addDays, toDate } from "@dolphin278/vjuga/ISODate";
+ * const d = isoDateExn("2024-02-28");       // branded; isoDate() gives a Result
  * addDays(d, 1);                            // "2024-02-29"
  * addDays(d, -59);                          // "2023-12-31"
  * fromDate(new Date("2024-03-01T23:30:00-05:00")); // "2024-03-02" (UTC)
@@ -33,7 +33,7 @@
  * ```
  */
 
-import type { Branded } from "./FunctionUtils.js";
+import { brandError, type Branded } from "./FunctionUtils.js";
 import { type Result, ok, err } from "./Result.js";
 import { ValidationError, type Validator } from "./schema/ValidationError.js";
 
@@ -66,10 +66,17 @@ function num2(s: string, i: number): number {
 }
 
 /**
- * Allocation-free predicate for RFC 3339 `full-date` (`YYYY-MM-DD`, ASCII
- * digits only, month 01–12, day within the month incl. leap years). Exact
- * match: no surrounding whitespace, sign or extra digits. This is the
- * grammar behind `isoDate`, and it matches JSON Schema `format: "date"`.
+ * Why a string is not an `ISODate`: not `YYYY-MM-DD` with ASCII digits
+ * (`"malformed"`), or the right shape naming no real day (`"invalid-date"`:
+ * month 00 or 13+, day 00, `02-30`, `2023-02-29`).
+ */
+export type ISODateError = "malformed" | "invalid-date";
+
+/**
+ * Guard: `value` is an RFC 3339 `full-date` (`YYYY-MM-DD`, ASCII digits only,
+ * month 01–12, day within the month incl. leap years). Exact match: no
+ * surrounding whitespace, sign or extra digits. Allocation-free; accepts
+ * `unknown`. It matches JSON Schema `format: "date"`.
  *
  * @example
  * ```ts
@@ -78,8 +85,13 @@ function num2(s: string, i: number): number {
  * isISODate("2021-02-29"); // false
  * ```
  */
-export function isISODate(value: string): value is ISODate {
-  if (value.length !== 10 || value.charCodeAt(4) !== 45 || value.charCodeAt(7) !== 45) {
+export function isISODate(value: unknown): value is ISODate {
+  if (
+    typeof value !== "string" ||
+    value.length !== 10 ||
+    value.charCodeAt(4) !== 45 ||
+    value.charCodeAt(7) !== 45
+  ) {
     return false;
   }
   const hi = num2(value, 0);
@@ -89,14 +101,65 @@ export function isISODate(value: string): value is ISODate {
   return hi >= 0 && lo >= 0 && day >= 1 && day <= daysInMonth(hi * 100 + lo, month);
 }
 
+/** The rule a string that is not an ISODate breaks. */
+function isoDateError(value: string): ISODateError {
+  const shaped =
+    value.length === 10 &&
+    value.charCodeAt(4) === 45 &&
+    value.charCodeAt(7) === 45 &&
+    num2(value, 0) >= 0 &&
+    num2(value, 2) >= 0 &&
+    num2(value, 5) >= 0 &&
+    num2(value, 8) >= 0;
+  return shaped ? "invalid-date" : "malformed";
+}
+
 /**
- * Validates and brands a string as an ISODate.
- * Throws RangeError for a wrong shape or an impossible calendar date.
+ * Result constructor: `value` as an ISODate, or the rule it breaks. Never
+ * normalises.
+ *
+ * @example
+ * ```ts
+ * import { isoDate } from "@dolphin278/vjuga/ISODate";
+ * isoDate("2024-02-29"); // [true, "2024-02-29"]
+ * isoDate("2023-02-29"); // [false, "invalid-date"]
+ * isoDate("2024-2-1");   // [false, "malformed"]
+ * ```
  */
-export function isoDate(value: string): ISODate {
-  if (!isISODate(value))
-    throw new RangeError(`Expected ISO 8601 date (YYYY-MM-DD), got "${value}"`);
+export function isoDate(value: string): Result<ISODate, ISODateError> {
+  return isISODate(value) ? ok(value) : err(isoDateError(value));
+}
+
+/**
+ * Throwing constructor: `value` as an ISODate, or a RangeError whose `cause`
+ * is the `ISODateError` literal.
+ *
+ * @example
+ * ```ts
+ * import { isoDateExn } from "@dolphin278/vjuga/ISODate";
+ * const d = isoDateExn("2024-02-28"); // ISODate
+ * ```
+ */
+export function isoDateExn(value: string): ISODate {
+  if (!isISODate(value)) throw brandError("ISODate", isoDateError(value), value);
   return value;
+}
+
+/**
+ * Assertion: TypeError for a non-string, RangeError (with the
+ * `ISODateError` as `cause`) for any other non-ISODate.
+ *
+ * @example
+ * ```ts
+ * import { assertISODate } from "@dolphin278/vjuga/ISODate";
+ * const v: unknown = "2024-01-31";
+ * assertISODate(v); // v: ISODate from here on
+ * ```
+ */
+export function assertISODate(value: unknown): asserts value is ISODate {
+  if (!isISODate(value)) {
+    throw brandError("ISODate", typeof value === "string" ? isoDateError(value) : undefined, value);
+  }
 }
 
 const MS_PER_DAY = 86_400_000;
@@ -175,7 +238,7 @@ export function toDate(date: ISODate): Date {
 /** Returns a `Validator<ISODate>` that validates unknown values as ISO dates. */
 export function validator(): Validator<ISODate> {
   return function validateISODate(value: unknown): Result<ISODate, ValidationError> {
-    if (typeof value === "string" && isISODate(value)) return ok(value);
+    if (isISODate(value)) return ok(value);
     return err(new ValidationError("ISO 8601 date string (YYYY-MM-DD)", value));
   };
 }

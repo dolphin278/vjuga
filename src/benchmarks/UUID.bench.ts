@@ -1,6 +1,6 @@
 import { bench, run } from "mitata";
 import { reportOptimizationStatus } from "./_v8.js";
-import { v4, v7, uuid } from "../UUID.js";
+import { v4, v7, uuidExn } from "../UUID.js";
 
 // --- Warm-up ---
 {
@@ -22,12 +22,12 @@ bench("UUID.v7()", () => {
   return v7();
 });
 
-bench("UUID.uuid() (validation, lowercase)", () => {
-  return uuid("550e8400-e29b-41d4-a716-446655440000");
+bench("UUID.uuidExn() (validation, lowercase)", () => {
+  return uuidExn("550e8400-e29b-41d4-a716-446655440000");
 });
 
-bench("UUID.uuid() (validation, uppercase)", () => {
-  return uuid("550E8400-E29B-41D4-A716-446655440000");
+bench("UUID.uuidExn() (validation, uppercase)", () => {
+  return uuidExn("550E8400-E29B-41D4-A716-446655440000");
 });
 
 await run();

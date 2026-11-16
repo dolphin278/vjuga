@@ -49,7 +49,16 @@ Queue - FIFO/LIFO with O(1) push/pop/shift/unshift, circular buffer that auto-gr
 Validate compiles schemas to code-generated validators - one pass validation at runtime. JSON stringify/parse generate typed one-pass parse+validate and serializers that emit only declared keys, with a prototype-pollution guard. TOON is up to ~50% smaller than JSON for tabular data (token-efficient contexts). Schema composable type definitions with 19 kinds: primitive, array, object, record, union (and exclusive `oneOf`), tuple, nullable, optional, literal, enum, unknown, allOf, not, if/then/else, refinements (`refine` type guards and `construct` Result constructors, so a schema yields branded or custom types straight from JSON text or JS values), and more; `fromJsonSchema` lowers JSON Schema 2020-12 (`$ref`, combinators, formats).
 
 ### Types
-Branded ISOTimestamp, ISODate, UnixTimestamp validates and brands at construction time. UUID v4 random and v7 time-ordered.
+Branded types you can use directly in your own model: PositiveNumber, Integer, PositiveInteger, NonNegativeInteger (FunctionUtils), NonEmptyString, NonBlank (Text), ISODate, ISOTimestamp, UnixTimestamp, UUID (v4 random, v7 time-ordered). Every one has the same four functions, and `defineBrand` derives them for your own brands:
+
+| Form | Example | Fails with |
+|---|---|---|
+| Result constructor `x(v)` | `positiveInteger(n)` → `Result<PositiveInteger, PositiveIntegerError>` | `Err` holding one string literal per rule (`"not-positive"`) |
+| Throwing constructor `xExn(v)` | `positiveIntegerExn(n)` → `PositiveInteger` | `RangeError` whose `cause` is that literal |
+| Guard `isX(v: unknown)` | `isPositiveInteger(v)` → `v is PositiveInteger` | `false` |
+| Assertion `assertX(v: unknown)` | `assertPositiveInteger(v)` | `TypeError` (wrong base type) or `RangeError` |
+
+Guards and assertions check and never repair; constructors may normalise (`uuid` lower-cases, `nonBlank` trims).
 
 ### Testing
 Property.check() runs property-based tests - generates random input, shrinks to minimal counterexamples automatically. StatefulTest.assertStateful() for model-based stateful testing with oracle model. CoverageGuided.fuzz() is time-boxed random fuzzing; fuzzAsync() adds V8 coverage feedback (falling back to random fuzzing when NODE_V8_COVERAGE is set).

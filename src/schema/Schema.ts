@@ -4,11 +4,12 @@
  *
  * A Schema is a plain `{ kind, meta }` object describing a type. Unlike
  * closure-based validators, schemas are introspectable data compiled to many
- * targets: validators, JSON / TOON serializers and parsers. 18 kinds: string,
+ * targets: validators, JSON / TOON serializers and parsers. 19 kinds: string,
  * number, integer, boolean, null, literal, enum, object, array, tuple, record,
  * union (`oneOf()` = exclusive union), optional, nullable, unknown, allOf,
- * not, conditional. Recursive (cyclic) schemas — and recursive `$ref` in
- * `fromJsonSchema` — are not supported.
+ * not, conditional, refine (`refine()` guard / `construct()` constructor:
+ * branded or custom output types). Recursive (cyclic) schemas — and
+ * recursive `$ref` in `fromJsonSchema` — are not supported.
  *
  * When to use: runtime type information that feeds more than one consumer
  * (validation + serialization + type inference). For one-shot validation of
@@ -143,6 +144,52 @@ export type ConditionalSchema<I extends Schema, T extends Schema, E extends Sche
 >;
 
 /**
+ * Payload of a `refine` node (built by `refine()` or `construct()`). `fn` is
+ * called by reference from generated code, never spliced in as source.
+ */
+export interface RefineMeta<I extends Schema> {
+  readonly inner: I;
+  /** `"guard"`: `fn` returns a boolean. `"construct"`: `fn` returns a `Result`. */
+  readonly mode: "guard" | "construct";
+  readonly fn: (value: never) => unknown;
+  /** `SchemaError.expected` when the refinement rejects a value. */
+  readonly name: string;
+  /**
+   * Sub-path (dot-separated, `""` = this value) the error is reported at: a
+   * constant for a guard, a function of the constructor's error for
+   * `construct`. `undefined` reports at the refined value itself.
+   */
+  readonly at: string | ((error: never) => string) | undefined;
+  /** `construct` only: maps the output back to `inner`'s form for `JSON.stringify`. */
+  readonly encode: ((value: never) => unknown) | undefined;
+}
+
+/** Phantom key carrying a refinement's output type; never present at run time. */
+declare const refinedType: unique symbol;
+
+/** Phantom key carrying the type a refinement's serializer accepts (see `Wire`). */
+declare const wireType: unique symbol;
+
+/**
+ * A schema whose values are `inner`'s values narrowed (guard) or turned into
+ * `T` (constructor). `Infer` yields `T`.
+ */
+export type RefineSchema<I extends Schema, T, W = unknown> = SchemaBase<"refine", RefineMeta<I>> & {
+  readonly [refinedType]?: T;
+  readonly [wireType]?: W;
+};
+
+/**
+ * The type a `construct()` output must be assignable to for its base to
+ * serialize it without `encode`: `Infer<S>` for a plain schema; through
+ * refinements without `encode`, the wire type of their base (a brand chained
+ * on a brand still serializes as a string); for a `construct()` with
+ * `encode`, its own output type (`encode` maps it back).
+ */
+export type Wire<S extends Schema> =
+  S extends RefineSchema<Schema, unknown, infer W> ? W : Infer<S>;
+
+/**
  * Discriminated union of all schema node types.
  *
  * Uses `any` for recursive type parameters to break the circular reference.
@@ -150,9 +197,10 @@ export type ConditionalSchema<I extends Schema, T extends Schema, E extends Sche
  * type parameters — the `any` here only affects the union discriminant, not
  * the builder return types.
  *
- * 18 kinds (`unknown`, `allOf`, `not` and `conditional` were added after v9;
- * `oneOf` is a `union` with `meta.exclusive: true`). Code that switches over
- * `kind` exhaustively should handle them or fall through to a `default`.
+ * 19 kinds (`unknown`, `allOf`, `not` and `conditional` were added after v9,
+ * `refine` in v14; `oneOf` is a `union` with `meta.exclusive: true`). Code
+ * that switches over `kind` exhaustively should handle them or fall through
+ * to a `default`.
  */
 export type Schema =
   | StringSchema
@@ -172,7 +220,8 @@ export type Schema =
   | UnknownSchema
   | AllOfSchema<any>
   | NotSchema<any>
-  | ConditionalSchema<any, any, any>;
+  | ConditionalSchema<any, any, any>
+  | RefineSchema<any, any>;
 
 // ---------------------------------------------------------------------------
 // Type inference
@@ -192,6 +241,9 @@ export type Schema =
  * `validate` accepts `{}` for `object({ a: nullable(optional(T)) })`, but the
  * inferred type requires `a`. Wrap the outermost layer instead
  * (`optional(nullable(T))`) when the key itself is optional.
+ *
+ * Likewise `refine(optional(T), ...)` infers a required key: write
+ * `optional(refine(T, ...))` when the key may be absent.
  *
  * Pitfall: `Infer<Schema>` (the base union type) causes "excessively deep"
  * errors. Always infer from a specific schema constant.
@@ -232,7 +284,9 @@ export type Infer<S extends Schema> = S extends StringSchema
                                   ? unknown
                                   : S extends ConditionalSchema<Schema, infer T, infer E>
                                     ? Infer<T> | Infer<E>
-                                    : never;
+                                    : S extends RefineSchema<Schema, infer T>
+                                      ? T
+                                      : never;
 
 /** Required keys + optional keys merged via intersection. */
 type InferObject<P extends Record<string, Schema>> = Simplify<
@@ -464,6 +518,185 @@ export function conditional<
 }
 
 // ---------------------------------------------------------------------------
+// Refinements: user guards and constructors
+// ---------------------------------------------------------------------------
+
+/**
+ * The type a guard narrows to: `T` for `(value) => value is T`, otherwise
+ * `B` (a plain boolean check keeps the input type).
+ */
+// oxlint-disable-next-line no-explicit-any -- matches a predicate of any parameter type
+export type Guarded<G, B> = G extends ((value: any) => value is infer T) ? T : B;
+
+/**
+ * The value type a refinement receives: `Infer<I>`, or `unknown` when `I` is
+ * the wide `Schema` type (a schema built at run time), whose `Infer` is too
+ * deep for tsc.
+ */
+export type Input<I extends Schema> = Schema extends I ? unknown : Infer<I>;
+
+/** `Wire<I>`, or `unknown` for the wide `Schema` type (as `Input`). */
+export type WireOf<I extends Schema> = Schema extends I ? unknown : Wire<I>;
+
+/** Options for `refine()`. */
+export interface RefineOptions {
+  /** `SchemaError.expected` on rejection. Default: the guard's `name`, else `"refine"`. */
+  readonly name?: string;
+  /**
+   * Sub-path to report the error at, relative to the refined value
+   * (dot-separated; `""` = the value itself, the default). For a rule over
+   * several fields, name the field the error is about.
+   */
+  readonly at?: string;
+}
+
+/**
+ * What `construct()` returns: the refine node, or — when the output type is
+ * not assignable to the base's wire type (`Wire`) and no `encode` was given
+ * — a type that is not a `Schema`, so using it is a compile-time error.
+ */
+export type Constructed<I extends Schema, T, O> = O extends {
+  readonly encode: (value: never) => unknown;
+}
+  ? RefineSchema<I, T, T>
+  : [T] extends [WireOf<I>]
+    ? RefineSchema<I, T, WireOf<I>>
+    : ConstructNeedsEncode;
+
+/** Not a `Schema`: `construct()` of a foreign output type without `encode`. */
+export interface ConstructNeedsEncode {
+  readonly "construct(): the output type is not the input type; pass options.encode": never;
+}
+
+/** Options for `construct()`. */
+export interface ConstructOptions<T, E, B> {
+  /** `SchemaError.expected` on rejection. Default: the constructor's `name`, else `"construct"`. */
+  readonly name?: string;
+  /**
+   * Sub-path to report a constructor error at, relative to the constructed
+   * value (dot-separated; `""` = the value itself). Called only on failure.
+   */
+  readonly at?: (error: E) => string;
+  /**
+   * Turns an output back into the input form, for `schema/JSON.stringify`.
+   * Required when `T` is not assignable to the input type (e.g. a `Date`
+   * built from a string); otherwise the output is serialized as the input.
+   */
+  readonly encode?: (value: T) => B;
+}
+
+/**
+ * Narrows `inner` with a type guard (or any boolean check): a value must pass
+ * `inner`, then `guard`. With a type predicate, `Infer` yields the narrowed
+ * type, e.g. a `Branded<string, "Slug">`, so no plain string is assignable.
+ * The value itself is never changed. A guard over an object checks rules
+ * across its fields; `options.at` names the field to report.
+ *
+ * `guard` is captured once at compile time and called by reference from the
+ * generated code; it must be pure and must not throw (an exception
+ * propagates out of the validator). On rejection the `SchemaError` is
+ * `{ path, expected: name, received: value }`.
+ *
+ * @example A branded string from serialized JSON, in one pass
+ * ```ts
+ * import * as S from "@dolphin278/vjuga/schema/Schema";
+ * import * as SJ from "@dolphin278/vjuga/schema/JSON";
+ * import type { Branded } from "@dolphin278/vjuga/FunctionUtils";
+ * type Slug = Branded<string, "Slug">;
+ * const isSlug = (s: string): s is Slug => /^[a-z0-9-]+$/.test(s);
+ * const Page = S.object({ slug: S.refine(S.string(), isSlug) });
+ * const r = SJ.parse(Page)('{"slug":"hello-world"}'); // Result<{ slug: Slug }, SchemaError>
+ * const Range = S.refine(S.object({ lo: S.number(), hi: S.number() }), (r) => r.lo <= r.hi, {
+ *   name: "lo <= hi",
+ *   at: "hi",
+ * });
+ * ```
+ */
+export function refine<I extends Schema, G extends (value: Input<I>) => boolean>(
+  inner: I,
+  guard: G,
+  options?: RefineOptions,
+): RefineSchema<I, Guarded<G, Input<I>>, WireOf<I>> {
+  return {
+    kind: "refine",
+    meta: {
+      inner,
+      mode: "guard",
+      // Via unknown: relating G to the stored type would expand `Infer<Schema>`
+      fn: guard as unknown as (value: never) => unknown,
+      name: options?.name ?? (guard.name || "refine"),
+      at: options?.at,
+      encode: undefined,
+    },
+  };
+}
+
+/**
+ * Turns `inner`'s values into `T` with a `Result`-returning constructor: a
+ * value must pass `inner`, then `make`. `Ok(t)` replaces the value with `t`
+ * (constructors may normalize: trim, case-fold, build a domain object);
+ * `Err(e)` fails with `{ path, expected: name, received: value, cause: e }`,
+ * at `options.at(e)` under the value when given. `Infer` yields `T`.
+ *
+ * Where the output goes: `validate` never mutates its input — containers on
+ * the way to a changed value are shallow-copied (only when the output is not
+ * `===` the input, so identity constructors allocate nothing); `JSON.parse`
+ * writes into the tree it just parsed. Each constructor runs once per value,
+ * also inside unions (their trials keep the output). Under `not()` and a
+ * `conditional`'s `if` it only decides (its output is unused). `allOf`
+ * variants run in order, each on the value as the earlier ones left it (so a
+ * guard after a constructor checks the output; `refine(construct(..), guard)`
+ * always does); a field one variant constructs may not be declared by
+ * another (`TypeError` at compile time). `make` must
+ * be pure and must not throw (an exception propagates out of the validator).
+ *
+ * `JSON.stringify` serializes the output as `inner` unless `options.encode`
+ * is given. When `T` is not assignable to the type `inner` serializes
+ * (`Wire<I>`: a brand on a string base serializes as a string), `encode` is
+ * required: without it `construct()` returns `ConstructNeedsEncode`, which
+ * is not a `Schema`, so any use of it is a compile-time error.
+ *
+ * @example A normalizing branded constructor, with errors mapped to fields
+ * ```ts
+ * import * as S from "@dolphin278/vjuga/schema/Schema";
+ * import { validate } from "@dolphin278/vjuga/schema/Validate";
+ * import { ok, err, type Result } from "@dolphin278/vjuga/Result";
+ * import type { Branded } from "@dolphin278/vjuga/FunctionUtils";
+ * type Tag = Branded<string, "Tag">;
+ * const tag = (s: string): Result<Tag, "blank"> => {
+ *   const t = s.trim().toLowerCase();
+ *   return t === "" ? err("blank") : ok(t as Tag);
+ * };
+ * const check = validate(S.array(S.construct(S.string(), tag)));
+ * check([" News "]); // [true, ["news"]] — typed Tag[], the input array is untouched
+ * check([" "]); // [false, { path: "0", expected: "tag", received: " ", cause: "blank" }]
+ * ```
+ */
+export function construct<
+  I extends Schema,
+  T,
+  E,
+  O extends ConstructOptions<T, E, WireOf<I>> = ConstructOptions<T, E, WireOf<I>>,
+>(inner: I, make: (value: Input<I>) => Result<T, E>, options?: O): Constructed<I, T, O> {
+  const opts = options as
+    | { readonly name?: string; readonly at?: Function; readonly encode?: Function }
+    | undefined;
+  const node: RefineSchema<Schema, unknown> = {
+    kind: "refine",
+    meta: {
+      inner,
+      mode: "construct",
+      fn: make as unknown as (value: never) => unknown,
+      name: opts?.name ?? (make.name || "construct"),
+      at: opts?.at as ((error: never) => string) | undefined,
+      encode: opts?.encode as ((value: never) => unknown) | undefined,
+    },
+  };
+  // The conditional return type cannot be checked against a generic T
+  return node as unknown as Constructed<I, T, O>;
+}
+
+// ---------------------------------------------------------------------------
 // JSON Schema conversion
 // ---------------------------------------------------------------------------
 
@@ -481,8 +714,16 @@ export interface JsonSchemaObject {
  * several parents is converted once and its output object is shared by those
  * parents (leaves are rebuilt per use). Throws
  * `TypeError` on a cyclic schema (recursive schemas are not supported).
+ *
+ * A `refine()` / `construct()` node is code, which JSON Schema cannot carry:
+ * by default it throws `TypeError` naming the refinement, so a looser schema
+ * is never emitted silently. With `{ refinements: "base" }` it emits the
+ * base (`inner`) schema with `$comment: "refinement: <name>"` (the comment
+ * is an annotation; validators that read the result accept what the base
+ * accepts). `fromJsonSchema` never produces refinements.
  */
-export function toJsonSchema(root: Schema): JsonSchemaObject {
+export function toJsonSchema(root: Schema, options?: ToJsonSchemaOptions): JsonSchemaObject {
+  const base = options?.refinements === "base";
   // Iterative memoized post-order walk: no recursion, and each distinct node
   // is built once, so a DAG of shared subschemas stays linear. Expanding a
   // node leaves it on the stack under a FRAME_END marker with its children
@@ -501,12 +742,12 @@ export function toJsonSchema(root: Schema): JsonSchemaObject {
     if (s === FRAME_END) {
       const done = stack.pop()!;
       openFrames--;
-      built.set(done, buildJsonSchemaNode(done, built));
+      built.set(done, buildJsonSchemaNode(done, built, base));
       continue;
     }
     if (isLeafKind(s.kind)) {
       // Rebuilding a shared leaf is O(1) and cheaper than a memo lookup
-      built.set(s, buildJsonSchemaNode(s, built));
+      built.set(s, buildJsonSchemaNode(s, built, base));
       continue;
     }
     if (built.has(s)) continue; // shared node, already built
@@ -518,6 +759,15 @@ export function toJsonSchema(root: Schema): JsonSchemaObject {
     }
   }
   return built.get(root)!;
+}
+
+/** Options for `toJsonSchema`. */
+export interface ToJsonSchemaOptions {
+  /**
+   * `"throw"` (default): a `refine()` / `construct()` node throws
+   * `TypeError`. `"base"`: emit its base schema, annotated with `$comment`.
+   */
+  readonly refinements?: "throw" | "base";
 }
 
 /** Open `toJsonSchema` frames that trigger a cycle scan (doubled after each). */
@@ -580,6 +830,7 @@ function collectSchemaChildren(schema: Schema, stack: Schema[]): void {
     case "optional":
     case "nullable":
     case "not":
+    case "refine":
       stack.push(schema.meta.inner);
       break;
     case "conditional":
@@ -589,7 +840,11 @@ function collectSchemaChildren(schema: Schema, stack: Schema[]): void {
 }
 
 /** Build a single JSON Schema node, looking up children in the results map. */
-function buildJsonSchemaNode(s: Schema, built: Map<Schema, JsonSchemaObject>): JsonSchemaObject {
+function buildJsonSchemaNode(
+  s: Schema,
+  built: Map<Schema, JsonSchemaObject>,
+  refinementsAsBase: boolean,
+): JsonSchemaObject {
   switch (s.kind) {
     case "string": {
       const out: Record<string, unknown> = { type: "string" };
@@ -680,6 +935,20 @@ function buildJsonSchemaNode(s: Schema, built: Map<Schema, JsonSchemaObject>): J
       return built.get(s.meta.inner)!;
     case "nullable":
       return { anyOf: [built.get(s.meta.inner)!, { type: "null" }] };
+    case "refine": {
+      if (!refinementsAsBase) {
+        throw new TypeError(
+          "toJsonSchema: refinement " +
+            JSON.stringify(s.meta.name) +
+            ' has no JSON Schema form (pass { refinements: "base" } to emit its base schema)',
+        );
+      }
+      // Copy: the inner object may be shared with other parents
+      const inner = built.get(s.meta.inner)!;
+      const note = "refinement: " + s.meta.name;
+      const prior = inner.$comment;
+      return { ...inner, $comment: typeof prior === "string" ? prior + "; " + note : note };
+    }
     default:
       unreachable(s);
   }
@@ -1626,8 +1895,9 @@ function lowerArrayKeywords(ctx: LowerCtx, js: Record<string, unknown>, base: st
  * the schema accepts `undefined` (an absent key reads as `undefined`):
  * `optional(T)`, `nullable(optional(T))`, a union with an optional variant
  * (`oneOf`: exactly one), or an `allOf` / `conditional` that accepts it (e.g.
- * `allOf(optional(T), ...)`). Serializers use it to omit absent keys and
- * `toJsonSchema` to leave the key out of `required`.
+ * `allOf(optional(T), ...)`). A `refine()` / `construct()` counts as its
+ * inner schema. Serializers use it to omit absent keys and `toJsonSchema` to
+ * leave the key out of `required`.
  */
 export function propertyMayBeAbsent(schema: Schema): boolean {
   return acceptsUndefinedExact(schema);
@@ -1646,7 +1916,7 @@ function acceptsUndefinedExact(schema: Schema): boolean {
   // objects of nullable(union(...)) fields): a nullable chain just forwards,
   // and a union / allOf of non-wrappers decides from its variants' kinds
   let root = schema;
-  while (root.kind === "nullable") root = root.meta.inner;
+  while (root.kind === "nullable" || root.kind === "refine") root = root.meta.inner;
   if (!isUndefinedWrapper(root.kind)) return root.kind === "optional";
   if (root.kind === "union" || root.kind === "allOf") {
     const vs = root.meta.variants as readonly Schema[];
@@ -1700,14 +1970,24 @@ const UNDEF_OPEN = 0;
 const UNDEF_NO = 1;
 const UNDEF_YES = 2;
 
-/** Kinds whose `undefined` verdict depends on child schemas. */
+/**
+ * Kinds whose `undefined` verdict depends on child schemas. A refinement
+ * counts as its `inner` (its function's answer is not known statically).
+ */
 function isUndefinedWrapper(kind: Schema["kind"]): boolean {
-  return kind === "nullable" || kind === "union" || kind === "allOf" || kind === "conditional";
+  return (
+    kind === "nullable" ||
+    kind === "union" ||
+    kind === "allOf" ||
+    kind === "conditional" ||
+    kind === "refine"
+  );
 }
 
 function undefinedWrapperChildren(s: Schema): readonly Schema[] {
   switch (s.kind) {
     case "nullable":
+    case "refine":
       return [s.meta.inner];
     case "conditional":
       return [s.meta.if, s.meta.then, s.meta.else];
@@ -1723,6 +2003,7 @@ function decideUndefined(s: Schema, memo: Map<Schema, number>): boolean {
   const yes = (c: Schema): boolean => memo.get(c) === UNDEF_YES;
   switch (s.kind) {
     case "nullable":
+    case "refine":
       return yes(s.meta.inner);
     case "conditional":
       return yes(s.meta.if) ? yes(s.meta.then) : yes(s.meta.else);
@@ -1738,14 +2019,15 @@ function decideUndefined(s: Schema, memo: Map<Schema, number>): boolean {
 }
 
 /**
- * True if the schema describes a leaf value (no nesting).
+ * True if the schema describes a leaf value (no nesting), seen through
+ * `optional` / `nullable` / `refine` wrappers.
  *
  * @internal Exported for the schema code generators only — not part of the public API contract.
  */
 export function isPrimitive(schema: Schema): boolean {
   // Iterative unwrap of optional/nullable wrappers — avoids recursion
   let s = schema;
-  while (s.kind === "optional" || s.kind === "nullable") {
+  while (s.kind === "optional" || s.kind === "nullable" || s.kind === "refine") {
     s = s.meta.inner;
   }
   switch (s.kind) {

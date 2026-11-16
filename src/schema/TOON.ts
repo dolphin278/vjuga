@@ -20,12 +20,12 @@
  *   cannot encode unambiguously throw `TypeError("TOON: unsupported ...")` at
  *   compile time: `optional(compound)` outside an object field, unions
  *   mixing compound variants unless they are discriminated object unions,
- *   and `unknown` / `allOf` / `not` / `conditional`. Unions of primitives
- *   decode the token's type (quoted → string), then pick the first variant
- *   that validates (`oneOf`: exactly one must). Parsing is strict (`strict` is a no-op):
- *   exact counts, JSON-grammar numbers, §7.1 escapes only, space-trimmed
- *   values (§12), empty cell = "absent"; constraints enforced like `validate`.
- *   `__proto__` keys are dropped on parse; non-finite numbers emit `null`.
+ *   `unknown` / `allOf` / `not` / `conditional`, `construct` with `encode`
+ *   (refinements take the base layout). Unions of primitives decode the
+ *   token's type, then pick the first variant that validates (`oneOf`:
+ *   exactly one). Parsing is strict: exact counts, JSON-grammar numbers,
+ *   §7.1 escapes only, space-trimmed values (§12), empty cell = "absent",
+ *   constraints as `validate`; drops `__proto__` keys; non-finite → `null`.
  *
  * @example Objects, tabular arrays, round-trip
  * ```ts
@@ -45,7 +45,14 @@ import type { Result } from "../Result.js";
 import { ok, err } from "../Result.js";
 import { escapeJsonString } from "../JSON.js";
 import type { Schema, Infer } from "./Schema.js";
-import { type SchemaError, emitStandardRefs, emitValidation, validate } from "./Validate.js";
+import {
+  type SchemaError,
+  emitRefineCheck,
+  emitStandardRefs,
+  emitValidation,
+  hasTransform,
+  validate,
+} from "./Validate.js";
 import { findDiscriminant, isPrimitive as isLeaf } from "./Schema.js";
 import { unreachable } from "../FunctionUtils.js";
 import {
@@ -437,13 +444,18 @@ interface Unwrapped {
   readonly nul: boolean;
 }
 
-/** Strip optional/nullable wrappers and single-variant unions. */
+/**
+ * Strip optional/nullable wrappers, single-variant unions and refinements
+ * (layout is the base schema's; `emitChain` applies the refinements).
+ */
 function unwrap(schema: Schema): Unwrapped {
   let s = schema;
   let opt = false;
   let nul = false;
   for (;;) {
-    if (s.kind === "optional") {
+    if (s.kind === "refine") {
+      s = s.meta.inner;
+    } else if (s.kind === "optional") {
       opt = true;
       s = s.meta.inner;
     } else if (s.kind === "nullable") {
@@ -467,6 +479,107 @@ function unwrap(schema: Schema): Unwrapped {
 
 function nonNullVariants(variants: readonly Schema[]): Schema[] {
   return variants.filter((v) => v.kind !== "null");
+}
+
+/** The wrapper `unwrap` strips from `s` next (its only child), or null at the core. */
+function wrapped(s: Schema): Schema | null {
+  switch (s.kind) {
+    case "refine":
+    case "optional":
+    case "nullable":
+      return s.meta.inner;
+    case "union":
+      if (s.meta.variants.length === 1) return s.meta.variants[0];
+      if (s.meta.exclusive !== true && nonNullVariants(s.meta.variants).length === 1) {
+        return nonNullVariants(s.meta.variants)[0];
+      }
+      return null;
+    default:
+      return null;
+  }
+}
+
+/** True if the wrappers `unwrap` strips from `schema` include a refinement. */
+function hasChain(schema: Schema): boolean {
+  for (let s: Schema | null = schema; s !== null; s = wrapped(s)) {
+    if (s.kind === "refine") return true;
+  }
+  return false;
+}
+
+/**
+ * Emit the refinements among `schema`'s wrappers for the decoded value in
+ * `acc` (a variable), innermost first, honoring the optional / nullable
+ * wrappers around them as `validate` does. The core's own checks already ran
+ * while decoding; refinements inside the core are applied where its parts are
+ * decoded. Nothing is emitted for a chain without refinements.
+ */
+function emitChain(buf: CodeBuffer, schema: Schema, acc: string, path: string): void {
+  if (!hasChain(schema)) return;
+  const inner = wrapped(schema)!;
+  if (schema.kind === "refine") {
+    emitChain(buf, inner, acc, path);
+    emitRefineCheck(buf, schema, acc, path);
+    return;
+  }
+  // optional / nullable / a union that unwrap treats as one of them
+  let absent: string | null;
+  if (schema.kind === "optional") absent = "undefined";
+  else if (schema.kind === "nullable") absent = "null";
+  else {
+    const union = schema as Schema & { readonly kind: "union" };
+    absent = union.meta.variants.length === 1 ? null : "null"; // union(T, null)
+  }
+  if (absent === null) {
+    emitChain(buf, inner, acc, path);
+    return;
+  }
+  emit(buf, `if (${acc} !== ${absent}) {`);
+  buf.indent++;
+  emitChain(buf, inner, acc, path);
+  buf.indent--;
+  emit(buf, "}");
+}
+
+/** Schemas known to contain (or not) a `construct()` with `encode`. */
+const encodes = new WeakMap<Schema, boolean>();
+
+/** True if a `construct()` node with an `encode` appears anywhere in `schema`. */
+function hasEncode(schema: Schema): boolean {
+  const known = encodes.get(schema);
+  if (known !== undefined) return known;
+  let found = false;
+  switch (schema.kind) {
+    case "refine":
+      found = schema.meta.encode !== undefined || hasEncode(schema.meta.inner);
+      break;
+    case "object": {
+      const props = schema.meta.properties as Record<string, Schema>;
+      for (const k of Object.keys(props)) if (hasEncode(props[k])) found = true;
+      break;
+    }
+    case "array":
+      found = hasEncode(schema.meta.items);
+      break;
+    case "tuple":
+      found = (schema.meta.items as Schema[]).some(hasEncode);
+      break;
+    case "union":
+      found = (schema.meta.variants as Schema[]).some(hasEncode);
+      break;
+    case "record":
+      found = hasEncode(schema.meta.values);
+      break;
+    case "optional":
+    case "nullable":
+      found = hasEncode(schema.meta.inner);
+      break;
+    default:
+      // primitives; unknown / allOf / not / conditional are rejected anyway
+      break;
+  }
+  encodes.set(schema, found);
+  return found;
 }
 
 /** True if values of `schema` are single tokens (incl. wrapped and unions of primitives). */
@@ -494,6 +607,10 @@ function unsupported(msg: string): TypeError {
  * accept exactly the same shapes. `field` = object property position.
  */
 function assertSupported(schema: Schema, field: boolean): void {
+  if (hasEncode(schema)) {
+    // TOON writes the output as the base value; an encoded output is not one
+    throw unsupported("construct() with encode has no TOON layout");
+  }
   if (isPrimitive(schema)) return;
   const { core, opt } = unwrap(schema);
   if (opt && !field) {
@@ -648,6 +765,9 @@ function cellExpr(schema: Schema, acc: string): string {
       return `(${acc} ? "true" : "false")`;
     case "null":
       return `"null"`;
+    case "refine":
+      // Output has the base value's form (encode is rejected up front)
+      return cellExpr(schema.meta.inner, acc);
     default:
       // literal, enum, union of primitives — dispatch on the runtime type
       return `_pv(${acc}, _delim)`;
@@ -903,6 +1023,7 @@ export function parse<S extends Schema>(
       emit(buf, "}");
     }
   }
+  emitChain(buf, schema, out, '""');
   // Everything must be consumed (trailing blank lines allowed) — leftovers
   // mean the input does not match the schema's layout.
   emit(buf, 'while (li < lines.length && lines[li].trim() === "") li++;');
@@ -990,6 +1111,15 @@ function emitCell(g: Gen, schema: Schema, raw: string, path: string, out: string
       const variants = union.meta.variants as Schema[];
       emit(buf, `${out} = _dec(${raw});`);
       // oneOf needs the whole-union validator (exactly one variant matches)
+      if (hasTransform(union)) {
+        // A variant's constructor replaces the token's value: keep the
+        // whole-union validator's output (first match, or exactly one)
+        const r = freshVar(buf);
+        emit(buf, `var ${r} = ${emitRef(buf, freshVar(buf), validate(union))}(${out});`);
+        emit(buf, `if (!${r}[0]) ${fail("union")}`);
+        emit(buf, `${out} = ${r}[1];`);
+        break;
+      }
       const checks =
         union.meta.exclusive === true
           ? [`!${emitRef(buf, freshVar(buf), validate(union))}(${out})[0]`]
@@ -1004,7 +1134,16 @@ function emitCell(g: Gen, schema: Schema, raw: string, path: string, out: string
   // where the schema has any, so plain leaves pay nothing. The wrappers stay,
   // so an absent / null value passes as it does in `validate`.
   if ((core.kind === "string" || core.kind === "number" || core.kind === "integer") && core.meta) {
-    emitValidation(buf, schema, out, path);
+    if (!hasChain(schema)) emitValidation(buf, schema, out, path);
+    else {
+      // The wrappers hold refinements, which callers apply (`emitChain`):
+      // check only the core here, on a present value
+      emit(buf, `if (${out} !== undefined && ${out} !== null) {`);
+      buf.indent++;
+      emitValidation(buf, core, out, path);
+      buf.indent--;
+      emit(buf, "}");
+    }
   }
 }
 
@@ -1048,6 +1187,10 @@ function emitObjectParse(
     }
     const tmp = freshVar(buf);
     const v = freshVar(buf);
+    // A refined field is finished after its blocks close (an absent key
+    // still reaches a refinement outside its optional, as in `validate`)
+    const chain = hasChain(child);
+    if (chain) emit(buf, `var ${v} = undefined;`);
     const prim = isPrimitive(child);
     if (prim) {
       const pfx = prefix + ": ";
@@ -1063,9 +1206,14 @@ function emitObjectParse(
       emitTailParse(g, core, nul, tmp, depth, kPath, v);
     }
     // Absent optionals stay absent; `__proto__` is never assigned (pollution).
-    if (k !== "__proto__") emit(buf, `if (${v} !== undefined) ${out}[${kLit}] = ${v};`);
+    const store = `if (${v} !== undefined) ${out}[${kLit}] = ${v};`;
+    if (!chain && k !== "__proto__") emit(buf, store);
     if (opt) emit(buf, "}");
     if (g.flexible) emit(buf, opt ? "}" : `} else ${missing}`);
+    if (chain) {
+      emitChain(buf, child, v, kPath);
+      if (k !== "__proto__") emit(buf, store);
+    }
   }
   if (g.flexible) emit(buf, `li = ${scan}[1];`);
 }
@@ -1148,6 +1296,7 @@ function emitHeaderParse(
         const v = freshVar(buf);
         emit(buf, `var ${v}_r = ${cells}[${i}];`);
         emitCell(g, fixed[i], `${v}_r`, childPath(path, String(i)), v);
+        emitChain(buf, fixed[i], v, childPath(path, String(i)));
         emit(buf, `${out}.push(${v});`);
       }
     } else {
@@ -1156,6 +1305,7 @@ function emitHeaderParse(
       const v = freshVar(buf);
       emit(buf, `var ${v}_r = ${cells}[${idx}];`);
       emitCell(g, core.meta.items, `${v}_r`, dynamicChildPath(path, idx), v);
+      emitChain(buf, core.meta.items, v, dynamicChildPath(path, idx));
       emit(buf, `${out}.push(${v});`);
       buf.indent--;
       emit(buf, "}");
@@ -1192,7 +1342,9 @@ function emitHeaderParse(
       emit(buf, `var ${v}_r = ${cells}[${j}];`);
       // Field names are untrusted (e.g. from fromJsonSchema): always emitted
       // as escaped string literals, never raw inside generated source.
-      emitCell(g, props[f], `${v}_r`, `${rowPath} + ${escapeJsonString("." + f)}`, v);
+      const cellPath = `${rowPath} + ${escapeJsonString("." + f)}`;
+      emitCell(g, props[f], `${v}_r`, cellPath, v);
+      emitChain(buf, props[f], v, cellPath);
       if (f !== "__proto__") {
         emit(buf, `if (${v} !== undefined) ${row}[${escapeJsonString(f)}] = ${v};`);
       }
@@ -1254,6 +1406,7 @@ function emitListItemParse(g: Gen, schema: Schema, depth: number, path: string, 
   if (isPrimitive(schema)) {
     emit(buf, "li++;");
     emitCell(g, schema, content, path, out);
+    emitChain(buf, schema, out, path);
     return;
   }
   const { core, nul } = unwrap(schema);
@@ -1278,6 +1431,7 @@ function emitListItemParse(g: Gen, schema: Schema, depth: number, path: string, 
     buf.indent--;
     emit(buf, "}");
   }
+  emitChain(buf, schema, out, path);
 }
 
 function emitRecordParse(
@@ -1310,6 +1464,7 @@ function emitRecordParse(
     const { core, nul } = unwrap(values);
     emitTailParse(g, core, nul, tail, depth, vPath, v);
   }
+  emitChain(buf, values, v, vPath);
   // Prototype pollution guard — never assign an own `__proto__` key.
   emit(buf, `if (${key} !== "__proto__") ${out}[${key}] = ${v};`);
   buf.indent--;

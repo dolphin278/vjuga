@@ -87,7 +87,7 @@ Add that paragraph to your app's `AGENTS.md`. In a monorepo, resolve `node_modul
 | Deep readonly at API boundary | `Immutable` | `make(value)` — zero-cost type cast, no runtime enforcement |
 | Pass-by-reference for primitives into closures | `Ref` | `make`, `get`, `set` |
 | Branded numbers (positive int, etc.) | `FunctionUtils` | `PositiveInteger` (also a `NonNegativeInteger`), `NonNegativeInteger`, `Integer`, `PositiveNumber`, each with the standard set (`positiveInteger` / `positiveIntegerExn` / `isPositiveInteger` / `assertPositiveInteger`; errors `"not-integer"`, `"unsafe-integer"`, `"not-positive"`, `"negative"`) |
-| Your own brand with the same four functions | `FunctionUtils` | `refine(kind, check, normalize?)` → `{ make, makeExn, is, assert, check, kind }` (`is` / `assert` take `Base`, not `unknown`: check the base first) (annotate it as `Refinement<Base, T, E>`: TS2775); `Guard<Base, T>`, `Assertion<Base, T>`, `brandError(kind, code, value)`; `brand<Base, Kind>(v)` is an unchecked cast |
+| Your own brand with the same four functions | `FunctionUtils` | `defineBrand(kind, check, normalize?)` → `{ make, makeExn, is, assert, check, kind }` (`is` / `assert` take `Base`, not `unknown`: check the base first) (annotate it as `BrandDefinition<Base, T, E>`: TS2775); `Guard<Base, T>`, `Assertion<Base, T>`, `brandError(kind, code, value)`; `brand<Base, Kind>(v)` is an unchecked cast |
 
 ### Schema & validation
 

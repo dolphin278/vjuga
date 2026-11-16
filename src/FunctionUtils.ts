@@ -14,7 +14,7 @@
  * PositiveIntegerError>` (one string literal per rule), `positiveIntegerExn(n)`
  * → the value or a RangeError whose `cause` is that literal,
  * `isPositiveInteger(x: unknown)` guard, `assertPositiveInteger(x: unknown)`.
- * Guards and assertions never normalise; constructors may. `refine` derives
+ * Guards and assertions never normalise; constructors may. `defineBrand` derives
  * the same set for your own brand from one check function.
  *
  * When to use: `Fn` / `Fn1` / `Fn2` as callback types throughout the library.
@@ -163,10 +163,10 @@ function describe(value: unknown): string {
 }
 
 /**
- * The standard functions of a refined (branded) type, built by `refine`.
+ * The standard functions of a branded type, built by `defineBrand`.
  * `check` is the one rule set; the others are derived from it.
  */
-export interface Refinement<Base, T extends Base, E extends string> {
+export interface BrandDefinition<Base, T extends Base, E extends string> {
   /** The brand kind, used in assertion messages. */
   readonly kind: string;
   /** The first failed rule for `value`, or `undefined` when it is a `T`. */
@@ -191,7 +191,7 @@ export interface Refinement<Base, T extends Base, E extends string> {
  * `makeExn` normalise before checking; `is` and `assert` never do.
  *
  * Performance: the derived functions are closures made once, here, and every
- * refinement's `is` shares one `check(value)` call site. With one refinement
+ * brand definition's `is` shares one `check(value)` call site. With one brand definition
  * in use it runs as fast as a hand-written guard; with six in use that site is
  * polymorphic and the JIT stops inlining `check` (`src/benchmarks/Brands.bench.ts`:
  * ~3.8x slower than six hand-written guards on Node 26, ~2.5x on Bun 1.4). On
@@ -207,23 +207,23 @@ export interface Refinement<Base, T extends Base, E extends string> {
  *
  * @example
  * ```ts
- * import { refine, type Branded, type Refinement } from "@dolphin278/vjuga/FunctionUtils";
+ * import { defineBrand, type Branded, type BrandDefinition } from "@dolphin278/vjuga/FunctionUtils";
  * type Slug = Branded<string, "Slug">;
  * type SlugError = "empty" | "bad-char";
  * const slugError = (v: string): SlugError | undefined =>
  *   v.length === 0 ? "empty" : /^[a-z0-9-]+$/.test(v) ? undefined : "bad-char";
- * const Slug: Refinement<string, Slug, SlugError> = refine("Slug", slugError, (v) => v.toLowerCase());
+ * const Slug: BrandDefinition<string, Slug, SlugError> = defineBrand("Slug", slugError, (v) => v.toLowerCase());
  * Slug.make("Hello-1");  // [true, "hello-1"]
  * Slug.makeExn("x y");   // throws RangeError, cause "bad-char"
  * Slug.is("Hello-1");    // false: guards never normalise
  * Slug.assert(input);    // narrows `input: string` to Slug, or throws RangeError
  * ```
  */
-export function refine<Base, const Kind extends string, E extends string>(
+export function defineBrand<Base, const Kind extends string, E extends string>(
   kind: Kind,
   check: (value: Base) => E | undefined,
   normalize?: (value: Base) => Base,
-): Refinement<Base, Branded<Base, Kind>, E> {
+): BrandDefinition<Base, Branded<Base, Kind>, E> {
   type T = Branded<Base, Kind>;
   const is = (value: Base): value is T => check(value) === undefined;
   const assert: Assertion<Base, T> = (value) => {
@@ -264,7 +264,7 @@ export function refine<Base, const Kind extends string, E extends string>(
 // Branded numbers. Per type X: `x(number)` → Result<X, XError>,
 // `xExn(number)` → X or throw, `isX(unknown)` guard, `assertX(unknown)`
 // assertion. All are hand-written top-level
-// functions (not `refine`), so each call site stays monomorphic and the guard
+// functions (not `defineBrand`), so each call site stays monomorphic and the guard
 // inlines. Failures are classified only after the guard says no.
 // ---------------------------------------------------------------------------
 

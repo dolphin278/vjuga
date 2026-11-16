@@ -375,14 +375,14 @@ describe("branded numbers: standard set", () => {
 
 type FU_Result = readonly [boolean, unknown];
 
-describe("refine", () => {
+describe("defineBrand", () => {
   type Slug = Branded<string, "Slug">;
   type SlugError = "empty" | "bad-char";
   const slugError = (v: string): SlugError | undefined =>
     v.length === 0 ? "empty" : /^[a-z0-9-]+$/.test(v) ? undefined : "bad-char";
 
   it("derives make / makeExn / is / assert from one check", () => {
-    const Slug: FU.Refinement<string, Slug, SlugError> = FU.refine("Slug", slugError);
+    const Slug: FU.BrandDefinition<string, Slug, SlugError> = FU.defineBrand("Slug", slugError);
     assert.equal(Slug.kind, "Slug");
     assert.equal(Slug.check, slugError);
     assert.deepEqual(Slug.make("a-1"), [true, "a-1"]);
@@ -403,7 +403,7 @@ describe("refine", () => {
   });
 
   it("normalize applies to make / makeExn only", () => {
-    const Slug = FU.refine("Slug", slugError, (v: string) => v.toLowerCase());
+    const Slug = FU.defineBrand("Slug", slugError, (v: string) => v.toLowerCase());
     assert.deepEqual(Slug.make("Hello-1"), [true, "hello-1"]);
     assert.deepEqual(Slug.make("x y"), [false, "bad-char"]);
     assert.equal(Slug.makeExn("ABC"), "abc");
@@ -412,8 +412,8 @@ describe("refine", () => {
   });
 
   it("infers the brand from the kind and keeps the error literals (type-level)", () => {
-    const R = FU.refine("Slug", slugError);
-    const typed: FU.Refinement<string, Slug, SlugError> = R;
+    const R = FU.defineBrand("Slug", slugError);
+    const typed: FU.BrandDefinition<string, Slug, SlugError> = R;
     const [ok, v] = R.make("a");
     if (ok) {
       const slug: Slug = v;
@@ -430,7 +430,7 @@ describe("refine", () => {
   });
 
   it("an assertion through an unannotated name is a compile error (TS2775)", () => {
-    const R = FU.refine("Slug", slugError);
+    const R = FU.defineBrand("Slug", slugError);
     const raw: string = "ok";
     // @ts-expect-error TS2775: assertions need an explicitly typed call target
     R.assert(raw);
@@ -442,7 +442,7 @@ describe("refine", () => {
 
   it("stacks on a branded base and stays assignable to it", () => {
     type Revision = Branded<FU.PositiveInteger, "Revision">;
-    const Revision: FU.Refinement<FU.PositiveInteger, Revision, "too-large"> = FU.refine(
+    const Revision: FU.BrandDefinition<FU.PositiveInteger, Revision, "too-large"> = FU.defineBrand(
       "Revision",
       (n: FU.PositiveInteger) => (n > 1000 ? "too-large" : undefined),
     );

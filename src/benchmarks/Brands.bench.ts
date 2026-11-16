@@ -1,5 +1,5 @@
 // Branded-type standard set: guards, Result vs throwing constructors, and the
-// cost of `refine`-derived guards against hand-written ones.
+// cost of `defineBrand`-derived guards against hand-written ones.
 import { bench, run } from "mitata";
 import { reportOptimizationStatus } from "./_v8.js";
 import {
@@ -7,7 +7,7 @@ import {
   isPositiveInteger,
   positiveInteger,
   positiveIntegerExn,
-  refine,
+  defineBrand,
 } from "../FunctionUtils.js";
 import { isNonBlank, nonBlank } from "../Text.js";
 import { isUUID, uuid } from "../UUID.js";
@@ -21,7 +21,7 @@ for (let i = 0; i < N; i++) {
   strs.push(i % 5 === 0 ? ` s${i} ` : i % 13 === 0 ? "" : `slug-${i}`);
 }
 
-// --- refine vs hand-written ---
+// --- defineBrand vs hand-written ---
 type Slug = Branded<string, "Slug">;
 function slugError(v: string): "empty" | "padded" | undefined {
   if (v.length === 0) return "empty";
@@ -30,16 +30,16 @@ function slugError(v: string): "empty" | "padded" | undefined {
 function isSlugHand(v: string): v is Slug {
   return slugError(v) === undefined;
 }
-const SlugOne = refine("Slug", slugError);
+const SlugOne = defineBrand("Slug", slugError);
 
-// Five more refinements whose `is` runs through the same closure code, so the
+// Five more brand definitions whose `is` runs through the same closure code, so the
 // shared `check(value)` call site sees several targets (polymorphic).
 const others = [
-  refine("A", (v: string) => (v.length > 3 ? undefined : "short")),
-  refine("B", (v: string) => (v.length < 40 ? undefined : "long")),
-  refine("C", (v: string) => (v.charCodeAt(0) !== 45 ? undefined : "dash")),
-  refine("D", (v: string) => (v.includes(" ") ? "space" : undefined)),
-  refine("E", (v: string) => (v === "x" ? "x" : undefined)),
+  defineBrand("A", (v: string) => (v.length > 3 ? undefined : "short")),
+  defineBrand("B", (v: string) => (v.length < 40 ? undefined : "long")),
+  defineBrand("C", (v: string) => (v.charCodeAt(0) !== 45 ? undefined : "dash")),
+  defineBrand("D", (v: string) => (v.includes(" ") ? "space" : undefined)),
+  defineBrand("E", (v: string) => (v === "x" ? "x" : undefined)),
 ];
 
 function countHand(): number {
@@ -47,25 +47,25 @@ function countHand(): number {
   for (let i = 0; i < N; i++) if (isSlugHand(strs[i]!)) c++;
   return c;
 }
-function countRefined(): number {
+function countDefined(): number {
   const is = SlugOne.is;
   let c = 0;
   for (let i = 0; i < N; i++) if (is(strs[i]!)) c++;
   return c;
 }
 
-// --- Warm-up (single refinement in use so far) ---
+// --- Warm-up (single brand definition in use so far) ---
 for (let k = 0; k < 2_000; k++) {
   countHand();
-  countRefined();
+  countDefined();
 }
 reportOptimizationStatus(isSlugHand, "isSlugHand");
-reportOptimizationStatus(SlugOne.is, "refine(...).is");
+reportOptimizationStatus(SlugOne.is, "defineBrand(...).is");
 
 bench("guard x1024: hand-written top-level (check inlined)", countHand);
-bench("guard x1024: refine().is, one refinement in use", countRefined);
+bench("guard x1024: defineBrand().is, one brand definition in use", countDefined);
 
-bench("guard x1024: refine().is, six refinements in use (polymorphic check site)", () => {
+bench("guard x1024: defineBrand().is, six brand definitions in use (polymorphic check site)", () => {
   let c = 0;
   for (let i = 0; i < N; i++) {
     const s = strs[i]!;

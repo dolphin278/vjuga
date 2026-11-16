@@ -1,15 +1,15 @@
-// Branded-type standard set: Text brands, number Result/guard/assertion, refine.
+// Branded-type standard set: Text brands, number Result/guard/assertion, defineBrand.
 import { isNonBlank, nonBlank, nonBlankExn, nonEmptyString } from "../../src/Text.js";
 import {
   assertPositiveInteger,
   isPositiveInteger,
   positiveInteger,
-  refine,
+  defineBrand,
   type Branded,
-  type Refinement,
+  type BrandDefinition,
 } from "../../src/FunctionUtils.js";
 type Slug = Branded<string, "Slug">;
-const Slug: Refinement<string, Slug, "empty"> = refine("Slug", (v: string) =>
+const Slug: BrandDefinition<string, Slug, "empty"> = defineBrand("Slug", (v: string) =>
   v.length === 0 ? "empty" : undefined,
 );
 const n: unknown = 3;

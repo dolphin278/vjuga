@@ -49,7 +49,7 @@ Queue - FIFO/LIFO with O(1) push/pop/shift/unshift, circular buffer that auto-gr
 Validate compiles schemas to code-generated validators - one pass validation at runtime. JSON stringify/parse generate typed one-pass parse+validate and serializers that emit only declared keys, with a prototype-pollution guard. TOON is up to ~50% smaller than JSON for tabular data (token-efficient contexts). Schema composable type definitions with 18 kinds: primitive, array, object, record, union (and exclusive `oneOf`), tuple, nullable, optional, literal, enum, unknown, allOf, not, if/then/else, and more; `fromJsonSchema` lowers JSON Schema 2020-12 (`$ref`, combinators, formats).
 
 ### Types
-Branded types you can use directly in your own model: PositiveNumber, Integer, PositiveInteger, NonNegativeInteger (FunctionUtils), NonEmptyString, NonBlank (Text), ISODate, ISOTimestamp, UnixTimestamp, UUID (v4 random, v7 time-ordered). Every one has the same four functions, and `refine` derives them for your own brands:
+Branded types you can use directly in your own model: PositiveNumber, Integer, PositiveInteger, NonNegativeInteger (FunctionUtils), NonEmptyString, NonBlank (Text), ISODate, ISOTimestamp, UnixTimestamp, UUID (v4 random, v7 time-ordered). Every one has the same four functions, and `defineBrand` derives them for your own brands:
 
 | Form | Example | Fails with |
 |---|---|---|

@@ -23,15 +23,15 @@
  *
  * @example
  * ```ts
- * import { uuid, v4, v7, version } from "@dolphin278/vjuga/UUID";
- * const id = uuid("550e8400-e29b-41d4-a716-446655440000"); // validated
+ * import { uuidExn, v4, v7, version } from "@dolphin278/vjuga/UUID";
+ * const id = uuidExn("550e8400-e29b-41d4-a716-446655440000"); // validated
  * const random = v4();                                      // crypto.randomUUID()
  * const timeSorted = v7();                                  // monotonic, time-ordered
  * version(random); // 4
  * ```
  */
 
-import type { Branded } from "./FunctionUtils.js";
+import { brandError, type Branded } from "./FunctionUtils.js";
 import { type Result, ok, err } from "./Result.js";
 import { ValidationError, type Validator } from "./schema/ValidationError.js";
 import { randomUUID } from "node:crypto";
@@ -48,27 +48,94 @@ export type UUID = Branded<string, "UUID">;
 declare const Bun: { randomUUIDv7: () => string } | undefined;
 
 /**
- * RFC 4122 structural regex with variant-1 constraint.
- * 8-4-4-4-12 hex groups, group 4 starts with 8/9/a/b.
+ * Why a string is not a `UUID`: not 8-4-4-4-12 hex digits (`"malformed"`),
+ * or the right shape with a variant nibble (first digit of group 4) outside
+ * 8/9/a/b and not Nil/Max (`"invalid-variant"`), or a valid UUID not in the
+ * canonical lower-case form (`"not-lowercase"`: only from `assertUUID`, since
+ * `uuid` / `uuidExn` lower-case first).
  */
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+export type UUIDError = "malformed" | "invalid-variant" | "not-lowercase";
+
+/** Canonical (lower-case) form with variant-1 bits: what the brand holds. */
+const UUID_LOWER_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+/** Shape only, any case and variant: tells "malformed" from "invalid-variant". */
+const UUID_SHAPE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * Validates and brands a string as a UUID.
- * Accepts any UUID version with variant-1 bits, plus Nil and Max. Case-insensitive
- * on input; the returned brand is always lower-case.
- * Throws RangeError if the string is not a valid UUID.
+ * Guard: `value` is a UUID in canonical form: lower-case hex, variant-1 bits,
+ * or Nil / Max. Never normalises, so an upper-case UUID is refused here even
+ * though `uuid()` accepts it (and lower-cases it). Accepts `unknown`.
+ *
+ * @example
+ * ```ts
+ * import { isUUID } from "@dolphin278/vjuga/UUID";
+ * isUUID("550e8400-e29b-41d4-a716-446655440000"); // true
+ * isUUID("550E8400-E29B-41D4-A716-446655440000"); // false: not canonical
+ * ```
  */
-export function uuid(value: string): UUID {
-  const id = normalize(value);
-  if (id === undefined) throw new RangeError(`Expected UUID, got "${value}"`);
-  return id;
+export function isUUID(value: unknown): value is UUID {
+  return typeof value === "string" && (UUID_LOWER_RE.test(value) || value === NIL || value === MAX);
 }
 
-function normalize(value: string): UUID | undefined {
+/** The rule a lower-cased string that is not a UUID breaks. */
+function uuidError(lower: string): "malformed" | "invalid-variant" {
+  return UUID_SHAPE_RE.test(lower) ? "invalid-variant" : "malformed";
+}
+
+/**
+ * Result constructor: `value` lower-cased as a UUID, or the rule it breaks.
+ * Accepts any UUID version with variant-1 bits, plus Nil and Max, in any
+ * case; the branded value is always lower-case, so equal UUIDs compare `===`.
+ *
+ * @example
+ * ```ts
+ * import { uuid } from "@dolphin278/vjuga/UUID";
+ * uuid("550E8400-E29B-41D4-A716-446655440000"); // [true, "550e8400-e29b-41d4-a716-446655440000"]
+ * uuid("550e8400-e29b-41d4-c716-446655440000"); // [false, "invalid-variant"]
+ * ```
+ */
+export function uuid(value: string): Result<UUID, UUIDError> {
   const lower = value.toLowerCase();
-  if (UUID_RE.test(lower) || lower === NIL || lower === MAX) return lower as UUID;
-  return undefined;
+  return isUUID(lower) ? ok(lower) : err(uuidError(lower));
+}
+
+/**
+ * Throwing constructor: like `uuid`, but returns the UUID or throws a
+ * RangeError whose `cause` is the `UUIDError` literal.
+ *
+ * @example
+ * ```ts
+ * import { uuidExn } from "@dolphin278/vjuga/UUID";
+ * const id = uuidExn("550e8400-e29b-41d4-a716-446655440000");
+ * ```
+ */
+export function uuidExn(value: string): UUID {
+  const lower = value.toLowerCase();
+  if (!isUUID(lower)) throw brandError("UUID", uuidError(lower), value);
+  return lower;
+}
+
+/**
+ * Assertion: TypeError for a non-string, RangeError for any other value that
+ * `isUUID` refuses. Its `cause` is `"malformed"`, `"invalid-variant"`, or
+ * `"not-lowercase"` for a valid UUID that is not in canonical form.
+ *
+ * @example
+ * ```ts
+ * import { assertUUID } from "@dolphin278/vjuga/UUID";
+ * const v: unknown = "00000000-0000-0000-0000-000000000000";
+ * assertUUID(v); // v: UUID from here on
+ * ```
+ */
+export function assertUUID(value: unknown): asserts value is UUID {
+  if (!isUUID(value)) {
+    let code: UUIDError | undefined;
+    if (typeof value === "string") {
+      const lower = value.toLowerCase();
+      code = isUUID(lower) ? "not-lowercase" : uuidError(lower);
+    }
+    throw brandError("UUID", code, value);
+  }
 }
 
 /** Generates a random v4 UUID using `crypto.randomUUID()`. */
@@ -111,8 +178,8 @@ export function version(id: UUID): number {
 export function validator(): Validator<UUID> {
   return function validateUUID(value: unknown): Result<UUID, ValidationError> {
     if (typeof value !== "string") return err(new ValidationError("UUID", value));
-    const id = normalize(value);
-    if (id === undefined) return err(new ValidationError("UUID", value));
-    return ok(id);
+    const lower = value.toLowerCase();
+    if (isUUID(lower)) return ok(lower);
+    return err(new ValidationError("UUID", value));
   };
 }

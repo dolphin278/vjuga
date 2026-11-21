@@ -53,10 +53,7 @@ export function make<T>(fn: Fn1<T[]>, schedule?: ScheduleMode): Fn<T[]> {
    */
   const scheduled = Ref.make(false);
   const queue: Queue.Queue<T> = Queue.make();
-  // Explicit `<T>` instantiations here and in the schedulers below: scriptc
-  // 0.4.9 refuses a generic function used as a value without a pinned
-  // signature (SC1090). Type-only; the emitted JS is unchanged.
-  const scheduler = schedule === "io" ? scheduleIO<T> : scheduleMacrotask<T>;
+  const scheduler = schedule === "io" ? scheduleIO : scheduleMacrotask;
 
   return function bufferizedFn(...args: T[]): void {
     for (let i = 0; i < args.length; i++) {
@@ -74,6 +71,9 @@ function scheduleMacrotask<T>(
   fn: Fn1<T[]>,
   scheduled: Ref.RefCell<boolean>,
 ): void {
+  // Explicit `worker<T>` here and in scheduleIO: scriptc 0.4.14 refuses a
+  // generic function passed to setTimeout/setImmediate without a pinned
+  // signature (SC1090). Type-only; the emitted JS is unchanged.
   setTimeout(worker<T>, 0, queue, fn, scheduled);
 }
 

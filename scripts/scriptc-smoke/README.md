@@ -3,11 +3,13 @@
 Each `*.ts` here is a consumer program. `run.sh` compiles it with
 [scriptc](https://github.com/vercel-labs/scriptc), runs the native binary and
 diffs its stdout against the same program under Bun. CI runs it with the
-scriptc version pinned in `.github/workflows/ci.yml` (0.4.9).
+scriptc version pinned in `.github/workflows/ci.yml` (0.4.14). Skip 0.4.15: its runtime pack
+was published at ABI v48 while its CLI expects v51, so every build fails with
+SC3003 (vercel-labs/scriptc#4011).
 
 ```bash
 npm ci
-npm install --no-save scriptc@0.4.9
+npm install --no-save scriptc@0.4.14
 SCRIPTC="$PWD/node_modules/.bin/scriptc" scripts/scriptc-smoke/run.sh
 ```
 
@@ -15,9 +17,9 @@ Workarounds for scriptc limitations in `src/` carry a comment naming the
 limitation and, where filed, the upstream issue. Remove them when the issue is
 fixed and this suite still passes.
 
-## Module status (scriptc 0.4.9)
+## Module status (scriptc 0.4.14)
 
-The covered list and the RadixTree row were checked on 0.4.9; the other
+The covered list and the RadixTree row were checked on 0.4.14; the other
 partial and unsupported rows were last checked on 0.4.4.
 
 Covered by a consumer here (builds, runs, matches Bun): BatchExecutor, BitSet,

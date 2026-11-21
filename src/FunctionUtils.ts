@@ -83,7 +83,7 @@ declare const brandKey: unique symbol;
  * record rather than `[brandKey]: Kind`: `"A" & "B"` is `never`, so compound
  * brands would collapse. Spreading a branded object (`{ ...f, id: "y" }`) keeps
  * the key and so keeps the brand; re-validate if a spread can break the
- * invariant. scriptc 0.4.9 compiles this shape for primitive, object and
+ * invariant. scriptc 0.4.14 compiles this shape for primitive, object and
  * stacked brands (scripts/scriptc-smoke/brands.ts).
  */
 export type Branded<Base, Kind extends string> = Base & {
